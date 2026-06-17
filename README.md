@@ -6,8 +6,7 @@ _As agents become more capable, it becomes more useful to start them, leave them
 their work in one place. Orchestration of agents is moving to the front. Babysitting them is on the
 way out._
 
-It is a CLI first. The shape is intentionally close to tools like `kubectl`: list jobs, watch one,
-follow logs, stop work that no longer matters.
+It is a CLI first. The shape is intentionally close to tools like `kubectl`.
 
 ```sh
 orchestrator launch claude-code --name "review tests" --model sonnet "Find missing tests."
