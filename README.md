@@ -33,17 +33,15 @@ orchestrator interrupt <task-id>
 
 ### CLI
 
-From this repo:
-
-```sh
-pnpm install
-pnpm orchestrator --help
-```
-
-When published to npm, the CLI package will install as:
+Install the CLI:
 
 ```sh
 npm install -g @backnotprop/orchestrator-cli
+```
+
+Check it:
+
+```sh
 orchestrator --help
 ```
 
@@ -66,6 +64,19 @@ For bash:
 
 ```sh
 echo 'alias o=orchestrator' >> ~/.bashrc
+```
+
+</details>
+
+<details>
+<summary>Install from this repo</summary>
+
+```sh
+pnpm install
+```
+
+```sh
+pnpm orchestrator --help
 ```
 
 </details>
