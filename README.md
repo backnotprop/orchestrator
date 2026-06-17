@@ -39,8 +39,6 @@ Install the CLI:
 npm install -g @backnotprop/orchestrator-cli
 ```
 
-Check it:
-
 ```sh
 orchestrator --help
 ```
