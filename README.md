@@ -8,21 +8,17 @@ handle longer-horizon work, or any delegated task, on their own without constant
 It is a CLI first. The shape is intentionally close to tools like `kubectl`: list jobs, watch one,
 follow logs, stop work that no longer matters.
 
-## Use It
-
 ```sh
 orchestrator launch claude-code --name "review tests" --model sonnet "Find missing tests."
 orchestrator launch codex --name "inspect store" --model gpt-5.4-mini "Inspect the task store."
-orchestrator launch reviewer --name "api review" "Review the API package."
+orchestrator launch custom --name "api review" "Review the API package."
 ```
-
-`reviewer` can be any custom agent registered in `~/.orchestrator/config.json`.
 
 ```console
 $ orchestrator list
 review tests     running  claude-code  sonnet         2m ago  3f8d1f30-6c52-49dc-a7f7-3c3e04a98657
 inspect store    running  codex        gpt-5.4-mini   1m ago  a6d00f1d-25b4-4dd3-ae22-d12a381b80d4
-api review       running  reviewer     -              30s ago  d09edec6-2f14-48fc-924c-ec9f26b61ca0
+api review       running  custom       -              30s ago  d09edec6-2f14-48fc-924c-ec9f26b61ca0
 ```
 
 ```sh
