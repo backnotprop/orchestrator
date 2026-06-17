@@ -88,6 +88,9 @@ npm install @backnotprop/orchestrator-core
 Use `@backnotprop/orchestrator-core` when you want the task store, runtime registry, launch plans,
 and supervisor inside your own app instead of the standalone CLI.
 
+See [Custom Agents](doc/custom-agents.md) and the
+[Flue example](doc/custom-agents.md#flue-example).
+
 ```ts
 import { buildAgentLaunchPlan, launchTask } from "@backnotprop/orchestrator-core";
 ```
