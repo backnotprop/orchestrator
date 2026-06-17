@@ -2,9 +2,9 @@
 
 Manage background agents. Coding agents, general agents, any agent.
 
-As agents become more capable, it becomes more useful to start them, leave them running, and manage
+_As agents become more capable, it becomes more useful to start them, leave them running, and manage
 their work in one place. Orchestration of agents is moving to the front. Babysitting them is on the
-way out.
+way out._
 
 It is a CLI first. The shape is intentionally close to tools like `kubectl`: list jobs, watch one,
 follow logs, stop work that no longer matters.
