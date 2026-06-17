@@ -191,9 +191,9 @@ test("launchTask normalizes Claude stream-json fixtures and extracts final resul
     assert.match(transcript, /fixture-claude-ok/);
 
     const events = await readTaskEvents(completed.paths.eventsJsonl);
-    const workerEvents = events.filter((event) => event.type === "worker_event");
-    assert.ok(workerEvents.some((event) => event.data.kind === "agent.message"));
-    assert.ok(workerEvents.some((event) => event.data.kind === "agent.result"));
+    const agentEvents = events.filter((event) => event.type === "agent_event");
+    assert.ok(agentEvents.some((event) => event.data.kind === "agent.message"));
+    assert.ok(agentEvents.some((event) => event.data.kind === "agent.result"));
   });
 });
 
@@ -220,10 +220,10 @@ test("launchTask normalizes Codex exec JSONL fixtures and extracts final result"
     assert.match(transcript, /fixture-codex-ok/);
 
     const events = await readTaskEvents(completed.paths.eventsJsonl);
-    const workerEvents = events.filter((event) => event.type === "worker_event");
-    assert.ok(workerEvents.some((event) => event.data.kind === "thread.started"));
-    assert.ok(workerEvents.some((event) => event.data.kind === "agent.message"));
-    assert.ok(workerEvents.some((event) => event.data.kind === "turn.completed"));
+    const agentEvents = events.filter((event) => event.type === "agent_event");
+    assert.ok(agentEvents.some((event) => event.data.kind === "thread.started"));
+    assert.ok(agentEvents.some((event) => event.data.kind === "agent.message"));
+    assert.ok(agentEvents.some((event) => event.data.kind === "turn.completed"));
   });
 });
 

@@ -1,8 +1,8 @@
 # Custom Agents
 
-Orchestrator can run more than its built-in Claude Code and Codex workers.
+Orchestrator can run agents beyond Claude Code and Codex.
 
-A custom agent is a named worker you add to config, then start with
+A custom agent is a named agent you add to config, then start with
 `orchestrator launch <name>`. After launch, the same commands work: `list`,
 `watch`, `logs`, `read`, and `interrupt`.
 

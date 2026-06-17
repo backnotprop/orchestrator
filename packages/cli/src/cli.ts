@@ -70,7 +70,7 @@ type LogsOptions = CommonOptions & {
 type EventsOptions = CommonOptions & {
   taskId: string;
   maxBytes?: number;
-  workerOnly: boolean;
+  agentOnly: boolean;
 };
 
 type WatchOptions = CommonOptions & {
@@ -229,14 +229,14 @@ function buildCliHelpText(registry: RuntimeRegistry = BUILT_IN_AGENT_RUNTIMES): 
     .join("\n");
 
   return `Orchestrator CLI
-Run and supervise headless coding-agent workers.
+Run and supervise headless coding agents.
 
 Usage:
   orchestrator launch <runtime> [--name <name>] [--model <model>] [--cwd <path>] [--wait] "<task>"
   orchestrator list [--status <status>]
   orchestrator read <task-id> [--max-bytes <bytes>]
   orchestrator logs <task-id> [--stream stdout|stderr|all] [--max-bytes <bytes>] [--follow]
-  orchestrator events <task-id> [--worker-only] [--max-bytes <bytes>]
+  orchestrator events <task-id> [--agent-only] [--max-bytes <bytes>]
   orchestrator watch <task-id> [--interval-ms <ms>]
   orchestrator interrupt <task-id> [--reason <text>]
   orchestrator help [--json]
@@ -247,7 +247,7 @@ Agent instructions:
   3. Use watch to follow one task live.
   4. Use read for the final answer.
   5. Use logs for raw stdout/stderr and events for the task timeline.
-  6. Use interrupt to cancel a running worker. Cancellation targets the process group.
+  6. Use interrupt to cancel a running agent. Cancellation targets the process group.
   7. Model values are passed through to the provider CLI; aliases are not normalized yet.
 
 Common options:
@@ -274,8 +274,8 @@ Examples:
   orchestrator watch <task-id>
   orchestrator read <task-id>
   orchestrator logs <task-id> --stream stderr --follow
-  orchestrator events <task-id> --worker-only --json
-  orchestrator interrupt <task-id> --reason "stopping stale worker"
+  orchestrator events <task-id> --agent-only --json
+  orchestrator interrupt <task-id> --reason "stopping stale agent"
 
 Shell test options:
   --allow-disabled-runtime    Permit launching disabled runtimes such as shell.
@@ -290,12 +290,12 @@ function buildCliHelpDocument(
 
   return {
     schemaVersion: 1,
-    purpose: "Launch and supervise headless coding-agent workers as durable background tasks.",
+    purpose: "Launch and supervise headless coding agents as durable background tasks.",
     agentInstructions: [
       "Use launch to start Claude Code, Codex, or another registered runtime.",
       "Capture taskId from launch output; all inspection and control commands use that id.",
       "Prefer --json for machine-readable command output.",
-      "Use read for the final worker answer.",
+      "Use read for the final agent answer.",
       "Use logs for raw stdout/stderr and events for the task timeline.",
       "Use watch to follow one task live.",
       "Pass model names exactly as the underlying provider CLI expects; this CLI does not normalize model aliases yet.",
@@ -320,7 +320,7 @@ function buildCliHelpDocument(
         name: "launch",
         usage:
           'orchestrator launch <runtime> [--name <name>] [--model <model>] [--cwd <path>] [--wait] "<task>"',
-        semantics: "Starts one worker task. Background by default; prints task metadata.",
+        semantics: "Starts one agent task. Background by default; prints task metadata.",
         options: [
           "--workspace <path>",
           "--orchestrator-dir <path>",
@@ -375,13 +375,13 @@ function buildCliHelpDocument(
       },
       {
         name: "events",
-        usage: "orchestrator events <task-id> [--worker-only] [--max-bytes <bytes>] [--json]",
-        semantics: "Prints normalized task and worker events.",
+        usage: "orchestrator events <task-id> [--agent-only] [--max-bytes <bytes>] [--json]",
+        semantics: "Prints normalized task and agent events.",
         options: [
           "--workspace <path>",
           "--orchestrator-dir <path>",
           "--config <path>",
-          "--worker-only",
+          "--agent-only",
           "--max-bytes <bytes>",
           "--json",
         ],
@@ -389,7 +389,7 @@ function buildCliHelpDocument(
       {
         name: "watch",
         usage: "orchestrator watch <task-id> [--interval-ms <ms>]",
-        semantics: "Streams lifecycle and normalized worker events until the task exits.",
+        semantics: "Streams lifecycle and normalized agent events until the task exits.",
         options: [
           "--workspace <path>",
           "--orchestrator-dir <path>",
@@ -424,11 +424,11 @@ function buildCliHelpDocument(
         ],
       },
       {
-        name: "debug-worker-output",
+        name: "debug-agent-output",
         steps: [
           "Run logs <task-id> --follow to watch raw stdout/stderr.",
-          "Run events <task-id> --worker-only --json to inspect task events.",
-          "Use interrupt <task-id> --reason <text> when the worker should stop.",
+          "Run events <task-id> --agent-only --json to inspect agent events.",
+          "Use interrupt <task-id> --reason <text> when the agent should stop.",
         ],
       },
     ],
@@ -439,8 +439,8 @@ function buildCliHelpDocument(
       "orchestrator watch <task-id>",
       "orchestrator read <task-id>",
       "orchestrator logs <task-id> --stream stderr --follow",
-      "orchestrator events <task-id> --worker-only --json",
-      'orchestrator interrupt <task-id> --reason "stopping stale worker"',
+      "orchestrator events <task-id> --agent-only --json",
+      'orchestrator interrupt <task-id> --reason "stopping stale agent"',
     ],
   };
 }
@@ -621,7 +621,7 @@ async function commandEvents(options: EventsOptions): Promise<void> {
   );
   const raw = await readTailIfExists(task.paths.eventsJsonl, options.maxBytes ?? 500_000);
   const lines = raw.trim() ? raw.trimEnd().split("\n") : [];
-  const events = options.workerOnly ? lines.filter((line) => isWorkerEventLine(line)) : lines;
+  const events = options.agentOnly ? lines.filter((line) => isAgentEventLine(line)) : lines;
 
   if (options.json) {
     process.stdout.write(
@@ -1033,7 +1033,7 @@ function parseEventsOptions(args: readonly string[]): EventsOptions {
   const common = defaultCommonOptions();
   let taskId: string | undefined;
   let maxBytes: number | undefined;
-  let workerOnly = false;
+  let agentOnly = false;
 
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index];
@@ -1053,8 +1053,8 @@ function parseEventsOptions(args: readonly string[]): EventsOptions {
       case "--max-bytes":
         maxBytes = parseIntegerOption(requireValue(args, ++index, arg), arg);
         break;
-      case "--worker-only":
-        workerOnly = true;
+      case "--agent-only":
+        agentOnly = true;
         break;
       default:
         if (arg?.startsWith("-")) {
@@ -1074,7 +1074,7 @@ function parseEventsOptions(args: readonly string[]): EventsOptions {
   return {
     ...common,
     taskId,
-    workerOnly,
+    agentOnly,
     ...(maxBytes ? { maxBytes } : {}),
   };
 }
@@ -1393,8 +1393,8 @@ function renderWatchEvents(
 }
 
 function formatWatchEvent(event: TaskEvent): string | undefined {
-  if (event.type === "worker_event") {
-    const kind = eventDataString(event, "kind") ?? "worker_event";
+  if (event.type === "agent_event") {
+    const kind = eventDataString(event, "kind") ?? "agent_event";
     const label =
       eventDataString(event, "itemType") ??
       eventDataString(event, "toolName") ??
@@ -1423,8 +1423,8 @@ function formatWatchEvent(event: TaskEvent): string | undefined {
   return undefined;
 }
 
-function isWorkerEventLine(line: string): boolean {
-  return parseEventLine(line)?.type === "worker_event";
+function isAgentEventLine(line: string): boolean {
+  return parseEventLine(line)?.type === "agent_event";
 }
 
 function parseEventLine(line: string): TaskEvent | undefined {

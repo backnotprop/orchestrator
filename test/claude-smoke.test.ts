@@ -70,15 +70,15 @@ test(
       const transcript = await readFile(completed.paths.transcriptJsonl, "utf8");
       assert.match(transcript, /orchestrator-smoke-ok/);
 
-      const workerEvents = await runCli(workspaceRoot, [
+      const agentEvents = await runCli(workspaceRoot, [
         "events",
         launched.taskId,
         "--workspace",
         workspaceRoot,
-        "--worker-only",
+        "--agent-only",
       ]);
-      assert.match(workerEvents.stdout, /worker_event/);
-      assert.match(workerEvents.stdout, /agent\.result/);
+      assert.match(agentEvents.stdout, /agent_event/);
+      assert.match(agentEvents.stdout, /agent\.result/);
     }, "orchestrator-claude-smoke-");
   },
 );

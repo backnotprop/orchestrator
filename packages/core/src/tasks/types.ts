@@ -46,7 +46,7 @@ export type TaskEvent = {
     | "running"
     | "stdout"
     | "stderr"
-    | "worker_event"
+    | "agent_event"
     | "interrupt_requested"
     | "result"
     | "completed"

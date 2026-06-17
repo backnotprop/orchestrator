@@ -1,9 +1,9 @@
 # Orchestrator
 
-Run coding agents in the background.
+Manage background agents. Coding agents, general agents, any agent.
 
-Orchestrator is a small control plane for agents like Claude Code and Codex. Start work, give it a
-name, leave it running, then come back for status, logs, events, or the final answer.
+Orchestrator is a small control layer for getting powerful outcomes from agents by letting them
+handle longer-horizon work, or any delegated task, on their own without constant hand-holding.
 
 It is a CLI first. The shape is intentionally close to tools like `kubectl`: list jobs, watch one,
 follow logs, stop work that no longer matters.
@@ -13,15 +13,16 @@ follow logs, stop work that no longer matters.
 ```sh
 orchestrator launch claude-code --name "review tests" --model sonnet "Find missing tests."
 orchestrator launch codex --name "inspect store" --model gpt-5.4-mini "Inspect the task store."
+orchestrator launch reviewer --name "api review" "Review the API package."
 ```
 
-```sh
-orchestrator list
-```
+`reviewer` can be any custom agent registered in `~/.orchestrator/config.json`.
 
-```text
-review tests    running    claude-code    sonnet         2m ago    3f8d1f30-...
-inspect store   running    codex          gpt-5.4-mini   1m ago    a6d00f1d-...
+```console
+$ orchestrator list
+review tests     running  claude-code  sonnet         2m ago  3f8d1f30-6c52-49dc-a7f7-3c3e04a98657
+inspect store    running  codex        gpt-5.4-mini   1m ago  a6d00f1d-25b4-4dd3-ae22-d12a381b80d4
+api review       running  reviewer     -              30s ago  d09edec6-2f14-48fc-924c-ec9f26b61ca0
 ```
 
 ```sh
@@ -34,13 +35,19 @@ orchestrator interrupt <task-id>
 
 ## Install
 
-As a package:
+### CLI
+
+From this repo:
+
+```sh
+pnpm install
+pnpm orchestrator --help
+```
+
+When published to npm, the CLI package will install as:
 
 ```sh
 npm install -g @backnotprop/orchestrator-cli
-```
-
-```bash
 orchestrator --help
 ```
 
@@ -67,11 +74,13 @@ echo 'alias o=orchestrator' >> ~/.bashrc
 
 </details>
 
-From this repo:
+### App Integration
 
-```sh
-pnpm install
-pnpm orchestrator --help
+Use `@backnotprop/orchestrator-core` when you want the task store, runtime registry, launch plans,
+and supervisor inside your own app instead of the standalone CLI.
+
+```ts
+import { buildAgentLaunchPlan, launchTask } from "@backnotprop/orchestrator-core";
 ```
 
 The CLI package is `@backnotprop/orchestrator-cli`. The reusable runtime package is
@@ -149,8 +158,8 @@ $ orchestrator watch 3f8d1f30-6c52-49dc-a7f7-3c3e04a98657
 2026-06-17T19:45:12.033Z	queued
 2026-06-17T19:45:12.034Z	starting
 2026-06-17T19:45:12.081Z	running	pid=41821
-2026-06-17T19:45:16.913Z	worker	system	init
-2026-06-17T19:45:22.447Z	worker	assistant	thinking
+2026-06-17T19:45:16.913Z	runtime.init
+2026-06-17T19:45:22.447Z	agent.reasoning	thinking
 2026-06-17T19:46:04.119Z	result
 2026-06-17T19:46:04.120Z	completed
 ```
@@ -159,7 +168,7 @@ $ orchestrator watch 3f8d1f30-6c52-49dc-a7f7-3c3e04a98657
 
 ```console
 $ orchestrator read 3f8d1f30-6c52-49dc-a7f7-3c3e04a98657
-The highest-risk missing tests are around detached task supervision, interrupted worker cleanup, and output adapter edge cases.
+The highest-risk missing tests are around detached task supervision, interrupted agent cleanup, and output adapter edge cases.
 ```
 
 ### Check Logs
@@ -175,16 +184,16 @@ $ orchestrator logs 3f8d1f30-6c52-49dc-a7f7-3c3e04a98657 --stream stdout --follo
 ### Check Events
 
 ```console
-$ orchestrator events 3f8d1f30-6c52-49dc-a7f7-3c3e04a98657 --worker-only --json
+$ orchestrator events 3f8d1f30-6c52-49dc-a7f7-3c3e04a98657 --agent-only --json
 [
   {
     "seq": 4,
     "taskId": "3f8d1f30-6c52-49dc-a7f7-3c3e04a98657",
-    "type": "worker_event",
+    "type": "agent_event",
     "data": {
       "runtime": "claude-code",
-      "kind": "system",
-      "subtype": "init"
+      "kind": "runtime.init",
+      "sourceType": "system"
     }
   }
 ]

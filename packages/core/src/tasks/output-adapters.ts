@@ -115,7 +115,7 @@ class JsonlRuntimeOutputAdapter implements RuntimeOutputAdapter {
       parsed = JSON.parse(line) as unknown;
     } catch (error) {
       await this.appendEvent(
-        "worker_event",
+        "agent_event",
         compactData({
           runtime: this.plan.runtime,
           source: "stdout",
@@ -134,7 +134,7 @@ class JsonlRuntimeOutputAdapter implements RuntimeOutputAdapter {
 
     const normalized = normalizeRuntimeEvent(this.plan.runtime, parsed);
     if (normalized) {
-      await this.appendEvent("worker_event", normalized);
+      await this.appendEvent("agent_event", normalized);
     }
   }
 }
