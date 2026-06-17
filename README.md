@@ -81,6 +81,10 @@ pnpm orchestrator --help
 
 ### App Integration
 
+```sh
+npm install @backnotprop/orchestrator-core
+```
+
 Use `@backnotprop/orchestrator-core` when you want the task store, runtime registry, launch plans,
 and supervisor inside your own app instead of the standalone CLI.
 
