@@ -1,0 +1,3 @@
+{"type":"system","subtype":"init","session_id":"fixture-session","model":"claude-fixture"}
+{"type":"assistant","message":{"content":[{"type":"text","text":"fixture assistant message"}]},"session_id":"fixture-session"}
+{"type":"result","subtype":"success","result":"fixture-claude-ok","session_id":"fixture-session","terminal_reason":"completed"}

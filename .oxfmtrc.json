@@ -1,0 +1,12 @@
+{
+  "printWidth": 100,
+  "tabWidth": 2,
+  "useTabs": false,
+  "ignorePatterns": [
+    "**/dist/**",
+    "**/node_modules/**",
+    "**/.orchestrator/**",
+    "**/coverage/**",
+    "pnpm-lock.yaml"
+  ]
+}

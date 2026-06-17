@@ -1,0 +1,12 @@
+node_modules/
+.orchestrator/
+.scratch/
+dist/
+coverage/
+.turbo/
+.cache/
+*.log
+*.tsbuildinfo
+.env
+.env.*
+!.env.example

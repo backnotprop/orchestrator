@@ -1,0 +1,473 @@
+import assert from "node:assert/strict";
+import { execFile } from "node:child_process";
+import { writeFile } from "node:fs/promises";
+import test from "node:test";
+import { fileURLToPath } from "node:url";
+import { promisify } from "node:util";
+import type { AgentTaskRecord, TaskEvent } from "@backnotprop/orchestrator-core";
+import { runCli, waitForTaskStatus, waitUntilRunning, withTempWorkspace } from "./helpers.ts";
+
+const execFileAsync = promisify(execFile);
+const repoRoot = fileURLToPath(new URL("../", import.meta.url));
+
+test("workspace CLI bin invokes the packaged entrypoint", async () => {
+  await withTempWorkspace(async (workspaceRoot) => {
+    const result = await execFileAsync(
+      "pnpm",
+      ["exec", "orchestrator", "list", "--workspace", workspaceRoot],
+      {
+        cwd: repoRoot,
+        timeout: 10_000,
+        env: {
+          ...process.env,
+          HOME: workspaceRoot,
+          XDG_CONFIG_HOME: `${workspaceRoot}/.config`,
+        },
+      },
+    );
+
+    assert.equal(result.stdout.toString(), "No tasks.\n");
+  }, "orchestrator-cli-bin-");
+});
+
+test("CLI help teaches agents the job-control contract", async () => {
+  await withTempWorkspace(async (workspaceRoot) => {
+    const result = await execFileAsync(
+      "pnpm",
+      ["exec", "orchestrator", "--help", "--workspace", workspaceRoot],
+      {
+        cwd: repoRoot,
+        timeout: 10_000,
+        env: {
+          ...process.env,
+          HOME: workspaceRoot,
+          XDG_CONFIG_HOME: `${workspaceRoot}/.config`,
+        },
+      },
+    );
+
+    assert.match(result.stdout.toString(), /Agent instructions:/);
+    assert.match(
+      result.stdout.toString(),
+      /orchestrator launch claude-code --name "review repo" --model sonnet/,
+    );
+    assert.match(
+      result.stdout.toString(),
+      /orchestrator launch codex --name "write tests" --model gpt-5\.4-mini/,
+    );
+    assert.match(result.stdout.toString(), /orchestrator logs <task-id> --stream stderr --follow/);
+    assert.match(result.stdout.toString(), /Use read for the final answer/);
+    assert.match(result.stdout.toString(), /Runtime ids:/);
+  }, "orchestrator-cli-help-");
+});
+
+test("CLI JSON help exposes a machine-readable agent contract", async () => {
+  await withTempWorkspace(async (workspaceRoot) => {
+    const result = await execFileAsync(
+      "pnpm",
+      ["exec", "orchestrator", "help", "--workspace", workspaceRoot, "--json"],
+      {
+        cwd: repoRoot,
+        timeout: 10_000,
+        env: {
+          ...process.env,
+          HOME: workspaceRoot,
+          XDG_CONFIG_HOME: `${workspaceRoot}/.config`,
+        },
+      },
+    );
+    const help = JSON.parse(result.stdout.toString()) as {
+      schemaVersion: number;
+      agentInstructions: string[];
+      runtimes: { id: string; modelFlag?: string }[];
+      commands: { name: string; semantics: string }[];
+      examples: string[];
+      workflows: { name: string; steps: string[] }[];
+    };
+
+    assert.equal(help.schemaVersion, 1);
+    assert.ok(help.agentInstructions.some((instruction) => instruction.includes("Capture taskId")));
+    assert.ok(help.runtimes.some((runtime) => runtime.id === "claude-code" && runtime.modelFlag));
+    assert.ok(help.runtimes.some((runtime) => runtime.id === "codex" && runtime.modelFlag));
+    assert.ok(help.commands.some((command) => command.name === "watch"));
+    assert.ok(help.commands.some((command) => command.name === "logs"));
+    assert.ok(help.examples.some((example) => example.includes("--name")));
+    assert.ok(help.examples.some((example) => example.includes("--follow")));
+    assert.ok(help.workflows.some((workflow) => workflow.name === "start-and-watch"));
+  }, "orchestrator-cli-json-help-");
+});
+
+test("CLI launch accepts task names and list shows names before ids", async () => {
+  await withTempWorkspace(async (workspaceRoot) => {
+    const command = "printf named-ok";
+    const launch = await runCli(workspaceRoot, [
+      "launch",
+      "shell",
+      "--workspace",
+      workspaceRoot,
+      "--name",
+      "review tests",
+      "--allow-disabled-runtime",
+      "--allow-shell-command",
+      command,
+      "--json",
+      command,
+    ]);
+    const launched = JSON.parse(launch.stdout) as AgentTaskRecord;
+    assert.equal(launched.name, "review tests");
+
+    await waitForTaskStatus(workspaceRoot, launched.taskId, "succeeded");
+
+    const list = await runCli(workspaceRoot, ["list", "--workspace", workspaceRoot]);
+    const columns = list.stdout.trim().split("\t");
+    assert.equal(columns[0], "review tests");
+    assert.equal(columns[1], "succeeded");
+    assert.equal(columns[2], "shell");
+    assert.equal(columns[3], "-");
+    assert.match(columns[4] ?? "", /^\d+[smhd] ago$/);
+    assert.equal(columns[5], launched.taskId);
+
+    const jsonList = await runCli(workspaceRoot, ["list", "--workspace", workspaceRoot, "--json"]);
+    const tasks = JSON.parse(jsonList.stdout) as AgentTaskRecord[];
+    assert.equal(tasks[0]?.name, "review tests");
+  }, "orchestrator-cli-names-");
+});
+
+test("CLI loads custom process runtimes from workspace config", async () => {
+  await withTempWorkspace(async (workspaceRoot) => {
+    await writeFile(
+      `${workspaceRoot}/orchestrator.config.json`,
+      `${JSON.stringify(
+        {
+          agents: {
+            "echo-agent": {
+              adapter: "process",
+              command: "node",
+              args: ["-e", "process.stdout.write(process.argv.at(-1) ?? '')", "{prompt}"],
+              output: "text",
+            },
+          },
+        },
+        null,
+        2,
+      )}\n`,
+    );
+
+    const help = await runCli(workspaceRoot, ["help", "--workspace", workspaceRoot, "--json"]);
+    const helpDocument = JSON.parse(help.stdout) as {
+      runtimes: { id: string; executable: string; enabled: boolean }[];
+    };
+    assert.ok(
+      helpDocument.runtimes.some(
+        (runtime) =>
+          runtime.id === "echo-agent" && runtime.executable === "node" && runtime.enabled,
+      ),
+    );
+
+    const launch = await runCli(workspaceRoot, [
+      "launch",
+      "echo-agent",
+      "--workspace",
+      workspaceRoot,
+      "--name",
+      "custom echo",
+      "--json",
+      "custom config works",
+    ]);
+    const launched = JSON.parse(launch.stdout) as AgentTaskRecord;
+    assert.equal(launched.runtime, "echo-agent");
+    assert.equal(launched.launchPlan.executable, "node");
+    assert.deepEqual(launched.launchPlan.args, [
+      "-e",
+      "process.stdout.write(process.argv.at(-1) ?? '')",
+      "custom config works",
+    ]);
+
+    await waitForTaskStatus(workspaceRoot, launched.taskId, "succeeded");
+
+    const read = await runCli(workspaceRoot, [
+      "read",
+      launched.taskId,
+      "--workspace",
+      workspaceRoot,
+    ]);
+    assert.equal(read.stdout, "custom config works");
+
+    const list = await runCli(workspaceRoot, ["list", "--workspace", workspaceRoot]);
+    const columns = list.stdout.trim().split("\t");
+    assert.equal(columns[0], "custom echo");
+    assert.equal(columns[2], "echo-agent");
+  }, "orchestrator-cli-custom-config-");
+});
+
+test("CLI list falls back to the task prompt when no name is provided", async () => {
+  await withTempWorkspace(async (workspaceRoot) => {
+    const command = "printf fallback-ok";
+    const launch = await runCli(workspaceRoot, [
+      "launch",
+      "shell",
+      "--workspace",
+      workspaceRoot,
+      "--allow-disabled-runtime",
+      "--allow-shell-command",
+      command,
+      "--json",
+      command,
+    ]);
+    const launched = JSON.parse(launch.stdout) as AgentTaskRecord;
+
+    await waitForTaskStatus(workspaceRoot, launched.taskId, "succeeded");
+
+    const list = await runCli(workspaceRoot, ["list", "--workspace", workspaceRoot]);
+    const columns = list.stdout.trim().split("\t");
+    assert.equal(columns[0], command);
+    assert.equal(columns[5], launched.taskId);
+  }, "orchestrator-cli-name-fallback-");
+});
+
+test("CLI launches a background task, lists it, and reads the result", async () => {
+  await withTempWorkspace(async (workspaceRoot) => {
+    const command = "printf cli-ok";
+    const launch = await runCli(workspaceRoot, [
+      "launch",
+      "shell",
+      "--workspace",
+      workspaceRoot,
+      "--allow-disabled-runtime",
+      "--allow-shell-command",
+      command,
+      "--json",
+      command,
+    ]);
+    const launched = JSON.parse(launch.stdout) as AgentTaskRecord;
+
+    assert.equal(launched.runtime, "shell");
+    assert.equal(launched.launchPlan.executable, "sh");
+    assert.deepEqual(launched.launchPlan.args, ["-lc", command]);
+
+    const completed = await waitForTaskStatus(workspaceRoot, launched.taskId, "succeeded");
+    assert.equal(completed.exitCode, 0);
+
+    const list = await runCli(workspaceRoot, ["list", "--workspace", workspaceRoot, "--json"]);
+    const tasks = JSON.parse(list.stdout) as AgentTaskRecord[];
+    assert.ok(tasks.some((task) => task.taskId === launched.taskId));
+
+    const read = await runCli(workspaceRoot, [
+      "read",
+      launched.taskId,
+      "--workspace",
+      workspaceRoot,
+    ]);
+    assert.equal(read.stdout, "cli-ok");
+
+    const logs = await runCli(workspaceRoot, [
+      "logs",
+      launched.taskId,
+      "--workspace",
+      workspaceRoot,
+    ]);
+    assert.equal(logs.stdout, "cli-ok");
+
+    const events = await runCli(workspaceRoot, [
+      "events",
+      launched.taskId,
+      "--workspace",
+      workspaceRoot,
+      "--json",
+    ]);
+    const parsedEvents = JSON.parse(events.stdout) as TaskEvent[];
+    assert.ok(parsedEvents.some((event) => event.type === "completed"));
+
+    const watch = await runCli(workspaceRoot, [
+      "watch",
+      launched.taskId,
+      "--workspace",
+      workspaceRoot,
+      "--interval-ms",
+      "10",
+    ]);
+    assert.match(watch.stdout, /completed/);
+    assert.match(watch.stdout, /cli-ok/);
+  }, "orchestrator-cli-test-");
+});
+
+test("CLI launch defaults cwd to --workspace when --cwd is not provided", async () => {
+  await withTempWorkspace(async (workspaceRoot) => {
+    await withTempWorkspace(async (callerRoot) => {
+      const command = "pwd";
+      const launch = await runCli(callerRoot, [
+        "launch",
+        "shell",
+        "--workspace",
+        workspaceRoot,
+        "--allow-disabled-runtime",
+        "--allow-shell-command",
+        command,
+        "--json",
+        command,
+      ]);
+      const launched = JSON.parse(launch.stdout) as AgentTaskRecord;
+      assert.equal(launched.cwd, workspaceRoot);
+      assert.equal(launched.launchPlan.cwd, workspaceRoot);
+
+      const completed = await waitForTaskStatus(workspaceRoot, launched.taskId, "succeeded");
+      assert.equal(completed.cwd, workspaceRoot);
+
+      const read = await runCli(callerRoot, [
+        "read",
+        launched.taskId,
+        "--workspace",
+        workspaceRoot,
+      ]);
+      assert.equal(read.stdout.trim(), workspaceRoot);
+    }, "orchestrator-cli-caller-");
+  }, "orchestrator-cli-workspace-");
+});
+
+test("CLI logs, events, and watch work while a task is running", async () => {
+  await withTempWorkspace(async (workspaceRoot) => {
+    const command =
+      "node -e \"console.log('running-log'); setTimeout(() => console.log('done-log'), 500)\"";
+    const launch = await runCli(workspaceRoot, [
+      "launch",
+      "shell",
+      "--workspace",
+      workspaceRoot,
+      "--allow-disabled-runtime",
+      "--allow-shell-command",
+      command,
+      "--json",
+      command,
+    ]);
+    const launched = JSON.parse(launch.stdout) as AgentTaskRecord;
+
+    await waitUntilRunning(workspaceRoot, launched.taskId);
+    const runningLogs = await waitForCliStdout(
+      workspaceRoot,
+      ["logs", launched.taskId, "--workspace", workspaceRoot, "--stream", "stdout"],
+      /running-log/,
+    );
+    assert.match(runningLogs, /running-log/);
+
+    const runningEvents = await runCli(workspaceRoot, [
+      "events",
+      launched.taskId,
+      "--workspace",
+      workspaceRoot,
+    ]);
+    assert.match(runningEvents.stdout, /"type":"running"/);
+
+    const watch = await runCli(workspaceRoot, [
+      "watch",
+      launched.taskId,
+      "--workspace",
+      workspaceRoot,
+      "--interval-ms",
+      "10",
+    ]);
+    assert.match(watch.stdout, /running-log/);
+    assert.match(watch.stdout, /done-log/);
+    assert.match(watch.stdout, /completed/);
+  }, "orchestrator-cli-running-");
+});
+
+test("CLI logs --follow streams raw output until the task exits", async () => {
+  await withTempWorkspace(async (workspaceRoot) => {
+    const command =
+      "node -e \"console.log('follow-one'); setTimeout(() => console.log('follow-two'), 150)\"";
+    const launch = await runCli(workspaceRoot, [
+      "launch",
+      "shell",
+      "--workspace",
+      workspaceRoot,
+      "--allow-disabled-runtime",
+      "--allow-shell-command",
+      command,
+      "--json",
+      command,
+    ]);
+    const launched = JSON.parse(launch.stdout) as AgentTaskRecord;
+
+    await waitUntilRunning(workspaceRoot, launched.taskId);
+    const followed = await runCli(workspaceRoot, [
+      "logs",
+      launched.taskId,
+      "--workspace",
+      workspaceRoot,
+      "--stream",
+      "stdout",
+      "--follow",
+    ]);
+
+    assert.match(followed.stdout, /follow-one/);
+    assert.match(followed.stdout, /follow-two/);
+    assert.equal(followed.stderr, "");
+  }, "orchestrator-cli-follow-");
+});
+
+test("CLI interrupt cancels a task launched by a detached supervisor", async () => {
+  await withTempWorkspace(async (workspaceRoot) => {
+    const command = 'node -e "setTimeout(() => {}, 5000)"';
+    const launch = await runCli(workspaceRoot, [
+      "launch",
+      "shell",
+      "--workspace",
+      workspaceRoot,
+      "--allow-disabled-runtime",
+      "--allow-shell-command",
+      command,
+      "--json",
+      command,
+    ]);
+    const launched = JSON.parse(launch.stdout) as AgentTaskRecord;
+
+    await waitUntilRunning(workspaceRoot, launched.taskId);
+
+    const earlyRead = await runCli(workspaceRoot, [
+      "read",
+      launched.taskId,
+      "--workspace",
+      workspaceRoot,
+    ]);
+    assert.equal(earlyRead.stdout, "");
+    assert.match(earlyRead.stderr, /No output yet/);
+    assert.match(earlyRead.stderr, /running/);
+
+    const interrupt = await runCli(workspaceRoot, [
+      "interrupt",
+      launched.taskId,
+      "--workspace",
+      workspaceRoot,
+      "--reason",
+      "cli cancellation",
+      "--json",
+    ]);
+    const interrupted = JSON.parse(interrupt.stdout) as AgentTaskRecord;
+    assert.equal(interrupted.status, "cancelled");
+    assert.equal(interrupted.error, "cli cancellation");
+
+    const completed = await waitForTaskStatus(workspaceRoot, launched.taskId, "cancelled");
+    assert.equal(completed.error, "cli cancellation");
+  }, "orchestrator-cli-test-");
+});
+
+async function waitForCliStdout(
+  workspaceRoot: string,
+  args: readonly string[],
+  pattern: RegExp,
+): Promise<string> {
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < 5_000) {
+    const output = await runCli(workspaceRoot, args);
+    if (pattern.test(output.stdout)) {
+      return output.stdout;
+    }
+    await delay(25);
+  }
+
+  assert.fail(`Timed out waiting for CLI output matching ${pattern}.`);
+}
+
+async function delay(ms: number): Promise<void> {
+  await new Promise((resolve) => setTimeout(resolve, ms));
+}

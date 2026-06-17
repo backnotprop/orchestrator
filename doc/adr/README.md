@@ -1,0 +1,16 @@
+# Architecture Decision Records
+
+- [1. Record architecture decisions](0001-record-architecture-decisions.md)
+- [2. Build a focused coding orchestrator agent](0002-build-a-focused-coding-orchestrator-agent.md)
+- [3. Reuse Pi for orchestrator brain provider model auth](0003-reuse-pi-for-orchestrator-brain-provider-model-auth.md)
+- [4. Separate model provider registry from agent runtime registry](0004-separate-model-provider-registry-from-agent-runtime-registry.md)
+- [5. Use typed runtime registry and pure launch plan builders](0005-use-typed-runtime-registry-and-pure-launch-plan-builders.md)
+- [6. Treat subagents as durable asynchronous task sessions](0006-treat-subagents-as-durable-asynchronous-task-sessions.md)
+- [7. Launch external agents through headless runtime adapters](0007-launch-external-agents-through-headless-runtime-adapters.md)
+- [8. Do not require structured worker output in V1](0008-do-not-require-structured-worker-output-in-v1.md)
+- [9. Keep core frontend independent with CLI TUI later](0009-keep-core-frontend-independent-with-cli-tui-later.md)
+- [10. Use worktree isolation for writable workers](0010-use-worktree-isolation-for-writable-workers.md)
+- [11. Keep subagent orchestration parent directed without prebaked recipes](0011-keep-subagent-orchestration-parent-directed-without-prebaked-recipes.md)
+- [12. Scope first release to Claude Code and Codex runtimes](0012-scope-first-release-to-claude-code-and-codex-runtimes.md)
+- [13. Keep CLI job ergonomics lean with launch names, name-first lists, and follow logs](0013-keep-cli-job-ergonomics-lean-with-launch-names-list-names-and-follow-logs.md)
+- [14. Use JSON config for custom sub-agent runtimes](0014-use-json-config-for-custom-sub-agent-runtimes.md)

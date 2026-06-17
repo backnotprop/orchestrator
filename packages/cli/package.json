@@ -1,0 +1,20 @@
+{
+  "name": "@backnotprop/orchestrator-cli",
+  "version": "0.0.0",
+  "bin": {
+    "orchestrator": "./src/cli.ts"
+  },
+  "files": [
+    "src"
+  ],
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@backnotprop/orchestrator-core": "workspace:*"
+  },
+  "engines": {
+    "node": ">=24.0.0"
+  }
+}
