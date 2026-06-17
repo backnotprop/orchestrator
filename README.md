@@ -2,8 +2,9 @@
 
 Manage background agents. Coding agents, general agents, any agent.
 
-Orchestrator is a small control layer for getting powerful outcomes from agents by letting them
-handle longer-horizon work, or any delegated task, on their own without constant hand-holding.
+As agents become more capable, it becomes more useful to start them, leave them running, and manage
+their work in one place. Orchestration of agents is moving to the front. Babysitting them is on the
+way out.
 
 It is a CLI first. The shape is intentionally close to tools like `kubectl`: list jobs, watch one,
 follow logs, stop work that no longer matters.
