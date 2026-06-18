@@ -35,6 +35,12 @@ orchestrator events <task-id>
 orchestrator interrupt <task-id>
 ```
 
+### Custom Agents
+
+Custom agents can be registered in `~/.orchestrator/config.json`.
+
+[Custom Agents](doc/custom-agents.md) · [Flue example](doc/custom-agents.md#flue-example)
+
 ## Install
 
 ### Skill
@@ -125,12 +131,6 @@ import { buildAgentLaunchPlan, launchTask } from "@backnotprop/orchestrator-core
 
 The CLI package is `@backnotprop/orchestrator-cli`. The reusable runtime package is
 `@backnotprop/orchestrator-core`.
-
-### Custom Agents
-
-Custom agents can be registered in `~/.orchestrator/config.json`.
-
-[Custom Agents](doc/custom-agents.md) · [Flue example](doc/custom-agents.md#flue-example)
 
 ## Commands
 
