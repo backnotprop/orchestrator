@@ -97,7 +97,8 @@ echo 'alias o=orchestrator' >> ~/.bashrc
 
 </details>
 
-Install from this repo
+<details>
+<summary>Install from this repo</summary>
 
 ```sh
 pnpm install
@@ -106,6 +107,8 @@ pnpm install
 ```sh
 pnpm orchestrator --help
 ```
+
+</details>
 
 ### App Integration
 
@@ -116,15 +119,18 @@ npm install @backnotprop/orchestrator-core
 Use `@backnotprop/orchestrator-core` when you want the task store, runtime registry, launch plans,
 and supervisor inside your own app instead of the standalone CLI.
 
-See [Custom Agents](doc/custom-agents.md) and the
-[Flue example](doc/custom-agents.md#flue-example).
-
 ```ts
 import { buildAgentLaunchPlan, launchTask } from "@backnotprop/orchestrator-core";
 ```
 
 The CLI package is `@backnotprop/orchestrator-cli`. The reusable runtime package is
 `@backnotprop/orchestrator-core`.
+
+### Custom Agents
+
+Custom agents can be registered in `~/.orchestrator/config.json`. See
+[doc/custom-agents.md](doc/custom-agents.md) and the
+[Flue example](doc/custom-agents.md#flue-example).
 
 ## Commands
 
@@ -144,9 +150,6 @@ First-class targets:
 - Codex
 
 The runtime layer is generic, but the first release is focused on those two.
-Custom agents can be registered in `~/.orchestrator/config.json`. See
-[doc/custom-agents.md](doc/custom-agents.md).
-
 Built-in runtimes can also be disabled in config. See
 [doc/disable-agents.md](doc/disable-agents.md).
 
