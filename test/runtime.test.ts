@@ -330,19 +330,117 @@ test("explicit config remains required when it duplicates a default config path"
   }
 });
 
-test("custom config refuses built-in runtime id collisions", () => {
-  assert.throws(
-    () =>
-      compileOrchestratorConfig({
-        agents: {
-          codex: {
-            adapter: "process",
-            command: "not-codex",
-          },
+test("config can disable built-in runtimes", async () => {
+  const root = await mkdtemp(join(tmpdir(), "orchestrator-config-disable-built-in-"));
+  try {
+    const workspaceRoot = join(root, "workspace");
+    await mkdir(workspaceRoot, { recursive: true });
+    await writeJson(join(workspaceRoot, "orchestrator.config.json"), {
+      agents: {
+        "claude-code": {
+          enabled: false,
         },
-      }),
-    /conflicts|codex/,
-  );
+      },
+    });
+
+    const loaded = await loadConfiguredRuntimeRegistry({
+      workspaceRoot,
+      homeDir: join(root, "home"),
+      env: { XDG_CONFIG_HOME: join(root, "xdg") },
+    });
+
+    assert.equal(loaded.registry["claude-code"], undefined);
+    assert.ok(loaded.registry.codex);
+    assert.throws(
+      () =>
+        buildAgentLaunchPlan(
+          {
+            runtime: "claude-code",
+            task: sampleTask,
+            cwd: sampleCwd,
+          },
+          loaded.registry,
+        ),
+      /Unknown runtime "claude-code"/,
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("later config can re-enable built-in runtimes", async () => {
+  const root = await mkdtemp(join(tmpdir(), "orchestrator-config-reenable-built-in-"));
+  try {
+    const homeDir = join(root, "home");
+    const workspaceRoot = join(root, "workspace");
+    await mkdir(join(homeDir, ".orchestrator"), { recursive: true });
+    await mkdir(workspaceRoot, { recursive: true });
+    await writeJson(join(homeDir, ".orchestrator", "config.json"), {
+      agents: {
+        codex: {
+          enabled: false,
+        },
+      },
+    });
+    await writeJson(join(workspaceRoot, "orchestrator.config.json"), {
+      agents: {
+        codex: {
+          enabled: true,
+        },
+      },
+    });
+
+    const loaded = await loadConfiguredRuntimeRegistry({
+      workspaceRoot,
+      homeDir,
+      env: { XDG_CONFIG_HOME: join(root, "xdg") },
+    });
+
+    assert.equal(loaded.registry.codex?.id, "codex");
+    assert.equal(loaded.registry.codex?.enabled, true);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("config can disable custom runtimes", async () => {
+  const root = await mkdtemp(join(tmpdir(), "orchestrator-config-disable-custom-"));
+  try {
+    const workspaceRoot = join(root, "workspace");
+    await mkdir(workspaceRoot, { recursive: true });
+    await writeJson(join(workspaceRoot, "orchestrator.config.json"), {
+      agents: {
+        reviewer: {
+          enabled: false,
+          adapter: "process",
+          command: "reviewer-agent",
+          output: "text",
+        },
+      },
+    });
+
+    const [compiled] = compileOrchestratorConfig({
+      agents: {
+        reviewer: {
+          enabled: false,
+          adapter: "process",
+          command: "reviewer-agent",
+          output: "text",
+        },
+      },
+    });
+    assert.equal(compiled?.enabled, false);
+
+    const loaded = await loadConfiguredRuntimeRegistry({
+      workspaceRoot,
+      homeDir: join(root, "home"),
+      env: { XDG_CONFIG_HOME: join(root, "xdg") },
+    });
+
+    assert.equal(loaded.registry.reviewer, undefined);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
 });
 
 test("disabled shell runtime requires explicit opt-in", () => {

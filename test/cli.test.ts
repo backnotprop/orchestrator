@@ -97,6 +97,80 @@ test("CLI JSON help exposes a machine-readable agent contract", async () => {
   }, "orchestrator-cli-json-help-");
 });
 
+test("CLI hides configured disabled runtimes and refuses to launch them", async () => {
+  await withTempWorkspace(async (workspaceRoot) => {
+    await writeFile(
+      `${workspaceRoot}/orchestrator.config.json`,
+      `${JSON.stringify(
+        {
+          agents: {
+            "claude-code": {
+              enabled: false,
+            },
+          },
+        },
+        null,
+        2,
+      )}\n`,
+    );
+
+    const jsonHelp = await runCli(workspaceRoot, ["help", "--workspace", workspaceRoot, "--json"]);
+    const helpDocument = JSON.parse(jsonHelp.stdout) as {
+      runtimes: { id: string }[];
+      examples: string[];
+    };
+    assert.equal(
+      helpDocument.runtimes.some((runtime) => runtime.id === "claude-code"),
+      false,
+    );
+    assert.equal(
+      helpDocument.examples.some((example) => example.includes("claude-code")),
+      false,
+    );
+    assert.ok(helpDocument.runtimes.some((runtime) => runtime.id === "codex"));
+
+    const textHelp = await runCli(workspaceRoot, ["--help", "--workspace", workspaceRoot]);
+    assert.doesNotMatch(textHelp.stdout, /claude-code/);
+
+    try {
+      await runCli(workspaceRoot, [
+        "launch",
+        "claude-code",
+        "--workspace",
+        workspaceRoot,
+        "review this repo",
+      ]);
+      assert.fail("Expected disabled claude-code runtime launch to fail.");
+    } catch (error) {
+      const stderr = error instanceof Error && "stderr" in error ? String(error.stderr) : "";
+      assert.match(stderr, /Unknown runtime "claude-code"/);
+    }
+  }, "orchestrator-cli-disable-runtime-");
+});
+
+test("CLI help handles an empty configured runtime list", async () => {
+  await withTempWorkspace(async (workspaceRoot) => {
+    await writeFile(
+      `${workspaceRoot}/orchestrator.config.json`,
+      `${JSON.stringify(
+        {
+          agents: {
+            "claude-code": { enabled: false },
+            codex: { enabled: false },
+            pi: { enabled: false },
+            shell: { enabled: false },
+          },
+        },
+        null,
+        2,
+      )}\n`,
+    );
+
+    const result = await runCli(workspaceRoot, ["--help", "--workspace", workspaceRoot]);
+    assert.match(result.stdout, /Runtime ids:\n  none configured/);
+  }, "orchestrator-cli-no-runtimes-help-");
+});
+
 test("CLI launch accepts task names and list shows names before ids", async () => {
   await withTempWorkspace(async (workspaceRoot) => {
     const command = "printf named-ok";

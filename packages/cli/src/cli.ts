@@ -218,8 +218,9 @@ async function commandLaunch(options: LaunchOptions): Promise<void> {
 }
 
 function buildCliHelpText(registry: RuntimeRegistry = BUILT_IN_AGENT_RUNTIMES): string {
-  const runtimeLines = buildCliHelpDocument(registry)
-    .runtimes.map((runtime) => {
+  const help = buildCliHelpDocument(registry);
+  const runtimeLines = help.runtimes
+    .map((runtime) => {
       const outputModes =
         runtime.outputModes.length > 0 ? runtime.outputModes.join("|") : "default-only";
       const model = runtime.modelFlag ? `model: ${runtime.modelFlag} <model>` : "model: none";
@@ -227,6 +228,8 @@ function buildCliHelpText(registry: RuntimeRegistry = BUILT_IN_AGENT_RUNTIMES): 
       return `  ${runtime.id.padEnd(12)} ${state.padEnd(8)} ${runtime.executable} ${runtime.baseArgs.join(" ")} | ${model} | output: ${outputModes}`;
     })
     .join("\n");
+  const examples = help.examples.map((example) => `  ${example}`).join("\n");
+  const renderedRuntimeLines = runtimeLines || "  none configured";
 
   return `Orchestrator CLI
 Run and supervise headless coding agents.
@@ -265,17 +268,10 @@ Launch options:
   --wait                      Run in the foreground until the task completes.
 
 Runtime ids:
-${runtimeLines}
+${renderedRuntimeLines}
 
 Examples:
-  orchestrator launch claude-code --name "review repo" --model sonnet "review this repo"
-  orchestrator launch codex --name "write tests" --model gpt-5.4-mini "write tests for the task store"
-  orchestrator list --json
-  orchestrator watch <task-id>
-  orchestrator read <task-id>
-  orchestrator logs <task-id> --stream stderr --follow
-  orchestrator events <task-id> --agent-only --json
-  orchestrator interrupt <task-id> --reason "stopping stale agent"
+${examples}
 
 Shell test options:
   --allow-disabled-runtime    Permit launching disabled runtimes such as shell.
@@ -292,7 +288,7 @@ function buildCliHelpDocument(
     schemaVersion: 1,
     purpose: "Launch and supervise headless coding agents as durable background tasks.",
     agentInstructions: [
-      "Use launch to start Claude Code, Codex, or another registered runtime.",
+      "Use launch to start a registered runtime.",
       "Capture taskId from launch output; all inspection and control commands use that id.",
       "Prefer --json for machine-readable command output.",
       "Use read for the final agent answer.",
@@ -432,29 +428,46 @@ function buildCliHelpDocument(
         ],
       },
     ],
-    examples: [
-      'orchestrator launch claude-code --name "review repo" --model sonnet "review this repo"',
-      'orchestrator launch codex --name "write tests" --model gpt-5.4-mini "write tests for the task store"',
-      "orchestrator list --json",
-      "orchestrator watch <task-id>",
-      "orchestrator read <task-id>",
-      "orchestrator logs <task-id> --stream stderr --follow",
-      "orchestrator events <task-id> --agent-only --json",
-      'orchestrator interrupt <task-id> --reason "stopping stale agent"',
-    ],
+    examples: buildCliExamples(registry),
   };
 }
 
 function orderedRuntimeConfigs(registry: RuntimeRegistry): HeadlessAgentRuntimeConfig[] {
   const builtInIds = new Set<string>(ALL_AGENT_RUNTIMES);
-  const builtIn = ALL_AGENT_RUNTIMES.map((runtimeId) => registry[runtimeId]).filter(
-    (runtime): runtime is HeadlessAgentRuntimeConfig => Boolean(runtime),
-  );
+  const builtIn = ALL_AGENT_RUNTIMES.map((runtimeId) => registry[runtimeId])
+    .filter((runtime): runtime is HeadlessAgentRuntimeConfig => Boolean(runtime))
+    .filter((runtime) => runtime.enabled);
   const custom = Object.values(registry)
     .filter((runtime): runtime is HeadlessAgentRuntimeConfig => Boolean(runtime))
     .filter((runtime) => !builtInIds.has(runtime.id))
+    .filter((runtime) => runtime.enabled)
     .sort((a, b) => a.id.localeCompare(b.id));
   return [...builtIn, ...custom];
+}
+
+function buildCliExamples(registry: RuntimeRegistry): string[] {
+  const examples: string[] = [];
+
+  if (registry["claude-code"]?.enabled) {
+    examples.push(
+      'orchestrator launch claude-code --name "review repo" --model sonnet "review this repo"',
+    );
+  }
+  if (registry.codex?.enabled) {
+    examples.push(
+      'orchestrator launch codex --name "write tests" --model gpt-5.4-mini "write tests for the task store"',
+    );
+  }
+
+  return [
+    ...examples,
+    "orchestrator list --json",
+    "orchestrator watch <task-id>",
+    "orchestrator read <task-id>",
+    "orchestrator logs <task-id> --stream stderr --follow",
+    "orchestrator events <task-id> --agent-only --json",
+    'orchestrator interrupt <task-id> --reason "stopping stale agent"',
+  ];
 }
 
 async function commandList(options: ListOptions): Promise<void> {

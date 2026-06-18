@@ -14,3 +14,4 @@
 - [12. Scope first release to Claude Code and Codex runtimes](0012-scope-first-release-to-claude-code-and-codex-runtimes.md)
 - [13. Keep CLI job ergonomics lean with launch names, name-first lists, and follow logs](0013-keep-cli-job-ergonomics-lean-with-launch-names-list-names-and-follow-logs.md)
 - [14. Use JSON config for custom sub-agent runtimes](0014-use-json-config-for-custom-sub-agent-runtimes.md)
+- [15. Allow config to disable built-in agent runtimes](0015-allow-config-to-disable-built-in-agent-runtimes.md)

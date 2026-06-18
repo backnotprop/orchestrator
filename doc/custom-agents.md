@@ -29,10 +29,37 @@ order:
 </details>
 
 Later files override earlier custom agents with the same name. Built-in names,
-such as `claude-code` and `codex`, cannot be overridden.
+such as `claude-code` and `codex`, can be enabled or disabled.
 
 The top-level `agents` object maps names to how each agent starts. The name is
 what you pass to `orchestrator launch`.
+
+## Disable Agents
+
+Use `enabled: false` when an agent should not be available in this
+environment.
+
+```json
+{
+  "agents": {
+    "claude-code": { "enabled": false },
+    "codex": { "enabled": true }
+  }
+}
+```
+
+Disabled agents are hidden from `orchestrator --help`, hidden from
+`orchestrator help --json`, and cannot be launched.
+
+Later config files can re-enable a built-in agent:
+
+```json
+{
+  "agents": {
+    "claude-code": { "enabled": true }
+  }
+}
+```
 
 ## Process Agents
 
@@ -67,6 +94,7 @@ The CLI only needs the name, `reviewer`. The adapter details stay in config.
 V1 fields:
 
 - `adapter`: must be `process`
+- `enabled`: optional; defaults to `true`
 - `command`: executable name or path
 - `args`: argv array; use `{prompt}` where the task should go
 - `prompt`: optional fallback when no `{prompt}` placeholder is present;

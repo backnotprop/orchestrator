@@ -28,6 +28,18 @@ type ConfigSource = {
   required: boolean;
 };
 
+type OrchestratorConfigAction =
+  | {
+      kind: "register-runtime";
+      runtime: HeadlessAgentRuntimeConfig;
+      enabled: boolean;
+    }
+  | {
+      kind: "set-enabled";
+      id: string;
+      enabled: boolean;
+    };
+
 const DEFAULT_TIMEOUT_MS = 900_000;
 const DEFAULT_MAX_OUTPUT_BYTES = 200_000;
 const BUILT_IN_RUNTIME_IDS = new Set(Object.keys(BUILT_IN_AGENT_RUNTIMES));
@@ -48,9 +60,12 @@ export function getDefaultOrchestratorConfigPaths(
 export async function loadConfiguredRuntimeRegistry(
   options: OrchestratorConfigLoadOptions = {},
 ): Promise<ConfiguredRuntimeRegistry> {
+  const knownRuntimes: Record<string, HeadlessAgentRuntimeConfig> = {};
   const registry: Record<string, HeadlessAgentRuntimeConfig> = {};
+
   for (const runtime of Object.values(options.baseRegistry ?? BUILT_IN_AGENT_RUNTIMES)) {
     if (runtime) {
+      knownRuntimes[runtime.id] = runtime;
       registry[runtime.id] = runtime;
     }
   }
@@ -63,13 +78,8 @@ export async function loadConfiguredRuntimeRegistry(
     }
 
     loadedConfigPaths.push(source.path);
-    for (const runtime of compileOrchestratorConfig(raw, source.path)) {
-      if (BUILT_IN_RUNTIME_IDS.has(runtime.id)) {
-        throw new OrchestratorConfigError(
-          `${source.path}: custom agent "${runtime.id}" conflicts with a built-in runtime id.`,
-        );
-      }
-      registry[runtime.id] = runtime;
+    for (const action of compileOrchestratorConfigActions(raw, source.path)) {
+      applyConfigAction(action, registry, knownRuntimes, source.path);
     }
   }
 
@@ -80,6 +90,15 @@ export function compileOrchestratorConfig(
   value: unknown,
   sourcePath = "orchestrator.config.json",
 ): HeadlessAgentRuntimeConfig[] {
+  return compileOrchestratorConfigActions(value, sourcePath).flatMap((action) =>
+    action.kind === "register-runtime" ? [{ ...action.runtime, enabled: action.enabled }] : [],
+  );
+}
+
+function compileOrchestratorConfigActions(
+  value: unknown,
+  sourcePath = "orchestrator.config.json",
+): OrchestratorConfigAction[] {
   if (!isRecord(value)) {
     throw new OrchestratorConfigError(`${sourcePath}: config must be a JSON object.`);
   }
@@ -89,22 +108,77 @@ export function compileOrchestratorConfig(
     return [];
   }
 
-  return Object.entries(agents).map(([id, config]) => {
+  return Object.entries(agents).flatMap(([id, config]) => {
     if (!isValidRuntimeId(id)) {
       throw new OrchestratorConfigError(
         `${sourcePath}: agent id "${id}" must use letters, numbers, dots, dashes, or underscores.`,
       );
     }
-    if (BUILT_IN_RUNTIME_IDS.has(id)) {
-      throw new OrchestratorConfigError(
-        `${sourcePath}: custom agent "${id}" conflicts with a built-in runtime id.`,
-      );
-    }
     if (!isRecord(config)) {
       throw new OrchestratorConfigError(`${sourcePath}: agents.${id} must be an object.`);
     }
-    return compileProcessRuntime(id, config, sourcePath);
+    const enabled = optionalBoolean(config, "enabled", sourcePath, id);
+
+    if (BUILT_IN_RUNTIME_IDS.has(id)) {
+      return enabled === undefined ? [] : [{ kind: "set-enabled", id, enabled }];
+    }
+
+    if (!hasRuntimeDefinition(config)) {
+      if (enabled === undefined) {
+        return [compileProcessRuntimeAction(id, config, sourcePath, true)];
+      }
+      return [{ kind: "set-enabled", id, enabled }];
+    }
+
+    return [compileProcessRuntimeAction(id, config, sourcePath, enabled ?? true)];
   });
+}
+
+function compileProcessRuntimeAction(
+  id: string,
+  config: Record<string, unknown>,
+  sourcePath: string,
+  enabled: boolean,
+): OrchestratorConfigAction {
+  return {
+    kind: "register-runtime",
+    runtime: compileProcessRuntime(id, config, sourcePath),
+    enabled,
+  };
+}
+
+function applyConfigAction(
+  action: OrchestratorConfigAction,
+  registry: Record<string, HeadlessAgentRuntimeConfig>,
+  knownRuntimes: Record<string, HeadlessAgentRuntimeConfig>,
+  sourcePath: string,
+): void {
+  if (action.kind === "register-runtime") {
+    const runtime = { ...action.runtime, enabled: action.enabled };
+    knownRuntimes[runtime.id] = runtime;
+    if (action.enabled) {
+      registry[runtime.id] = runtime;
+    } else {
+      delete registry[runtime.id];
+    }
+    return;
+  }
+
+  if (!action.enabled) {
+    delete registry[action.id];
+    return;
+  }
+
+  const runtime = knownRuntimes[action.id];
+  if (!runtime) {
+    throw new OrchestratorConfigError(
+      `${sourcePath}: agents.${action.id} cannot be enabled without a runtime definition.`,
+    );
+  }
+
+  const enabledRuntime = { ...runtime, enabled: true };
+  knownRuntimes[action.id] = enabledRuntime;
+  registry[action.id] = enabledRuntime;
 }
 
 function configSources(options: OrchestratorConfigLoadOptions): ConfigSource[] {
@@ -396,6 +470,22 @@ function optionalPositiveInteger(
   return value;
 }
 
+function optionalBoolean(
+  config: Record<string, unknown>,
+  key: string,
+  sourcePath: string,
+  id: string,
+): boolean | undefined {
+  const value = config[key];
+  if (value === undefined) {
+    return undefined;
+  }
+  if (typeof value !== "boolean") {
+    throw new OrchestratorConfigError(`${sourcePath}: agents.${id}.${key} must be a boolean.`);
+  }
+  return value;
+}
+
 function optionalRecord(
   config: Record<string, unknown>,
   key: string,
@@ -421,6 +511,10 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function isValidRuntimeId(value: string): boolean {
   return /^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(value);
+}
+
+function hasRuntimeDefinition(config: Record<string, unknown>): boolean {
+  return config.adapter !== undefined || config.command !== undefined;
 }
 
 function stringOrUndefined(value: string | undefined): string | undefined {

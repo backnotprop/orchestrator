@@ -119,6 +119,9 @@ The runtime layer is generic, but the first release is focused on those two.
 Custom agents can be registered in `~/.orchestrator/config.json`. See
 [doc/custom-agents.md](doc/custom-agents.md).
 
+Built-in runtimes can also be disabled in config. See
+[doc/disable-agents.md](doc/disable-agents.md).
+
 ## Files
 
 Task state is stored under:
