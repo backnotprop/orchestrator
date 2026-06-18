@@ -1,0 +1,23 @@
+{
+  "name": "orchestrator",
+  "version": "0.1.0",
+  "description": "Teach agents how to use the Orchestrator CLI for background agent tasks.",
+  "author": {
+    "name": "backnotprop",
+    "url": "https://github.com/backnotprop"
+  },
+  "homepage": "https://github.com/backnotprop/orchestrator",
+  "repository": "https://github.com/backnotprop/orchestrator",
+  "license": "MIT",
+  "keywords": ["agents", "orchestration", "cli", "skills"],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Orchestrator",
+    "shortDescription": "Use the Orchestrator CLI to manage background agents.",
+    "longDescription": "Adds a compact skill that teaches agents how to install and use Orchestrator as a CLI for launching, watching, reading, logging, and interrupting background agent tasks.",
+    "developerName": "backnotprop",
+    "category": "Productivity",
+    "capabilities": ["Write"],
+    "defaultPrompt": ["Use Orchestrator to launch and manage background agent work."]
+  }
+}

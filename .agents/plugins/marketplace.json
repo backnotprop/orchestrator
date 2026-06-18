@@ -1,0 +1,20 @@
+{
+  "name": "orchestrator",
+  "interface": {
+    "displayName": "Orchestrator"
+  },
+  "plugins": [
+    {
+      "name": "orchestrator",
+      "source": {
+        "source": "url",
+        "url": "https://github.com/backnotprop/orchestrator.git"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Productivity"
+    }
+  ]
+}

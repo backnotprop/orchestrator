@@ -2,11 +2,17 @@
 
 Manage background agents. Coding agents, general agents, any agent.
 
-_As agents become more capable, it becomes more useful to start them, leave them running, and manage
-their work in one place. Orchestration of agents is moving to the front. Babysitting them is on the
-way out._
+_As agents become more capable, it becomes more useful to start them, leave them running, and manage_  
+_their work in one place. Orchestration of agents is moving to the front. Babysitting them is on the_  
+_way out._
 
-It is agent-CLI first. The shape is intentionally close to tools like `kubectl`.
+It is agent-CLI first, and can be used as a skill:
+
+```bash
+/orchestrator Launch a GPT 5.5 agent to implement the ADR
+```
+
+The shape is intentionally close to tools like `kubectl`.
 
 ```sh
 orchestrator launch claude-code --name "review tests" --model sonnet "Find missing tests."
@@ -31,6 +37,31 @@ orchestrator interrupt <task-id>
 
 ## Install
 
+### Skill
+
+```bash
+npx skills add backnotprop/orchestrator
+```
+
+<details>
+<summary>Install Claude or Codex plugins</summary>
+
+Codex:
+
+```sh
+codex plugin marketplace add backnotprop/orchestrator
+codex plugin add orchestrator@orchestrator
+```
+
+Claude Code:
+
+```text
+/plugin marketplace add backnotprop/orchestrator
+/plugin install orchestrator@orchestrator
+```
+
+</details>
+
 ### CLI
 
 Install the CLI:
@@ -49,8 +80,7 @@ Optional alias:
 alias o=orchestrator
 ```
 
-<details>
-<summary>Persist the alias</summary>
+Persist the alias
 
 For zsh:
 
@@ -64,10 +94,7 @@ For bash:
 echo 'alias o=orchestrator' >> ~/.bashrc
 ```
 
-</details>
-
-<details>
-<summary>Install from this repo</summary>
+Install from this repo
 
 ```sh
 pnpm install
@@ -76,8 +103,6 @@ pnpm install
 ```sh
 pnpm orchestrator --help
 ```
-
-</details>
 
 ### App Integration
 

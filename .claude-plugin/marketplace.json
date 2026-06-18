@@ -1,0 +1,22 @@
+{
+  "name": "orchestrator",
+  "owner": {
+    "name": "backnotprop"
+  },
+  "description": "Orchestrator skill plugin.",
+  "plugins": [
+    {
+      "name": "orchestrator",
+      "source": {
+        "source": "github",
+        "repo": "backnotprop/orchestrator"
+      },
+      "description": "Teach agents how to use the Orchestrator CLI for background agent tasks.",
+      "homepage": "https://github.com/backnotprop/orchestrator",
+      "repository": "https://github.com/backnotprop/orchestrator",
+      "license": "MIT",
+      "keywords": ["agents", "orchestration", "cli", "skills"],
+      "category": "productivity"
+    }
+  ]
+}
