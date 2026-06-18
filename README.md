@@ -1,10 +1,6 @@
 # Orchestrator
 
-Manage background agents. Coding agents, general agents, any agent.
-
-_As agents become more capable, it becomes more useful to start them, leave them running, and manage_  
-_their work in one place. Orchestration of agents is moving to the front. Babysitting them is on the_  
-_way out._
+Manage background agents. Coding agents, general agents, any agent. Orchestration of agents is moving to the front. Babysitting them is on the way out.
 
 It is agent-CLI first, and can be used as a skill:
 
