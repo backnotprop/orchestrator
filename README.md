@@ -80,7 +80,8 @@ Optional alias:
 alias o=orchestrator
 ```
 
-Persist the alias
+<details>
+<summary>Persist the alias</summary>
 
 For zsh:
 
@@ -93,6 +94,8 @@ For bash:
 ```sh
 echo 'alias o=orchestrator' >> ~/.bashrc
 ```
+
+</details>
 
 Install from this repo
 
