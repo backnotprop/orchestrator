@@ -128,9 +128,9 @@ The CLI package is `@backnotprop/orchestrator-cli`. The reusable runtime package
 
 ### Custom Agents
 
-Custom agents can be registered in `~/.orchestrator/config.json`. See
-[doc/custom-agents.md](doc/custom-agents.md) and the
-[Flue example](doc/custom-agents.md#flue-example).
+Custom agents can be registered in `~/.orchestrator/config.json`.
+
+[Custom Agents](doc/custom-agents.md) · [Flue example](doc/custom-agents.md#flue-example)
 
 ## Commands
 
