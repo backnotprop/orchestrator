@@ -257,8 +257,7 @@ test("CLI run --background creates a managed parent task", async () => {
     assert.equal(finished.status, "failed");
 
     const ps = await runCli(workspaceRoot, ["ps", "--workspace", workspaceRoot, "--all"]);
-    assert.match(ps.stdout, /PARENT/);
-    assert.match(ps.stdout, /parent smoke/);
+    assert.match(ps.stdout, /parent smoke\s+failed\s+1 agent\s+1 failed/);
     assert.match(ps.stdout, /orchestrator/);
   }, "orchestrator-cli-run-background-");
 });
@@ -393,10 +392,12 @@ test("CLI ps shows grouped operations view and exposes JSON rows", async () => {
     await waitForTaskStatus(workspaceRoot, launched.taskId, "succeeded");
 
     const text = await runCli(workspaceRoot, ["ps", "--workspace", workspaceRoot]);
-    assert.match(text.stdout, /MANUAL\s+1 agent\s+1 done/);
-    assert.match(text.stdout, /dur\s+tokens\s+started/);
+    assert.match(text.stdout, /updated \d{2}:\d{2}:\d{2}\s+0 running\s+1 done/);
+    assert.match(text.stdout, /manual launches\s+done\s+1 agent\s+1 done/);
+    assert.match(text.stdout, /agent\s+work\s+status\s+model\s+started\s+dur\s+tok\s+last\s+id/);
     assert.match(text.stdout, /check email/);
-    assert.match(text.stdout, /succeeded/);
+    assert.match(text.stdout, /done/);
+    assert.doesNotMatch(text.stdout, /completed/);
     assert.match(text.stdout, /shell/);
     assert.match(text.stdout, new RegExp(launched.taskId.slice(0, 8)));
 
@@ -434,7 +435,7 @@ test("CLI ps shows grouped operations view and exposes JSON rows", async () => {
     );
 
     const all = await runCli(workspaceRoot, ["ps", "--workspace", workspaceRoot, "--all"]);
-    assert.match(all.stdout, /MANUAL\s+1 agent\s+1 done/);
+    assert.match(all.stdout, /manual launches\s+done\s+1 agent\s+1 done/);
   }, "orchestrator-cli-ps-");
 });
 
@@ -497,12 +498,67 @@ test("CLI ps --watch refreshes the grouped operations view while a task runs", a
     }
 
     assert.equal(stderr, "");
-    assert.match(stdout, /MANUAL\s+1 agent\s+1 running/);
+    assert.match(stdout, /manual launches\s+running\s+1 agent\s+1 running/);
     assert.match(stdout, /watch group/);
     assert.match(stdout, /running/);
 
     await waitForTaskStatus(workspaceRoot, launched.taskId, "succeeded");
   }, "orchestrator-cli-ps-watch-");
+});
+
+test("CLI ps shows readable nested JSON runtime errors", async () => {
+  await withTempWorkspace(async (workspaceRoot) => {
+    const script = [
+      "const event = {",
+      'type: "error",',
+      "message: JSON.stringify({",
+      'type: "error",',
+      "error: {",
+      'type: "invalid_request_error",',
+      'message: "model unsupported",',
+      "},",
+      "}),",
+      "};",
+      "console.log(JSON.stringify(event));",
+      "process.exit(1);",
+    ].join("");
+
+    await writeFile(
+      `${workspaceRoot}/orchestrator.config.json`,
+      `${JSON.stringify(
+        {
+          agents: {
+            "json-error-agent": {
+              adapter: "process",
+              command: "node",
+              args: ["-e", script, "{prompt}"],
+              output: { format: "jsonl", finalEvent: "done" },
+            },
+          },
+        },
+        null,
+        2,
+      )}\n`,
+    );
+
+    const launch = await runCli(workspaceRoot, [
+      "launch",
+      "json-error-agent",
+      "--workspace",
+      workspaceRoot,
+      "--name",
+      "bad model",
+      "--json",
+      "trigger error",
+    ]);
+    const launched = JSON.parse(launch.stdout) as AgentTaskRecord;
+    await waitForTaskStatus(workspaceRoot, launched.taskId, "failed");
+
+    const text = await runCli(workspaceRoot, ["ps", "--workspace", workspaceRoot, "--all"]);
+    assert.match(text.stdout, /bad model/);
+    assert.match(text.stdout, /model unsupported/);
+    assert.doesNotMatch(text.stdout, /invalid_request_error/);
+  }, "orchestrator-cli-ps-json-error-");
 });
 
 test("CLI loads custom process runtimes from workspace config", async () => {

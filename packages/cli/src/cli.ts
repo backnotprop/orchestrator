@@ -24,6 +24,7 @@ import {
   getTaskPaths,
   getRuntimeConfig,
   interruptTask,
+  isTerminalTaskStatus as isTerminalStatus,
   launchTask,
   listTasks,
   loadConfiguredRuntimeRegistry,
@@ -41,6 +42,9 @@ import type {
   TaskStatus,
   AgentLaunchPlan,
 } from "@backnotprop/orchestrator-core";
+import { renderPsView } from "./render-ps.ts";
+import { countRenderedLines, renderWatchFrame, terminalColumns } from "./terminal-frame.ts";
+import { formatInline } from "./terminal-format.ts";
 
 type CommonOptions = {
   workspaceRoot: string;
@@ -2100,246 +2104,6 @@ function formatTaskListLine(
   );
 }
 
-type PsColumnWidths = {
-  name: number;
-  status: number;
-  runtime: number;
-  model: number;
-  started: number;
-  duration: number;
-  tokens: number;
-  last: number;
-};
-
-function renderPsView(view: AgentTaskPsView, options: { columns?: number } = {}): string {
-  if (view.groups.length === 0) {
-    return "No tasks.\n";
-  }
-
-  const widths = psColumnWidths(options.columns);
-  const lines: string[] = [`updated ${view.generatedAt}`];
-
-  for (const group of view.groups) {
-    lines.push("");
-    lines.push(formatPsGroupHeading(group));
-    lines.push(
-      `  ${padCell("name", widths.name)} ${padCell("status", widths.status)} ${padCell(
-        "runtime",
-        widths.runtime,
-      )} ${padCell("model", widths.model)} ${padCell("dur", widths.duration)} ${padCell(
-        "tokens",
-        widths.tokens,
-      )} ${padCell("started", widths.started)} ${padCell("last", widths.last)} id`,
-    );
-
-    for (const row of group.rows) {
-      lines.push(
-        `  ${padCell(row.name, widths.name)} ${padCell(row.status, widths.status)} ${padCell(
-          row.runtime,
-          widths.runtime,
-        )} ${padCell(
-          row.model ?? "-",
-          widths.model,
-        )} ${padCell(formatRowDuration(row), widths.duration)} ${padCell(
-          formatTokenUsage(row.usage?.totalTokens),
-          widths.tokens,
-        )} ${padCell(formatStartedAt(row, view.generatedAt), widths.started)} ${padCell(
-          row.error ?? row.lastMessage ?? row.lastEvent ?? "-",
-          widths.last,
-        )} ${row.shortTaskId}`,
-      );
-    }
-  }
-
-  return `${lines.join("\n")}\n`;
-}
-
-function psColumnWidths(columns: number | undefined): PsColumnWidths {
-  const wide = {
-    name: 22,
-    status: 10,
-    runtime: 12,
-    model: 16,
-    started: 13,
-    duration: 6,
-    tokens: 9,
-    last: 28,
-  };
-  if (!columns || columns >= psTableWidth(wide)) {
-    return wide;
-  }
-
-  const compact = {
-    name: 18,
-    status: 9,
-    runtime: 10,
-    model: 12,
-    started: 8,
-    duration: 5,
-    tokens: 7,
-    last: 16,
-  };
-  if (columns >= psTableWidth(compact)) {
-    return compact;
-  }
-
-  return {
-    name: 12,
-    status: 9,
-    runtime: 7,
-    model: 7,
-    started: 8,
-    duration: 3,
-    tokens: 6,
-    last: 8,
-  };
-}
-
-function psTableWidth(widths: PsColumnWidths): number {
-  return (
-    2 +
-    widths.name +
-    widths.status +
-    widths.runtime +
-    widths.model +
-    widths.started +
-    widths.duration +
-    widths.tokens +
-    widths.last +
-    8 +
-    8
-  );
-}
-
-function formatPsGroupHeading(group: AgentTaskPsView["groups"][number]): string {
-  return [
-    group.groupId === "ungrouped" ? "MANUAL" : "PARENT",
-    group.groupId === "ungrouped" ? undefined : group.label,
-    `${group.total} ${group.total === 1 ? "agent" : "agents"}`,
-    group.running > 0 ? `${group.running} running` : undefined,
-    group.succeeded > 0 ? `${group.succeeded} done` : undefined,
-    group.failed > 0 ? `${group.failed} failed` : undefined,
-    group.usage?.totalTokens !== undefined
-      ? `tokens ${formatTokenUsage(group.usage.totalTokens)}`
-      : undefined,
-  ]
-    .filter(Boolean)
-    .join("  ");
-}
-
-function padCell(value: string, width: number): string {
-  const inline = formatInline(value);
-  const truncated =
-    inline.length > width ? `${inline.slice(0, Math.max(0, width - 3))}...` : inline;
-  return truncated.padEnd(width);
-}
-
-function formatRowDuration(row: AgentTaskPsView["rows"][number]): string {
-  if (row.durationMs !== undefined) {
-    return formatDuration(row.durationMs);
-  }
-  return formatDuration(row.ageMs);
-}
-
-const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
-
-function formatStartedAt(row: AgentTaskPsView["rows"][number], generatedAt: string): string {
-  const timestamp = row.startedAt ?? row.createdAt;
-  const value = new Date(timestamp);
-  if (!Number.isFinite(value.getTime())) {
-    return "-";
-  }
-
-  const generated = new Date(generatedAt);
-  if (isSameLocalDate(value, generated)) {
-    return `${padNumber(value.getHours())}:${padNumber(value.getMinutes())}:${padNumber(
-      value.getSeconds(),
-    )}`;
-  }
-
-  return `${MONTHS[value.getMonth()]} ${value.getDate()} ${padNumber(value.getHours())}:${padNumber(
-    value.getMinutes(),
-  )}`;
-}
-
-function isSameLocalDate(left: Date, right: Date): boolean {
-  return (
-    left.getFullYear() === right.getFullYear() &&
-    left.getMonth() === right.getMonth() &&
-    left.getDate() === right.getDate()
-  );
-}
-
-function padNumber(value: number): string {
-  return String(value).padStart(2, "0");
-}
-
-function renderWatchFrame(rendered: string, previousLineCount: number): string {
-  const moveToFrameStart = previousLineCount > 0 ? `\x1b[${previousLineCount}A\r` : "\r";
-  return `\x1b[?25l${moveToFrameStart}${clearRenderedLines(rendered)}\x1b[J\x1b[?25h`;
-}
-
-function clearRenderedLines(rendered: string): string {
-  const endsWithNewline = rendered.endsWith("\n");
-  const lines = endsWithNewline ? rendered.slice(0, -1).split("\n") : rendered.split("\n");
-  const cleared = lines.map((line) => `\r\x1b[2K${line}`).join("\r\n");
-  return endsWithNewline ? `${cleared}\r\n` : cleared;
-}
-
-function countRenderedLines(rendered: string, columns: number | undefined): number {
-  const withoutTrailingNewline = rendered.endsWith("\n") ? rendered.slice(0, -1) : rendered;
-  if (!withoutTrailingNewline) {
-    return 0;
-  }
-
-  return withoutTrailingNewline
-    .split("\n")
-    .reduce((count, line) => count + countPhysicalLines(line, columns), 0);
-}
-
-function countPhysicalLines(line: string, columns: number | undefined): number {
-  if (!columns || columns <= 0) {
-    return 1;
-  }
-  return Math.max(1, Math.ceil(line.length / columns));
-}
-
-function terminalColumns(): number | undefined {
-  return process.stdout.isTTY ? process.stdout.columns : undefined;
-}
-
-function formatDuration(ms: number): string {
-  const seconds = Math.max(0, Math.floor(ms / 1000));
-  if (seconds < 60) {
-    return `${seconds}s`;
-  }
-
-  const minutes = Math.floor(seconds / 60);
-  if (minutes < 60) {
-    return `${minutes}m`;
-  }
-
-  const hours = Math.floor(minutes / 60);
-  if (hours < 24) {
-    return `${hours}h`;
-  }
-
-  return `${Math.floor(hours / 24)}d`;
-}
-
-function formatTokenUsage(tokens: number | undefined): string {
-  if (tokens === undefined) {
-    return "-";
-  }
-  if (tokens < 1_000) {
-    return String(tokens);
-  }
-  if (tokens < 1_000_000) {
-    return `${(tokens / 1_000).toFixed(tokens < 10_000 ? 1 : 0)}k`;
-  }
-  return `${(tokens / 1_000_000).toFixed(1)}m`;
-}
-
 function displayTaskName(task: AgentTaskRecord): string {
   const name = task.name ?? summarizeTask(task);
   return formatInline(name || "(unnamed)");
@@ -2588,26 +2352,12 @@ function eventDataString(event: TaskEvent, key: string): string | undefined {
   return undefined;
 }
 
-function formatInline(value: string): string {
-  const oneLine = value.replace(/\s+/g, " ").trim();
-  return oneLine.length > 240 ? `${oneLine.slice(0, 237)}...` : oneLine;
-}
-
 function formatError(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
 function isMissingFile(error: unknown): boolean {
   return error instanceof Error && "code" in error && error.code === "ENOENT";
-}
-
-function isTerminalStatus(status: TaskStatus): boolean {
-  return (
-    status === "succeeded" ||
-    status === "failed" ||
-    status === "cancelled" ||
-    status === "timed_out"
-  );
 }
 
 async function delay(ms: number): Promise<void> {
