@@ -3,20 +3,18 @@
 Manage background agents. Coding agents, agent assistants, any agent. <br/>
 _Orchestration of agents is moving to the front. Hand holding is on the way out._
 
-Orchestrator enables you or your agents to run other agents. It is agent-CLI
-first: the main interface is a small CLI that another agent can learn and call.
-Humans can use the same CLI directly when they want to operate the system
-themselves.
+Orchestrator lets you and your agents launch, watch, read, and stop other
+agents.
 
-Skills, plugins, the CLI, and the future TUI all use the same task state.
+It is agent-CLI first. Agents call it through a skill or plugin. Humans can use
+the same CLI directly. The CLI now and the future TUI share the same task state.
 
 ## How To Use It
 
 ### From An Agent
 
 The preferred path is through an agent skill or plugin. Ask your agent to
-delegate work, and it can use Orchestrator to start, watch, read, or stop other
-agents.
+delegate work.
 
 ```bash
 /orchestrator Launch a Codex agent to inspect the task store.
@@ -24,24 +22,23 @@ agents.
 
 ### Let Orchestrator Coordinate
 
-Use `run` when you want Orchestrator itself to think, launch child agents, wait
-on them, and report back.
+Use `run` when Orchestrator should coordinate other agents for you.
 
 ```sh
 orchestrator run "Launch a Claude Code agent to do x, launch a Codex agent to do y"
 ```
 
-Use `--background` when the parent run should be managed like any other task.
+Use `--background` when Orchestrator should keep running as a managed task.
 
 ```sh
-orchestrator run --background --name "api and store review" "Launch a Claude Code agent to review the API package, launch a Codex agent to inspect the task store, wait for both, then summarize what they found."
+orchestrator run --background --name "repo work" "Launch a Claude Code agent to do x, launch a Codex agent to do y"
 orchestrator ps --watch
 orchestrator read <task-id>
 ```
 
 ### Coordinate Agents Yourself
 
-Use `launch` when you want to be the operator and start agents directly.
+Use `launch` when you want to start agents directly.
 
 ```sh
 orchestrator launch claude-code --name "review tests" --model sonnet "Find missing tests."
@@ -56,7 +53,7 @@ inspect store    running  codex        gpt-5.4-mini   1m ago  a6d00f1d-25b4-4dd3
 check email      running  custom       glm-5.2        30s ago  d09edec6-2f14-48fc-924c-ec9f26b61ca0
 ```
 
-The shape is intentionally close to tools like `kubectl`.
+The CLI shape is intentionally close to tools like `kubectl`.
 
 ```sh
 orchestrator doctor
