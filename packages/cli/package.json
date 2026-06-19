@@ -12,6 +12,7 @@
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
+    "@backnotprop/orchestrator-agent": "workspace:*",
     "@backnotprop/orchestrator-core": "workspace:*"
   },
   "engines": {

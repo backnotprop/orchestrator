@@ -125,7 +125,7 @@ export async function updateTaskStatus(
   task: AgentTaskRecord,
   status: TaskStatus,
   updates: Partial<
-    Pick<AgentTaskRecord, "startedAt" | "finishedAt" | "exitCode" | "pid" | "error">
+    Pick<AgentTaskRecord, "startedAt" | "finishedAt" | "exitCode" | "pid" | "error" | "usage">
   > = {},
 ): Promise<AgentTaskRecord> {
   const updated = {

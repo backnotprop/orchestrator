@@ -2,6 +2,7 @@ import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { appendFile, readFile, stat, writeFile } from "node:fs/promises";
 import type { AgentLaunchPlan } from "../runtime/index.ts";
+import { isTerminalTaskStatus } from "./types.ts";
 import type {
   AgentTaskRecord,
   InterruptTaskInput,
@@ -49,11 +50,13 @@ export async function launchTask(input: LaunchTaskInput): Promise<LaunchTaskHand
   const initialTask: AgentTaskRecord = {
     taskId,
     ...(taskName ? { name: taskName } : {}),
+    ...(input.model ? { model: input.model } : {}),
     runtime: input.plan.runtime,
     launchPlan: input.plan,
     cwd: input.plan.cwd,
     status: "queued",
     createdAt,
+    ...(input.parent ? { parent: input.parent } : {}),
     paths,
   };
 
@@ -74,6 +77,15 @@ export async function launchTask(input: LaunchTaskInput): Promise<LaunchTaskHand
   });
 
   await appendEvent("queued", { runtime: input.plan.runtime });
+  if (input.parent) {
+    await appendEvent("agent_event", {
+      kind: "task.parent",
+      parentRunId: input.parent.parentRunId,
+      ...(input.parent.parentTaskId ? { parentTaskId: input.parent.parentTaskId } : {}),
+      ...(input.parent.parentSessionId ? { parentSessionId: input.parent.parentSessionId } : {}),
+      ...(input.parent.parentToolCallId ? { parentToolCallId: input.parent.parentToolCallId } : {}),
+    });
+  }
   let task = await updateTaskStatus(initialTask, "starting");
   await appendEvent("starting", {
     executable: input.plan.executable,
@@ -198,7 +210,9 @@ export async function launchTask(input: LaunchTaskInput): Promise<LaunchTaskHand
             ? (current.error ?? runningTask.cancelReason)
             : signal
               ? `Process exited from signal ${signal}.`
-              : undefined;
+              : finalStatus === "failed"
+                ? adapterResult.errorText
+                : undefined;
 
         const finished = await updateTaskStatus(current, finalStatus, {
           finishedAt: now(),
@@ -208,6 +222,7 @@ export async function launchTask(input: LaunchTaskInput): Promise<LaunchTaskHand
         await appendEvent(finalStatus === "succeeded" ? "completed" : finalStatus, {
           exitCode: code,
           signal,
+          ...(error ? { error } : {}),
         });
         resolve(finished);
       })();
@@ -279,7 +294,7 @@ export async function interruptTask(input: InterruptTaskInput): Promise<AgentTas
   const reason = input.reason ?? "Interrupted.";
   const signal = input.signal ?? "SIGTERM";
 
-  if (!running && isTerminalStatus(task.status)) {
+  if (!running && isTerminalTaskStatus(task.status)) {
     throw new TaskSupervisorError(`Task "${input.taskId}" is not running in this process.`);
   }
 
@@ -405,13 +420,4 @@ function now(): string {
 
 function isNoSuchProcess(error: unknown): boolean {
   return error instanceof Error && "code" in error && error.code === "ESRCH";
-}
-
-function isTerminalStatus(status: AgentTaskRecord["status"]): boolean {
-  return (
-    status === "succeeded" ||
-    status === "failed" ||
-    status === "cancelled" ||
-    status === "timed_out"
-  );
 }

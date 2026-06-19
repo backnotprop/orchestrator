@@ -6,8 +6,20 @@ import { access, mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
+  buildOrchestratorParentPrompt,
+  createOrchestratorParentSession,
+  createRunStreamSequencer,
+  doctorParentAgentConfig,
+  normalizeRunStreamError,
+  runStreamPayloadsFromParentToolTrace,
+  type ParentAgentDoctorReport,
+  type ParentToolTraceEvent,
+  type RunStreamEvent,
+} from "@backnotprop/orchestrator-agent";
+import {
   ALL_AGENT_RUNTIMES,
   BUILT_IN_AGENT_RUNTIMES,
+  buildAgentTaskPsView,
   buildAgentLaunchPlan,
   getTaskPaths,
   getRuntimeConfig,
@@ -20,12 +32,14 @@ import {
 } from "@backnotprop/orchestrator-core";
 import type {
   AgentRuntimeId,
+  AgentTaskPsView,
   AgentTaskRecord,
   HeadlessAgentRuntimeConfig,
   LaunchTaskInput,
   RuntimeRegistry,
   TaskEvent,
   TaskStatus,
+  AgentLaunchPlan,
 } from "@backnotprop/orchestrator-core";
 
 type CommonOptions = {
@@ -51,6 +65,15 @@ type LaunchOptions = CommonOptions & {
 
 type ListOptions = CommonOptions & {
   status?: TaskStatus;
+};
+
+type PsOptions = CommonOptions & {
+  status?: TaskStatus;
+  runtime?: string;
+  parentRunId?: string;
+  all: boolean;
+  watch: boolean;
+  intervalMs: number;
 };
 
 type ReadOptions = CommonOptions & {
@@ -82,6 +105,42 @@ type InterruptOptions = CommonOptions & {
   taskId: string;
   reason?: string;
   signal?: NodeJS.Signals;
+};
+
+type RunOptions = CommonOptions & {
+  request: string;
+  agentDir?: string;
+  sessionDir?: string;
+  name?: string;
+  background: boolean;
+  traceTools: ParentToolTraceMode;
+  streamJson: boolean;
+};
+
+type ParentToolTraceMode = "off" | "text" | "jsonl";
+
+type ParentRunTaskRequest = {
+  schemaVersion: 1;
+  workspaceRoot: string;
+  orchestratorDir?: string;
+  configPath?: string;
+  agentDir?: string;
+  sessionDir?: string;
+  request: string;
+  parentRunId: string;
+  parentTaskId: string;
+};
+
+type ParentRunResult = {
+  sessionId: string;
+  output: string;
+  modelFallbackMessage?: string;
+};
+
+type DoctorOptions = {
+  json: boolean;
+  agentDir?: string;
+  sessionDir?: string;
 };
 
 type HelpOptions = {
@@ -130,6 +189,9 @@ export async function main(argv: readonly string[] = process.argv.slice(2)): Pro
       case "list":
         await commandList(parseListOptions(rest));
         return 0;
+      case "ps":
+        await commandPs(parsePsOptions(rest));
+        return 0;
       case "read":
         await commandRead(parseReadOptions(rest));
         return 0;
@@ -145,8 +207,16 @@ export async function main(argv: readonly string[] = process.argv.slice(2)): Pro
       case "interrupt":
         await commandInterrupt(parseInterruptOptions(rest));
         return 0;
+      case "run":
+        await commandRun(parseRunOptions(rest));
+        return 0;
+      case "doctor":
+        return await commandDoctor(parseDoctorOptions(rest));
       case "__run-task":
         await commandRunTask(parseInternalRunTaskOptions(rest));
+        return 0;
+      case "__run-parent-task":
+        await commandRunParentTask(parseInternalRunTaskOptions(rest));
         return 0;
       case undefined:
       case "-h":
@@ -200,6 +270,7 @@ async function commandLaunch(options: LaunchOptions): Promise<void> {
     ...(options.orchestratorDir ? { orchestratorDir: options.orchestratorDir } : {}),
     taskId: randomUUID(),
     ...(options.name ? { name: options.name } : {}),
+    ...(options.model ? { model: options.model } : {}),
     plan,
     timeoutMs: options.timeoutMs ?? runtime?.defaults.timeoutMs,
     maxOutputBytes: options.maxOutputBytes ?? runtime?.defaults.maxOutputBytes,
@@ -235,8 +306,11 @@ function buildCliHelpText(registry: RuntimeRegistry = BUILT_IN_AGENT_RUNTIMES): 
 Run and supervise headless coding agents.
 
 Usage:
+  orchestrator doctor [--agent-dir <path>] [--session-dir <path>] [--json]
+  orchestrator run [--agent-dir <path>] [--session-dir <path>] [--name <name>] [--background] [--trace-tools[=text|jsonl]] [--stream-json] "<request>"
   orchestrator launch <runtime> [--name <name>] [--model <model>] [--cwd <path>] [--wait] "<task>"
   orchestrator list [--status <status>]
+  orchestrator ps [--all] [--watch] [--runtime <runtime>] [--status <status>] [--parent <run-id>]
   orchestrator read <task-id> [--max-bytes <bytes>]
   orchestrator logs <task-id> [--stream stdout|stderr|all] [--max-bytes <bytes>] [--follow]
   orchestrator events <task-id> [--agent-only] [--max-bytes <bytes>]
@@ -245,13 +319,20 @@ Usage:
   orchestrator help [--json]
 
 Agent instructions:
-  1. Treat launch as a background job by default. Capture taskId from stdout.
-  2. Prefer --json for list/launch/events when another program will parse the result.
-  3. Use watch to follow one task live.
-  4. Use read for the final answer.
-  5. Use logs for raw stdout/stderr and events for the task timeline.
-  6. Use interrupt to cancel a running agent. Cancellation targets the process group.
-  7. Model values are passed through to the provider CLI; aliases are not normalized yet.
+  1. Use doctor before run when parent-agent auth/model setup is uncertain.
+  2. Use run when Orchestrator itself should think and coordinate child agents.
+  3. Use run --background when the parent agent should be a managed background task.
+  4. Use run --trace-tools when you need to see parent tool calls live.
+  5. Use run --stream-json when another program needs the full run event stream.
+  6. Treat launch as a background job by default. Capture taskId from stdout.
+  7. Prefer --json for list/launch/events when another program will parse the result.
+  8. Use ps for the multi-agent operations view.
+  9. Use ps --watch to watch the whole agent system update live.
+  10. Use watch to follow one task live.
+  11. Use read for the final answer.
+  12. Use logs for raw stdout/stderr and events for the task timeline.
+  13. Use interrupt to cancel a running agent. Cancellation targets the process group.
+  14. Model values are passed through to the provider CLI; aliases are not normalized yet.
 
 Common options:
   --workspace <path>          Workspace root. Defaults to the current directory.
@@ -266,6 +347,26 @@ Launch options:
   --timeout-ms <ms>           Override runtime timeout.
   --max-output-bytes <bytes>  Override captured output cap.
   --wait                      Run in the foreground until the task completes.
+
+Ps options:
+  --all                       Show full task history instead of hiding old finished tasks.
+  --watch                     Refresh the grouped view until interrupted.
+  --interval-ms <ms>          Refresh interval for --watch.
+  --runtime <runtime>         Filter to one runtime.
+  --status <status>           Filter to one task status.
+  --parent <run-id|ungrouped> Filter to one parent group.
+
+Run options:
+  --agent-dir <path>          Parent AI agent config dir. Defaults to ~/.orchestrator.
+  --session-dir <path>        Parent AI agent session dir. Defaults to ~/.orchestrator/sessions.
+  --name <name>               Short label for a background parent task.
+  --background                Run the parent agent as a managed background task.
+  --trace-tools[=text|jsonl]  Show parent tool calls live on stderr.
+  --stream-json               Stream the full parent run as JSONL on stdout.
+
+Doctor options:
+  --agent-dir <path>          Parent AI agent config dir to inspect.
+  --session-dir <path>        Parent AI agent session dir to inspect.
 
 Runtime ids:
 ${renderedRuntimeLines}
@@ -286,11 +387,20 @@ function buildCliHelpDocument(
 
   return {
     schemaVersion: 1,
-    purpose: "Launch and supervise headless coding agents as durable background tasks.",
+    purpose:
+      "Run Orchestrator as a parent AI agent or launch and supervise child agents as durable background tasks.",
     agentInstructions: [
+      "Use doctor before run when parent-agent auth/model setup is uncertain.",
+      "Use run when Orchestrator itself should think and coordinate child agents.",
+      "Use run --background when the parent agent should run as a managed task.",
+      "Use run --trace-tools when you need to see parent tool calls live.",
+      "Use run --stream-json when a plugin, script, TUI, or other program needs the full live run stream.",
       "Use launch to start a registered runtime.",
       "Capture taskId from launch output; all inspection and control commands use that id.",
       "Prefer --json for machine-readable command output.",
+      "Use ps for the grouped multi-agent operations view. It hides old finished tasks by default.",
+      "Use ps --all for full task history.",
+      "Use ps --watch to watch the whole agent system update live.",
       "Use read for the final agent answer.",
       "Use logs for raw stdout/stderr and events for the task timeline.",
       "Use watch to follow one task live.",
@@ -312,6 +422,31 @@ function buildCliHelpDocument(
       resumeSupported: runtime.capabilities.supportsResume,
     })),
     commands: [
+      {
+        name: "doctor",
+        usage: "orchestrator doctor [--agent-dir <path>] [--session-dir <path>] [--json]",
+        semantics: "Checks parent-agent auth, model, and session paths used by orchestrator run.",
+        options: ["--json", "--agent-dir <path>", "--session-dir <path>"],
+      },
+      {
+        name: "run",
+        usage:
+          'orchestrator run [--agent-dir <path>] [--session-dir <path>] [--name <name>] [--background] [--trace-tools[=text|jsonl]] [--stream-json] "<request>"',
+        semantics:
+          "Starts the Pi-backed parent AI agent with Orchestrator child-agent tools enabled.",
+        options: [
+          "--workspace <path>",
+          "--orchestrator-dir <path>",
+          "--config <path>",
+          "--json",
+          "--agent-dir <path>",
+          "--session-dir <path>",
+          "--name <name>",
+          "--background",
+          "--trace-tools[=text|jsonl]",
+          "--stream-json",
+        ],
+      },
       {
         name: "launch",
         usage:
@@ -339,6 +474,24 @@ function buildCliHelpDocument(
           "--orchestrator-dir <path>",
           "--config <path>",
           "--status <status>",
+          "--json",
+        ],
+      },
+      {
+        name: "ps",
+        usage:
+          "orchestrator ps [--all] [--watch] [--runtime <runtime>] [--status <status>] [--parent <run-id>] [--json]",
+        semantics: "Shows grouped agent work across parent runs and ungrouped manual tasks.",
+        options: [
+          "--workspace <path>",
+          "--orchestrator-dir <path>",
+          "--config <path>",
+          "--status <status>",
+          "--runtime <runtime>",
+          "--parent <run-id|ungrouped>",
+          "--all",
+          "--watch",
+          "--interval-ms <ms>",
           "--json",
         ],
       },
@@ -410,11 +563,24 @@ function buildCliHelpDocument(
     ],
     workflows: [
       {
+        name: "parent-agent",
+        steps: [
+          'Run orchestrator run "figure out what needs to change in this repo" when Orchestrator should coordinate child agents for you.',
+          "Add --background when that parent run should be listed and managed like any other task.",
+          "Add --trace-tools to run when you need to see live parent tool calls.",
+          "Use --stream-json when software needs the complete live parent run stream.",
+          "Use ps or ps --watch to see all child tasks created by the parent agent.",
+          "Use watch, read, logs, events, and interrupt to inspect or control one child task.",
+        ],
+      },
+      {
         name: "start-and-watch",
         steps: [
           'Run launch with a short name, runtime, model, and task: orchestrator launch codex --name "inspect store" --model gpt-5.4-mini --json "task".',
           "Extract taskId from launch output.",
           "Run list to see named tasks.",
+          "Run ps to see grouped agent work.",
+          "Run ps --watch to watch the whole workspace update.",
           "Run watch <task-id> to follow one task.",
           "Run read <task-id> for the final answer.",
         ],
@@ -448,6 +614,13 @@ function orderedRuntimeConfigs(registry: RuntimeRegistry): HeadlessAgentRuntimeC
 function buildCliExamples(registry: RuntimeRegistry): string[] {
   const examples: string[] = [];
 
+  examples.push("orchestrator doctor");
+  examples.push('orchestrator run "figure out what needs to change in this repo"');
+  examples.push(
+    'orchestrator run --background --name "repo plan" "figure out what needs to change in this repo"',
+  );
+  examples.push('orchestrator run --trace-tools "launch a codex child and wait for it"');
+  examples.push('orchestrator run --stream-json "launch a codex child and wait for it"');
   if (registry["claude-code"]?.enabled) {
     examples.push(
       'orchestrator launch claude-code --name "review repo" --model sonnet "review this repo"',
@@ -462,6 +635,9 @@ function buildCliExamples(registry: RuntimeRegistry): string[] {
   return [
     ...examples,
     "orchestrator list --json",
+    "orchestrator ps",
+    "orchestrator ps --all",
+    "orchestrator ps --watch",
     "orchestrator watch <task-id>",
     "orchestrator read <task-id>",
     "orchestrator logs <task-id> --stream stderr --follow",
@@ -495,6 +671,48 @@ async function commandList(options: ListOptions): Promise<void> {
   for (const task of tasks) {
     process.stdout.write(formatTaskListLine(task, nowMs, registry));
   }
+}
+
+async function commandPs(options: PsOptions): Promise<void> {
+  if (!options.watch) {
+    const view = await loadPsView(options);
+    if (options.json) {
+      process.stdout.write(`${JSON.stringify(view, null, 2)}\n`);
+      return;
+    }
+    process.stdout.write(renderPsView(view, { columns: terminalColumns() }));
+    return;
+  }
+
+  let previousLineCount = 0;
+  while (true) {
+    const view = await loadPsView(options);
+    if (options.json) {
+      process.stdout.write(`${JSON.stringify(view)}\n`);
+    } else {
+      const rendered = renderPsView(view, { columns: terminalColumns() });
+      if (process.stdout.isTTY) {
+        process.stdout.write(renderWatchFrame(rendered, previousLineCount));
+        previousLineCount = countRenderedLines(rendered, terminalColumns());
+      } else {
+        process.stdout.write("---\n");
+        process.stdout.write(rendered);
+      }
+    }
+
+    await delay(options.intervalMs);
+  }
+}
+
+async function loadPsView(options: PsOptions): Promise<AgentTaskPsView> {
+  return buildAgentTaskPsView({
+    workspaceRoot: options.workspaceRoot,
+    ...(options.orchestratorDir ? { orchestratorDir: options.orchestratorDir } : {}),
+    ...(options.status ? { status: options.status } : {}),
+    ...(options.runtime ? { runtime: options.runtime } : {}),
+    ...(options.parentRunId ? { parentRunId: options.parentRunId } : {}),
+    all: options.all,
+  });
 }
 
 async function commandRead(options: ReadOptions): Promise<void> {
@@ -714,12 +932,252 @@ async function commandInterrupt(options: InterruptOptions): Promise<void> {
   printTask(task, options.json);
 }
 
+async function commandDoctor(options: DoctorOptions): Promise<number> {
+  const report = await doctorParentAgentConfig({
+    ...(options.agentDir ? { agentDir: options.agentDir } : {}),
+    ...(options.sessionDir ? { sessionDir: options.sessionDir } : {}),
+  });
+
+  if (options.json) {
+    process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
+  } else {
+    process.stdout.write(renderDoctorReport(report));
+  }
+
+  return report.status === "error" ? 1 : 0;
+}
+
+async function commandRun(options: RunOptions): Promise<void> {
+  if (options.background) {
+    await commandRunBackground(options);
+    return;
+  }
+
+  const result = await executeParentRun(options);
+  if (options.streamJson) {
+    return;
+  }
+
+  if (options.json) {
+    process.stdout.write(
+      `${JSON.stringify(
+        {
+          sessionId: result.sessionId,
+          output: result.output,
+          ...(result.modelFallbackMessage
+            ? { modelFallbackMessage: result.modelFallbackMessage }
+            : {}),
+        },
+        null,
+        2,
+      )}\n`,
+    );
+    return;
+  }
+
+  if (result.modelFallbackMessage) {
+    process.stderr.write(`${result.modelFallbackMessage}\n`);
+  }
+  if (result.output) {
+    process.stdout.write(`${result.output}\n`);
+  }
+}
+
+async function commandRunBackground(options: RunOptions): Promise<void> {
+  if (options.traceTools !== "off") {
+    throw new CliError("run --background cannot be combined with --trace-tools.");
+  }
+  if (options.streamJson) {
+    throw new CliError("run --background cannot be combined with --stream-json.");
+  }
+
+  const taskId = randomUUID();
+  const request: ParentRunTaskRequest = {
+    schemaVersion: 1,
+    workspaceRoot: options.workspaceRoot,
+    ...(options.orchestratorDir ? { orchestratorDir: options.orchestratorDir } : {}),
+    ...(options.configPath ? { configPath: options.configPath } : {}),
+    ...(options.agentDir ? { agentDir: options.agentDir } : {}),
+    ...(options.sessionDir ? { sessionDir: options.sessionDir } : {}),
+    request: options.request,
+    parentRunId: taskId,
+    parentTaskId: taskId,
+  };
+  const requestPath = await writeParentRunRequest(request, taskId);
+  const launchInput: LaunchTaskInput = {
+    workspaceRoot: options.workspaceRoot,
+    ...(options.orchestratorDir ? { orchestratorDir: options.orchestratorDir } : {}),
+    taskId,
+    name: options.name ?? summarizeTaskPrompt(options.request),
+    plan: parentRunLaunchPlan({
+      workspaceRoot: options.workspaceRoot,
+      requestPath,
+    }),
+  };
+
+  const task = await launchInBackground(launchInput);
+  printTask(task, options.json);
+}
+
+async function executeParentRun(
+  options: RunOptions & { parentRunId?: string; parentTaskId?: string },
+): Promise<ParentRunResult> {
+  const runEvents = createRunStreamSequencer({ runId: options.parentRunId ?? randomUUID() });
+  let parentSessionId: string | undefined;
+  let created: Awaited<ReturnType<typeof createOrchestratorParentSession>>;
+  try {
+    created = await createOrchestratorParentSession({
+      workspaceRoot: options.workspaceRoot,
+      ...(options.orchestratorDir ? { orchestratorDir: options.orchestratorDir } : {}),
+      ...(options.configPath ? { configPath: options.configPath } : {}),
+      ...(options.agentDir ? { agentDir: options.agentDir } : {}),
+      ...(options.sessionDir ? { sessionDir: options.sessionDir } : {}),
+      parentRunId: runEvents.runId,
+      ...(options.parentTaskId ? { parentTaskId: options.parentTaskId } : {}),
+      parentSessionId: () => parentSessionId,
+      configEnv: process.env,
+      backgroundLauncher: launchInBackground,
+      ...(options.traceTools === "off" && !options.streamJson
+        ? {}
+        : {
+            trace: (event) => {
+              if (options.streamJson) {
+                for (const payload of runStreamPayloadsFromParentToolTrace(event)) {
+                  writeRunJsonStreamEvent(runEvents.create(payload));
+                }
+              }
+              if (options.traceTools !== "off") {
+                process.stderr.write(renderParentToolTraceEvent(event, options.traceTools));
+              }
+            },
+          }),
+    });
+  } catch (error) {
+    if (options.streamJson) {
+      writeRunJsonStreamEvent(
+        runEvents.create({
+          kind: "run.error",
+          error: normalizeRunStreamError(error),
+        }),
+      );
+    }
+    throw error;
+  }
+  const { session, modelFallbackMessage } = created;
+  parentSessionId = session.sessionId;
+
+  try {
+    if (options.streamJson) {
+      writeRunJsonStreamEvent(
+        runEvents.create({
+          kind: "run.started",
+          sessionId: session.sessionId,
+          cwd: resolve(options.workspaceRoot),
+          request: options.request,
+        }),
+      );
+    }
+
+    try {
+      await session.prompt(buildOrchestratorParentPrompt(options.request), {
+        expandPromptTemplates: false,
+      });
+    } catch (error) {
+      if (options.streamJson) {
+        writeRunJsonStreamEvent(
+          runEvents.create({
+            kind: "run.error",
+            sessionId: session.sessionId,
+            error: normalizeRunStreamError(error),
+          }),
+        );
+      }
+      throw error;
+    }
+
+    const output = session.getLastAssistantText() ?? "";
+    if (options.streamJson) {
+      writeRunJsonStreamEvent(
+        runEvents.create({
+          kind: "run.final",
+          sessionId: session.sessionId,
+          output,
+          ...(modelFallbackMessage ? { modelFallbackMessage } : {}),
+        }),
+      );
+    }
+
+    return {
+      sessionId: session.sessionId,
+      output,
+      ...(modelFallbackMessage ? { modelFallbackMessage } : {}),
+    };
+  } finally {
+    session.dispose();
+  }
+}
+
+function renderDoctorReport(report: ParentAgentDoctorReport): string {
+  const lines = [
+    "Orchestrator doctor",
+    `status: ${report.status}`,
+    `canRunParentAgent: ${report.canRunParentAgent ? "yes" : "no"}`,
+    `agentDir: ${report.agentDir}`,
+    "",
+    "Checks:",
+    ...report.checks.map(
+      (check) =>
+        `  ${check.status.padEnd(7)} ${check.label}${check.path ? ` (${check.path})` : ""}: ${check.message}`,
+    ),
+  ];
+
+  if (report.suggestions.length > 0) {
+    lines.push("", "Suggestions:", ...report.suggestions.map((suggestion) => `  - ${suggestion}`));
+  }
+
+  return `${lines.join("\n")}\n`;
+}
+
 async function commandRunTask(requestPath: string): Promise<void> {
   const request = JSON.parse(await readFile(requestPath, "utf8")) as LaunchTaskInput;
 
   try {
     const handle = await launchTask(request);
     await handle.completed;
+  } finally {
+    await rm(requestPath, { force: true });
+  }
+}
+
+async function commandRunParentTask(requestPath: string): Promise<void> {
+  const request = JSON.parse(await readFile(requestPath, "utf8")) as ParentRunTaskRequest;
+
+  try {
+    if (request.schemaVersion !== 1) {
+      throw new CliError(`Unsupported parent run request schema ${request.schemaVersion}.`);
+    }
+
+    const result = await executeParentRun({
+      workspaceRoot: request.workspaceRoot,
+      ...(request.orchestratorDir ? { orchestratorDir: request.orchestratorDir } : {}),
+      ...(request.configPath ? { configPath: request.configPath } : {}),
+      ...(request.agentDir ? { agentDir: request.agentDir } : {}),
+      ...(request.sessionDir ? { sessionDir: request.sessionDir } : {}),
+      request: request.request,
+      parentRunId: request.parentRunId,
+      parentTaskId: request.parentTaskId,
+      json: false,
+      background: false,
+      traceTools: "off",
+      streamJson: false,
+    });
+
+    if (result.modelFallbackMessage) {
+      process.stderr.write(`${result.modelFallbackMessage}\n`);
+    }
+    if (result.output) {
+      process.stdout.write(`${result.output}\n`);
+    }
   } finally {
     await rm(requestPath, { force: true });
   }
@@ -750,12 +1208,70 @@ async function launchInBackground(input: LaunchTaskInput): Promise<AgentTaskReco
 
 async function writeRunRequest(input: LaunchTaskInput): Promise<string> {
   const orchestratorDir = input.orchestratorDir ?? resolve(input.workspaceRoot, ".orchestrator");
-  const requestDir = resolve(orchestratorDir, "run-requests");
+  return writeJsonRequest({
+    orchestratorDir,
+    requestDirName: "run-requests",
+    id: input.taskId,
+    value: input,
+  });
+}
+
+async function writeParentRunRequest(
+  request: ParentRunTaskRequest,
+  taskId: string,
+): Promise<string> {
+  const orchestratorDir =
+    request.orchestratorDir ?? resolve(request.workspaceRoot, ".orchestrator");
+  return writeJsonRequest({
+    orchestratorDir,
+    requestDirName: "parent-run-requests",
+    id: taskId,
+    value: request,
+  });
+}
+
+async function writeJsonRequest(input: {
+  orchestratorDir: string;
+  requestDirName: string;
+  id: string | undefined;
+  value: unknown;
+}): Promise<string> {
+  if (!input.id) {
+    throw new CliError("Detached request requires an id.");
+  }
+
+  const requestDir = resolve(input.orchestratorDir, input.requestDirName);
   await mkdir(requestDir, { recursive: true });
 
-  const requestPath = resolve(requestDir, `${input.taskId}.json`);
-  await writeFile(requestPath, `${JSON.stringify(input, null, 2)}\n`);
+  const requestPath = resolve(requestDir, `${input.id}.json`);
+  await writeFile(requestPath, `${JSON.stringify(input.value, null, 2)}\n`);
   return requestPath;
+}
+
+function parentRunLaunchPlan(input: {
+  workspaceRoot: string;
+  requestPath: string;
+}): AgentLaunchPlan {
+  const cliPath = fileURLToPath(import.meta.url);
+  return {
+    runtime: "orchestrator",
+    displayName: "Orchestrator",
+    executable: process.execPath,
+    args: ["--experimental-strip-types", cliPath, "__run-parent-task", input.requestPath],
+    env: {},
+    cwd: input.workspaceRoot,
+    promptTransport: { kind: "sdk" },
+    outputTransport: { kind: "stdout_text" },
+    expectedProcesses: ["node"],
+    interrupt: "process_group",
+    canSteerRunning: false,
+    handlesOwnAuth: true,
+    enabled: true,
+    safety: {
+      requiresAllowlist: false,
+      acceptsShellCommand: false,
+    },
+  };
 }
 
 async function waitForTaskRecord(input: LaunchTaskInput, taskId: string): Promise<AgentTaskRecord> {
@@ -938,6 +1454,65 @@ function parseListOptions(args: readonly string[]): ListOptions {
   return {
     ...common,
     ...(status ? { status } : {}),
+  };
+}
+
+function parsePsOptions(args: readonly string[]): PsOptions {
+  const common = defaultCommonOptions();
+  let status: TaskStatus | undefined;
+  let runtime: string | undefined;
+  let parentRunId: string | undefined;
+  let all = false;
+  let watch = false;
+  let intervalMs = 1_000;
+
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
+    switch (arg) {
+      case "--workspace":
+        common.workspaceRoot = resolve(requireValue(args, ++index, arg));
+        break;
+      case "--orchestrator-dir":
+        common.orchestratorDir = resolve(requireValue(args, ++index, arg));
+        break;
+      case "--config":
+        common.configPath = resolve(requireValue(args, ++index, arg));
+        break;
+      case "--json":
+        common.json = true;
+        break;
+      case "--status":
+        status = requireValue(args, ++index, arg) as TaskStatus;
+        break;
+      case "--runtime":
+        runtime = requireValue(args, ++index, arg);
+        break;
+      case "--parent":
+        parentRunId = requireValue(args, ++index, arg);
+        break;
+      case "--all":
+        all = true;
+        break;
+      case "--watch":
+      case "-w":
+        watch = true;
+        break;
+      case "--interval-ms":
+        intervalMs = parseIntegerOption(requireValue(args, ++index, arg), arg);
+        break;
+      default:
+        throw new CliError(`Unknown ps option "${arg}".`);
+    }
+  }
+
+  return {
+    ...common,
+    ...(status ? { status } : {}),
+    ...(runtime ? { runtime } : {}),
+    ...(parentRunId ? { parentRunId } : {}),
+    all,
+    watch,
+    intervalMs,
   };
 }
 
@@ -1187,6 +1762,128 @@ function parseInterruptOptions(args: readonly string[]): InterruptOptions {
   };
 }
 
+function parseDoctorOptions(args: readonly string[]): DoctorOptions {
+  let json = false;
+  let agentDir: string | undefined;
+  let sessionDir: string | undefined;
+
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
+    switch (arg) {
+      case "--json":
+        json = true;
+        break;
+      case "--agent-dir":
+        agentDir = resolve(requireValue(args, ++index, arg));
+        break;
+      case "--session-dir":
+        sessionDir = resolve(requireValue(args, ++index, arg));
+        break;
+      default:
+        throw new CliError(`Unknown doctor option "${arg}".`);
+    }
+  }
+
+  return {
+    json,
+    ...(agentDir ? { agentDir } : {}),
+    ...(sessionDir ? { sessionDir } : {}),
+  };
+}
+
+function parseRunOptions(args: readonly string[]): RunOptions {
+  const common = defaultCommonOptions();
+  const requestParts: string[] = [];
+  let agentDir: string | undefined;
+  let sessionDir: string | undefined;
+  let name: string | undefined;
+  let background = false;
+  let traceTools: ParentToolTraceMode = "off";
+  let streamJson = false;
+
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
+    if (arg === "--") {
+      requestParts.push(...args.slice(index + 1));
+      break;
+    }
+
+    switch (arg) {
+      case "--workspace":
+        common.workspaceRoot = resolve(requireValue(args, ++index, arg));
+        break;
+      case "--orchestrator-dir":
+        common.orchestratorDir = resolve(requireValue(args, ++index, arg));
+        break;
+      case "--config":
+        common.configPath = resolve(requireValue(args, ++index, arg));
+        break;
+      case "--json":
+        common.json = true;
+        break;
+      case "--agent-dir":
+        agentDir = resolve(requireValue(args, ++index, arg));
+        break;
+      case "--session-dir":
+        sessionDir = resolve(requireValue(args, ++index, arg));
+        break;
+      case "--name":
+        name = parseTaskName(requireValue(args, ++index, arg));
+        break;
+      case "--background":
+        background = true;
+        break;
+      case "--trace-tools":
+        traceTools = "text";
+        break;
+      case "--stream-json":
+        streamJson = true;
+        break;
+      default:
+        if (!arg) {
+          break;
+        }
+        if (arg.startsWith("--trace-tools=")) {
+          traceTools = parseParentToolTraceMode(arg.slice("--trace-tools=".length), arg);
+          break;
+        }
+        if (arg.startsWith("-")) {
+          throw new CliError(`Unknown run option "${arg}".`);
+        }
+        requestParts.push(arg);
+    }
+  }
+
+  const request = requestParts.join(" ").trim();
+  if (!request) {
+    throw new CliError("run requires a user request.");
+  }
+
+  if (streamJson && common.json) {
+    throw new CliError("run --stream-json cannot be combined with --json.");
+  }
+  if (background && traceTools !== "off") {
+    throw new CliError("run --background cannot be combined with --trace-tools.");
+  }
+  if (background && streamJson) {
+    throw new CliError("run --background cannot be combined with --stream-json.");
+  }
+  if (name && !background) {
+    throw new CliError("run --name requires --background.");
+  }
+
+  return {
+    ...common,
+    request,
+    ...(name ? { name } : {}),
+    background,
+    traceTools,
+    streamJson,
+    ...(agentDir ? { agentDir } : {}),
+    ...(sessionDir ? { sessionDir } : {}),
+  };
+}
+
 function parseInternalRunTaskOptions(args: readonly string[]): string {
   const [requestPath, ...extra] = args;
   if (!requestPath || extra.length > 0) {
@@ -1217,6 +1914,175 @@ function printTask(task: AgentTaskRecord, json: boolean): void {
   process.stdout.write(`taskDir: ${task.paths.taskDir}\n`);
 }
 
+function renderParentToolTraceEvent(
+  event: ParentToolTraceEvent,
+  mode: ParentToolTraceMode,
+): string {
+  if (mode === "jsonl") {
+    return `${JSON.stringify(event)}\n`;
+  }
+
+  switch (event.kind) {
+    case "tool.call":
+      return `${"tool call".padEnd(11)} ${event.toolName}${formatTraceFields(
+        traceCallFields(event.toolName, event.input),
+      )}\n`;
+    case "tool.result":
+      return `${"tool result".padEnd(11)} ${event.toolName}${formatTraceFields(
+        traceResultFields(event.toolName, event.result),
+      )} duration=${event.durationMs}ms\n`;
+    case "tool.progress":
+      return `${"tool wait".padEnd(11)} ${event.toolName}${formatTraceFields(
+        traceProgressFields(event.toolName, event.progress),
+      )} elapsed=${event.elapsedMs}ms\n`;
+    case "tool.error":
+      return `${"tool error".padEnd(11)} ${event.toolName} error=${formatTraceValue(
+        event.error,
+      )} duration=${event.durationMs}ms\n`;
+  }
+}
+
+function writeRunJsonStreamEvent(event: RunStreamEvent): void {
+  process.stdout.write(`${JSON.stringify(event)}\n`);
+}
+
+function traceCallFields(toolName: string, input: unknown): [string, unknown][] {
+  const value = traceRecord(input);
+  if (!value) {
+    return [];
+  }
+
+  switch (toolName) {
+    case "launch_agent":
+      return orderedTraceFields(value, [
+        "runtime",
+        "model",
+        "name",
+        "cwd",
+        "outputMode",
+        "timeoutMs",
+        "maxOutputBytes",
+        "instructions",
+      ]);
+    case "list_agents":
+      return orderedTraceFields(value, ["runtime", "status", "limit"]);
+    case "read_agent":
+      return orderedTraceFields(value, ["taskId", "wait", "timeoutMs", "maxBytes"]);
+    case "read_agent_events":
+      return orderedTraceFields(value, ["taskId", "agentOnly", "limit", "maxBytes"]);
+    case "read_agent_logs":
+      return orderedTraceFields(value, ["taskId", "stream", "maxBytes"]);
+    case "interrupt_agent":
+      return orderedTraceFields(value, ["taskId", "reason"]);
+    default:
+      return Object.entries(value).slice(0, 6);
+  }
+}
+
+function traceProgressFields(toolName: string, progress: unknown): [string, unknown][] {
+  const value = traceRecord(progress);
+  if (!value) {
+    return [];
+  }
+
+  switch (toolName) {
+    case "read_agent":
+      return orderedTraceFields(value, [
+        "taskId",
+        "status",
+        "runtime",
+        "name",
+        "remainingMs",
+        "timeoutMs",
+      ]);
+    default:
+      return Object.entries(value).slice(0, 6);
+  }
+}
+
+function traceResultFields(toolName: string, result: unknown): [string, unknown][] {
+  const value = traceRecord(result);
+  if (!value) {
+    return [];
+  }
+
+  switch (toolName) {
+    case "launch_agent":
+    case "interrupt_agent":
+      return traceTaskFields(value, ["taskId", "status", "runtime", "name"]);
+    case "read_agent":
+      return [
+        ...orderedTraceFields(value, ["retrievalStatus"]),
+        ...traceTaskFields(value, ["taskId", "status", "runtime", "name"]),
+        ...orderedTraceFields(value, ["output"]),
+      ];
+    case "list_agents": {
+      const tasks = Array.isArray(value.tasks) ? value.tasks : [];
+      return [["tasks", tasks.length]];
+    }
+    case "read_agent_events": {
+      const events = Array.isArray(value.events) ? value.events : [];
+      return [...orderedTraceFields(value, ["taskId"]), ["events", events.length]];
+    }
+    case "read_agent_logs":
+      return [
+        ...orderedTraceFields(value, ["taskId"]),
+        ["stdoutBytes", traceTextBytes(value.stdout)],
+        ["stderrBytes", traceTextBytes(value.stderr)],
+      ];
+    default:
+      return Object.entries(value).slice(0, 6);
+  }
+}
+
+function traceTaskFields(
+  value: Record<string, unknown>,
+  keys: readonly string[],
+): [string, unknown][] {
+  const task = traceRecord(value.task);
+  return task ? orderedTraceFields(task, keys) : [];
+}
+
+function orderedTraceFields(
+  value: Record<string, unknown>,
+  keys: readonly string[],
+): [string, unknown][] {
+  return keys
+    .filter((key) => value[key] !== undefined)
+    .map((key) => [key, value[key]] as [string, unknown]);
+}
+
+function formatTraceFields(fields: readonly [string, unknown][]): string {
+  if (fields.length === 0) {
+    return "";
+  }
+  return ` ${fields.map(([key, value]) => `${key}=${formatTraceValue(value)}`).join(" ")}`;
+}
+
+function formatTraceValue(value: unknown): string {
+  if (typeof value === "string") {
+    return JSON.stringify(formatInline(value.length > 120 ? `${value.slice(0, 117)}...` : value));
+  }
+  if (typeof value === "number" || typeof value === "boolean") {
+    return String(value);
+  }
+  if (value === null) {
+    return "null";
+  }
+  return JSON.stringify(value);
+}
+
+function traceRecord(value: unknown): Record<string, unknown> | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return undefined;
+  }
+  return value as Record<string, unknown>;
+}
+
+function traceTextBytes(value: unknown): number {
+  return typeof value === "string" ? Buffer.byteLength(value) : 0;
+}
+
 function formatTaskListLine(
   task: AgentTaskRecord,
   nowMs: number,
@@ -1234,12 +2100,256 @@ function formatTaskListLine(
   );
 }
 
+type PsColumnWidths = {
+  name: number;
+  status: number;
+  runtime: number;
+  model: number;
+  started: number;
+  duration: number;
+  tokens: number;
+  last: number;
+};
+
+function renderPsView(view: AgentTaskPsView, options: { columns?: number } = {}): string {
+  if (view.groups.length === 0) {
+    return "No tasks.\n";
+  }
+
+  const widths = psColumnWidths(options.columns);
+  const lines: string[] = [`updated ${view.generatedAt}`];
+
+  for (const group of view.groups) {
+    lines.push("");
+    lines.push(formatPsGroupHeading(group));
+    lines.push(
+      `  ${padCell("name", widths.name)} ${padCell("status", widths.status)} ${padCell(
+        "runtime",
+        widths.runtime,
+      )} ${padCell("model", widths.model)} ${padCell("dur", widths.duration)} ${padCell(
+        "tokens",
+        widths.tokens,
+      )} ${padCell("started", widths.started)} ${padCell("last", widths.last)} id`,
+    );
+
+    for (const row of group.rows) {
+      lines.push(
+        `  ${padCell(row.name, widths.name)} ${padCell(row.status, widths.status)} ${padCell(
+          row.runtime,
+          widths.runtime,
+        )} ${padCell(
+          row.model ?? "-",
+          widths.model,
+        )} ${padCell(formatRowDuration(row), widths.duration)} ${padCell(
+          formatTokenUsage(row.usage?.totalTokens),
+          widths.tokens,
+        )} ${padCell(formatStartedAt(row, view.generatedAt), widths.started)} ${padCell(
+          row.error ?? row.lastMessage ?? row.lastEvent ?? "-",
+          widths.last,
+        )} ${row.shortTaskId}`,
+      );
+    }
+  }
+
+  return `${lines.join("\n")}\n`;
+}
+
+function psColumnWidths(columns: number | undefined): PsColumnWidths {
+  const wide = {
+    name: 22,
+    status: 10,
+    runtime: 12,
+    model: 16,
+    started: 13,
+    duration: 6,
+    tokens: 9,
+    last: 28,
+  };
+  if (!columns || columns >= psTableWidth(wide)) {
+    return wide;
+  }
+
+  const compact = {
+    name: 18,
+    status: 9,
+    runtime: 10,
+    model: 12,
+    started: 8,
+    duration: 5,
+    tokens: 7,
+    last: 16,
+  };
+  if (columns >= psTableWidth(compact)) {
+    return compact;
+  }
+
+  return {
+    name: 12,
+    status: 9,
+    runtime: 7,
+    model: 7,
+    started: 8,
+    duration: 3,
+    tokens: 6,
+    last: 8,
+  };
+}
+
+function psTableWidth(widths: PsColumnWidths): number {
+  return (
+    2 +
+    widths.name +
+    widths.status +
+    widths.runtime +
+    widths.model +
+    widths.started +
+    widths.duration +
+    widths.tokens +
+    widths.last +
+    8 +
+    8
+  );
+}
+
+function formatPsGroupHeading(group: AgentTaskPsView["groups"][number]): string {
+  return [
+    group.groupId === "ungrouped" ? "MANUAL" : "PARENT",
+    group.groupId === "ungrouped" ? undefined : group.label,
+    `${group.total} ${group.total === 1 ? "agent" : "agents"}`,
+    group.running > 0 ? `${group.running} running` : undefined,
+    group.succeeded > 0 ? `${group.succeeded} done` : undefined,
+    group.failed > 0 ? `${group.failed} failed` : undefined,
+    group.usage?.totalTokens !== undefined
+      ? `tokens ${formatTokenUsage(group.usage.totalTokens)}`
+      : undefined,
+  ]
+    .filter(Boolean)
+    .join("  ");
+}
+
+function padCell(value: string, width: number): string {
+  const inline = formatInline(value);
+  const truncated =
+    inline.length > width ? `${inline.slice(0, Math.max(0, width - 3))}...` : inline;
+  return truncated.padEnd(width);
+}
+
+function formatRowDuration(row: AgentTaskPsView["rows"][number]): string {
+  if (row.durationMs !== undefined) {
+    return formatDuration(row.durationMs);
+  }
+  return formatDuration(row.ageMs);
+}
+
+const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+function formatStartedAt(row: AgentTaskPsView["rows"][number], generatedAt: string): string {
+  const timestamp = row.startedAt ?? row.createdAt;
+  const value = new Date(timestamp);
+  if (!Number.isFinite(value.getTime())) {
+    return "-";
+  }
+
+  const generated = new Date(generatedAt);
+  if (isSameLocalDate(value, generated)) {
+    return `${padNumber(value.getHours())}:${padNumber(value.getMinutes())}:${padNumber(
+      value.getSeconds(),
+    )}`;
+  }
+
+  return `${MONTHS[value.getMonth()]} ${value.getDate()} ${padNumber(value.getHours())}:${padNumber(
+    value.getMinutes(),
+  )}`;
+}
+
+function isSameLocalDate(left: Date, right: Date): boolean {
+  return (
+    left.getFullYear() === right.getFullYear() &&
+    left.getMonth() === right.getMonth() &&
+    left.getDate() === right.getDate()
+  );
+}
+
+function padNumber(value: number): string {
+  return String(value).padStart(2, "0");
+}
+
+function renderWatchFrame(rendered: string, previousLineCount: number): string {
+  const moveToFrameStart = previousLineCount > 0 ? `\x1b[${previousLineCount}A\r` : "\r";
+  return `\x1b[?25l${moveToFrameStart}${clearRenderedLines(rendered)}\x1b[J\x1b[?25h`;
+}
+
+function clearRenderedLines(rendered: string): string {
+  const endsWithNewline = rendered.endsWith("\n");
+  const lines = endsWithNewline ? rendered.slice(0, -1).split("\n") : rendered.split("\n");
+  const cleared = lines.map((line) => `\r\x1b[2K${line}`).join("\r\n");
+  return endsWithNewline ? `${cleared}\r\n` : cleared;
+}
+
+function countRenderedLines(rendered: string, columns: number | undefined): number {
+  const withoutTrailingNewline = rendered.endsWith("\n") ? rendered.slice(0, -1) : rendered;
+  if (!withoutTrailingNewline) {
+    return 0;
+  }
+
+  return withoutTrailingNewline
+    .split("\n")
+    .reduce((count, line) => count + countPhysicalLines(line, columns), 0);
+}
+
+function countPhysicalLines(line: string, columns: number | undefined): number {
+  if (!columns || columns <= 0) {
+    return 1;
+  }
+  return Math.max(1, Math.ceil(line.length / columns));
+}
+
+function terminalColumns(): number | undefined {
+  return process.stdout.isTTY ? process.stdout.columns : undefined;
+}
+
+function formatDuration(ms: number): string {
+  const seconds = Math.max(0, Math.floor(ms / 1000));
+  if (seconds < 60) {
+    return `${seconds}s`;
+  }
+
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) {
+    return `${minutes}m`;
+  }
+
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) {
+    return `${hours}h`;
+  }
+
+  return `${Math.floor(hours / 24)}d`;
+}
+
+function formatTokenUsage(tokens: number | undefined): string {
+  if (tokens === undefined) {
+    return "-";
+  }
+  if (tokens < 1_000) {
+    return String(tokens);
+  }
+  if (tokens < 1_000_000) {
+    return `${(tokens / 1_000).toFixed(tokens < 10_000 ? 1 : 0)}k`;
+  }
+  return `${(tokens / 1_000_000).toFixed(1)}m`;
+}
+
 function displayTaskName(task: AgentTaskRecord): string {
   const name = task.name ?? summarizeTask(task);
   return formatInline(name || "(unnamed)");
 }
 
 function taskModel(task: AgentTaskRecord, registry: RuntimeRegistry): string {
+  if (task.model) {
+    return task.model;
+  }
+
   const runtime = getRuntimeConfig(task.runtime, registry);
   const modelFlag = runtime?.launch.modelFlag;
   if (!modelFlag) {
@@ -1280,7 +2390,15 @@ function summarizeTask(task: AgentTaskRecord): string {
   if (!promptArg) {
     return "";
   }
-  return promptArg.length > 80 ? `${promptArg.slice(0, 77)}...` : promptArg;
+  return summarizeTaskPrompt(promptArg);
+}
+
+function summarizeTaskPrompt(prompt: string): string {
+  const oneLine = prompt.replace(/\s+/g, " ").trim();
+  if (!oneLine) {
+    return "";
+  }
+  return oneLine.length > 80 ? `${oneLine.slice(0, 77)}...` : oneLine;
 }
 
 function requireValue(args: readonly string[], index: number, option: string): string {
@@ -1312,6 +2430,13 @@ function parseLogStream(value: string): LogStream {
     return value;
   }
   throw new CliError("--stream must be one of: stdout, stderr, all.");
+}
+
+function parseParentToolTraceMode(value: string, option: string): ParentToolTraceMode {
+  if (value === "text" || value === "jsonl") {
+    return value;
+  }
+  throw new CliError(`${option} must be text or jsonl.`);
 }
 
 async function readTail(path: string, maxBytes: number): Promise<string> {

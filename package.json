@@ -14,6 +14,7 @@
     "check": "pnpm run lint && pnpm run format:check && pnpm run typecheck && pnpm test"
   },
   "devDependencies": {
+    "@backnotprop/orchestrator-agent": "workspace:*",
     "@backnotprop/orchestrator-cli": "workspace:*",
     "@backnotprop/orchestrator-core": "workspace:*",
     "@types/node": "^25.9.3",

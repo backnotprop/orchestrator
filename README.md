@@ -3,13 +3,45 @@
 Manage background agents. Coding agents, agent assistants, any agent. <br/>
 _Orchestration of agents is moving to the front. Hand holding is on the way out._
 
-It is agent-CLI first, and can be used as a skill:
+Orchestrator enables you or your agents to run other agents. It is agent-CLI
+first: the main interface is a small CLI that another agent can learn and call.
+Humans can use the same CLI directly when they want to operate the system
+themselves.
+
+Skills, plugins, the CLI, and the future TUI all use the same task state.
+
+## How To Use It
+
+### From An Agent
+
+The preferred path is through an agent skill or plugin. Ask your agent to
+delegate work, and it can use Orchestrator to start, watch, read, or stop other
+agents.
 
 ```bash
-/orchestrator Launch a GPT 5.5 agent to implement the ADR
+/orchestrator Launch a Codex agent to inspect the task store.
 ```
 
-The shape is intentionally close to tools like `kubectl`.
+### Let Orchestrator Coordinate
+
+Use `run` when you want Orchestrator itself to think, launch child agents, wait
+on them, and report back.
+
+```sh
+orchestrator run "Figure out what needs to change in this repo."
+```
+
+Use `--background` when the parent run should be managed like any other task.
+
+```sh
+orchestrator run --background --name "repo plan" "Figure out what needs to change in this repo."
+orchestrator ps --watch
+orchestrator read <task-id>
+```
+
+### Coordinate Agents Yourself
+
+Use `launch` when you want to be the operator and start agents directly.
 
 ```sh
 orchestrator launch claude-code --name "review tests" --model sonnet "Find missing tests."
@@ -24,13 +56,24 @@ inspect store    running  codex        gpt-5.4-mini   1m ago  a6d00f1d-25b4-4dd3
 check email      running  custom       glm-5.2        30s ago  d09edec6-2f14-48fc-924c-ec9f26b61ca0
 ```
 
+The shape is intentionally close to tools like `kubectl`.
+
 ```sh
+orchestrator doctor
+orchestrator run --trace-tools "Launch a Codex child and wait for it."
+orchestrator run --stream-json "Launch a Codex child and wait for it."
+orchestrator ps
+orchestrator ps --all
+orchestrator ps --watch
 orchestrator watch <task-id>
 orchestrator read <task-id>
 orchestrator logs <task-id> --follow
 orchestrator events <task-id>
 orchestrator interrupt <task-id>
 ```
+
+Configure the parent agent in `~/.orchestrator/auth.json`.
+[Parent Agent Config](doc/parent-agent-config.md)
 
 ### Custom Agents
 
@@ -119,20 +162,31 @@ pnpm orchestrator --help
 npm install @backnotprop/orchestrator-core
 ```
 
+```sh
+npm install @backnotprop/orchestrator-agent
+```
+
 Use `@backnotprop/orchestrator-core` when you want the task store, runtime registry, launch plans,
 and supervisor inside your own app instead of the standalone CLI.
+Use `@backnotprop/orchestrator-agent` when you want the Pi-backed parent AI agent and its
+Orchestrator tools.
 
 ```ts
 import { buildAgentLaunchPlan, launchTask } from "@backnotprop/orchestrator-core";
 ```
 
 The CLI package is `@backnotprop/orchestrator-cli`. The reusable runtime package is
-`@backnotprop/orchestrator-core`.
+`@backnotprop/orchestrator-core`. The parent AI agent package is
+`@backnotprop/orchestrator-agent`.
 
 ## Commands
 
+- `doctor`: check parent-agent auth, model, and session paths
+- `run`: start the parent AI agent; add `--background` to manage it like a task, `--trace-tools` to see tool calls live, or `--stream-json` for a full JSONL stream
 - `launch`: start an agent in the background
 - `list`: see known tasks
+- `ps`: see grouped agent work across parent runs
+- `ps --all`: include old finished tasks hidden by the default view
 - `watch`: follow one task live
 - `read`: print the final answer
 - `logs`: show raw agent output
@@ -192,6 +246,18 @@ taskDir: /Users/me/project/.orchestrator/tasks/a6d00f1d-25b4-4dd3-ae22-d12a381b8
 $ orchestrator list
 review tests	running	claude-code	sonnet	4s ago	3f8d1f30-6c52-49dc-a7f7-3c3e04a98657
 inspect store	running	codex	gpt-5.4-mini	1s ago	a6d00f1d-25b4-4dd3-ae22-d12a381b80d4
+```
+
+### Watch The Whole Operation
+
+```console
+$ orchestrator ps --watch
+updated 2026-06-18T22:50:54.458Z
+
+MANUAL  2 agents  2 running
+  name                   status     runtime      model            dur     tokens    started       last                         id
+  review tests           running    claude-code  sonnet           12s     -         22:50:42      agent.reasoning              3f8d1f30
+  inspect store          running    codex        gpt-5.4-mini     8s      16.5k     22:50:46      agent.message                a6d00f1d
 ```
 
 ### Follow One Agent
@@ -284,4 +350,5 @@ pnpm check
 ```
 
 Custom agent configuration is described in [doc/custom-agents.md](doc/custom-agents.md).
+The live agent view idea is tracked in [doc/live-agent-view.md](doc/live-agent-view.md).
 Architecture decisions live in [doc/adr](doc/adr/README.md).

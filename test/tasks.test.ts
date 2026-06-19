@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
+import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -8,10 +8,12 @@ import { buildAgentLaunchPlan } from "@backnotprop/orchestrator-core/runtime";
 import type { AgentLaunchPlan } from "@backnotprop/orchestrator-core/runtime";
 import {
   TaskSupervisorError,
+  buildAgentTaskPsView,
   interruptTask,
   launchTask,
   listTasks,
   readTaskOutput,
+  waitForTask,
 } from "@backnotprop/orchestrator-core/tasks";
 
 type PersistedTaskEvent = {
@@ -151,6 +153,273 @@ test("launchTask creates task files, runs allowlisted shell command, and capture
   });
 });
 
+test("launchTask persists parent metadata and ps groups child tasks by parent run", async () => {
+  await withTempWorkspace(async (workspaceRoot) => {
+    const command = "printf grouped-ok";
+    const handle = await launchTask({
+      workspaceRoot,
+      plan: shellPlan(command, workspaceRoot),
+      name: "grouped child",
+      model: "glm-5.2",
+      parent: {
+        parentRunId: "3133aaea-a17e-4094-b9df-67a77dc87437",
+        parentSessionId: "session-123",
+        parentToolCallId: "tool-call-123",
+      },
+      allowedShellCommands: [command],
+    });
+
+    const completed = await handle.completed;
+    assert.equal(completed.status, "succeeded");
+    assert.equal(completed.model, "glm-5.2");
+    assert.deepEqual(completed.parent, {
+      parentRunId: "3133aaea-a17e-4094-b9df-67a77dc87437",
+      parentSessionId: "session-123",
+      parentToolCallId: "tool-call-123",
+    });
+
+    const events = await readTaskEvents(completed.paths.eventsJsonl);
+    assert.ok(
+      events.some(
+        (event) =>
+          event.type === "agent_event" &&
+          event.data.kind === "task.parent" &&
+          event.data.parentRunId === "3133aaea-a17e-4094-b9df-67a77dc87437",
+      ),
+    );
+
+    const view = await buildAgentTaskPsView({ workspaceRoot });
+    assert.equal(view.groups.length, 1);
+    assert.equal(view.groups[0]?.parentRunId, "3133aaea-a17e-4094-b9df-67a77dc87437");
+    assert.equal(view.groups[0]?.label, "3133aaea");
+    assert.equal(view.groups[0]?.rows[0]?.name, "grouped child");
+    assert.equal(view.groups[0]?.rows[0]?.model, "glm-5.2");
+    assert.equal(view.groups[0]?.rows[0]?.parentToolCallId, "tool-call-123");
+  });
+});
+
+test("ps groups managed parent tasks with their child tasks by parent task id", async () => {
+  await withTempWorkspace(async (workspaceRoot) => {
+    const parentCommand = "printf parent-ok";
+    const childCommand = "printf child-ok";
+    const parentHandle = await launchTask({
+      workspaceRoot,
+      plan: {
+        ...shellPlan(parentCommand, workspaceRoot),
+        runtime: "orchestrator",
+        displayName: "Orchestrator",
+      },
+      taskId: "parent-task-12345678",
+      name: "parent run",
+      allowedShellCommands: [parentCommand],
+    });
+    const childHandle = await launchTask({
+      workspaceRoot,
+      plan: shellPlan(childCommand, workspaceRoot),
+      name: "child run",
+      parent: {
+        parentRunId: "parent-run-12345678",
+        parentTaskId: "parent-task-12345678",
+        parentSessionId: "session-123",
+        parentToolCallId: "tool-call-123",
+      },
+      allowedShellCommands: [childCommand],
+    });
+
+    await parentHandle.completed;
+    await childHandle.completed;
+
+    const view = await buildAgentTaskPsView({ workspaceRoot });
+    assert.equal(view.groups.length, 1);
+    assert.equal(view.groups[0]?.groupId, "parent-task-12345678");
+    assert.equal(view.groups[0]?.label, "parent-t");
+    assert.equal(view.groups[0]?.parentTaskId, "parent-task-12345678");
+    assert.deepEqual(view.groups[0]?.rows.map((row) => row.name).sort(), [
+      "child run",
+      "parent run",
+    ]);
+    assert.equal(
+      view.rows.find((row) => row.name === "child run")?.parentTaskId,
+      "parent-task-12345678",
+    );
+  });
+});
+
+test("ps hides old finished tasks by default and keeps them with all", async () => {
+  await withTempWorkspace(async (workspaceRoot) => {
+    const oldCommand = "printf old-ok";
+    const recentCommand = "printf recent-ok";
+    const oldFailureCommand = "exit 2";
+    const recentFailureCommand = "exit 3";
+    const oldHandle = await launchTask({
+      workspaceRoot,
+      plan: shellPlan(oldCommand, workspaceRoot),
+      name: "old done",
+      allowedShellCommands: [oldCommand],
+    });
+    const recentHandle = await launchTask({
+      workspaceRoot,
+      plan: shellPlan(recentCommand, workspaceRoot),
+      name: "recent done",
+      allowedShellCommands: [recentCommand],
+    });
+    const oldFailureHandle = await launchTask({
+      workspaceRoot,
+      plan: shellPlan(oldFailureCommand, workspaceRoot),
+      name: "old failed",
+      allowedShellCommands: [oldFailureCommand],
+    });
+    const recentFailureHandle = await launchTask({
+      workspaceRoot,
+      plan: shellPlan(recentFailureCommand, workspaceRoot),
+      name: "recent failed",
+      allowedShellCommands: [recentFailureCommand],
+    });
+
+    const oldCompleted = await oldHandle.completed;
+    const recentCompleted = await recentHandle.completed;
+    const oldFailure = await oldFailureHandle.completed;
+    const recentFailure = await recentFailureHandle.completed;
+    const oldTask = JSON.parse(await readFile(oldCompleted.paths.taskJson, "utf8"));
+    const recentTask = JSON.parse(await readFile(recentCompleted.paths.taskJson, "utf8"));
+    const oldFailureTask = JSON.parse(await readFile(oldFailure.paths.taskJson, "utf8"));
+    const recentFailureTask = JSON.parse(await readFile(recentFailure.paths.taskJson, "utf8"));
+    await writeFile(
+      oldCompleted.paths.taskJson,
+      `${JSON.stringify(
+        {
+          ...oldTask,
+          createdAt: "2026-06-18T00:00:00.000Z",
+          startedAt: "2026-06-18T00:00:01.000Z",
+          finishedAt: "2026-06-18T00:00:02.000Z",
+        },
+        null,
+        2,
+      )}\n`,
+    );
+    await writeFile(
+      recentCompleted.paths.taskJson,
+      `${JSON.stringify(
+        {
+          ...recentTask,
+          createdAt: "2026-06-18T02:59:00.000Z",
+          startedAt: "2026-06-18T02:59:01.000Z",
+          finishedAt: "2026-06-18T02:59:02.000Z",
+        },
+        null,
+        2,
+      )}\n`,
+    );
+    await writeFile(
+      oldFailure.paths.taskJson,
+      `${JSON.stringify(
+        {
+          ...oldFailureTask,
+          createdAt: "2026-06-18T00:01:00.000Z",
+          startedAt: "2026-06-18T00:01:01.000Z",
+          finishedAt: "2026-06-18T00:01:02.000Z",
+        },
+        null,
+        2,
+      )}\n`,
+    );
+    await writeFile(
+      recentFailure.paths.taskJson,
+      `${JSON.stringify(
+        {
+          ...recentFailureTask,
+          createdAt: "2026-06-18T02:58:00.000Z",
+          startedAt: "2026-06-18T02:58:01.000Z",
+          finishedAt: "2026-06-18T02:58:02.000Z",
+        },
+        null,
+        2,
+      )}\n`,
+    );
+
+    const now = new Date("2026-06-18T03:00:00.000Z");
+    const defaultView = await buildAgentTaskPsView({ workspaceRoot, now });
+    assert.deepEqual(
+      defaultView.rows.map((row) => row.taskId),
+      [recentFailure.taskId, recentCompleted.taskId],
+    );
+
+    const allView = await buildAgentTaskPsView({ workspaceRoot, now, all: true });
+    assert.deepEqual(
+      allView.rows.map((row) => row.taskId),
+      [recentFailure.taskId, oldFailure.taskId, recentCompleted.taskId, oldCompleted.taskId],
+    );
+  });
+});
+
+test("ps sorts active tasks before failed tasks and succeeded tasks", async () => {
+  await withTempWorkspace(async (workspaceRoot) => {
+    const successCommand = "printf success";
+    const failureCommand = "exit 2";
+    const runningCommand = "sleep 1; printf running";
+    const successHandle = await launchTask({
+      workspaceRoot,
+      plan: shellPlan(successCommand, workspaceRoot),
+      name: "succeeded child",
+      allowedShellCommands: [successCommand],
+    });
+    const failureHandle = await launchTask({
+      workspaceRoot,
+      plan: shellPlan(failureCommand, workspaceRoot),
+      name: "failed child",
+      allowedShellCommands: [failureCommand],
+    });
+    const runningHandle = await launchTask({
+      workspaceRoot,
+      plan: shellPlan(runningCommand, workspaceRoot),
+      name: "running child",
+      allowedShellCommands: [runningCommand],
+    });
+
+    await successHandle.completed;
+    await failureHandle.completed;
+
+    const view = await buildAgentTaskPsView({ workspaceRoot });
+    assert.deepEqual(
+      view.rows.map((row) => row.name),
+      ["running child", "failed child", "succeeded child"],
+    );
+
+    await runningHandle.completed;
+  });
+});
+
+test("waitForTask emits progress after the progress interval", async () => {
+  await withTempWorkspace(async (workspaceRoot) => {
+    const command = 'sleep 0.15; printf "done\\n"';
+    const handle = await launchTask({
+      workspaceRoot,
+      plan: shellPlan(command, workspaceRoot),
+      allowedShellCommands: [command],
+    });
+    const progressEvents: number[] = [];
+
+    const result = await waitForTask({
+      workspaceRoot,
+      taskId: handle.task.taskId,
+      timeoutMs: 5_000,
+      intervalMs: 10,
+      progressIntervalMs: 50,
+      onProgress: (progress) => {
+        progressEvents.push(progress.elapsedMs);
+      },
+    });
+
+    assert.equal(result.retrievalStatus, "completed");
+    assert.ok(progressEvents.length > 0);
+    assert.ok(
+      progressEvents[0] >= 40,
+      `Expected first progress after interval, got ${progressEvents[0]}ms.`,
+    );
+    await handle.completed;
+  });
+});
+
 test("launchTask rejects empty task names", async () => {
   await withTempWorkspace(async (workspaceRoot) => {
     const command = "echo nope";
@@ -223,7 +492,93 @@ test("launchTask normalizes Codex exec JSONL fixtures and extracts final result"
     const agentEvents = events.filter((event) => event.type === "agent_event");
     assert.ok(agentEvents.some((event) => event.data.kind === "thread.started"));
     assert.ok(agentEvents.some((event) => event.data.kind === "agent.message"));
-    assert.ok(agentEvents.some((event) => event.data.kind === "turn.completed"));
+    const usage = agentEvents.find((event) => event.data.kind === "agent.usage");
+    assert.ok(usage);
+    assert.deepEqual(usage.data.usage, {
+      inputTokens: 16484,
+      outputTokens: 31,
+      cacheReadTokens: 10624,
+      totalTokens: 16515,
+    });
+  });
+});
+
+test("ps derives legacy model values from launch args when task metadata is missing", async () => {
+  await withTempWorkspace(async (workspaceRoot) => {
+    const plan = jsonlFixturePlan({
+      runtime: "codex",
+      fixturePath: join(fixturesDir, "codex-exec-jsonl.jsonl"),
+      cwd: workspaceRoot,
+    });
+    const handle = await launchTask({
+      workspaceRoot,
+      plan: {
+        ...plan,
+        args: [...plan.args, "--model", "legacy-model"],
+      },
+    });
+
+    const completed = await handle.completed;
+    assert.equal(completed.status, "succeeded");
+
+    const view = await buildAgentTaskPsView({ workspaceRoot });
+    assert.equal(view.rows[0]?.model, "legacy-model");
+  });
+});
+
+test("launchTask promotes structured Codex provider errors into task.error", async () => {
+  await withTempWorkspace(async (workspaceRoot) => {
+    const providerError = JSON.stringify({
+      type: "error",
+      message: JSON.stringify({
+        type: "error",
+        status: 400,
+        error: {
+          type: "invalid_request_error",
+          message: "The model is not supported for this account.",
+        },
+      }),
+    });
+    const turnFailed = JSON.stringify({
+      type: "turn.failed",
+      error: {
+        message: JSON.stringify({
+          type: "error",
+          status: 400,
+          error: {
+            type: "invalid_request_error",
+            message: "The model is not supported for this account.",
+          },
+        }),
+      },
+    });
+    const handle = await launchTask({
+      workspaceRoot,
+      plan: jsonlCommandPlan({
+        runtime: "codex",
+        command: `printf '%s\\n' ${quoteShellArg(providerError)} ${quoteShellArg(turnFailed)}; exit 1`,
+        cwd: workspaceRoot,
+      }),
+    });
+
+    const completed = await handle.completed;
+    assert.equal(completed.status, "failed");
+    assert.equal(completed.error, "The model is not supported for this account.");
+
+    const events = await readTaskEvents(completed.paths.eventsJsonl);
+    assert.ok(
+      events.some(
+        (event) =>
+          event.type === "agent_event" &&
+          event.data.kind === "runtime.error" &&
+          event.data.message === "The model is not supported for this account.",
+      ),
+    );
+
+    const view = await buildAgentTaskPsView({ workspaceRoot });
+    assert.equal(view.rows[0]?.status, "failed");
+    assert.equal(view.rows[0]?.lastEvent, "runtime.error");
+    assert.equal(view.rows[0]?.error, "The model is not supported for this account.");
   });
 });
 
@@ -312,6 +667,10 @@ test("launchTask marks spawn errors as failed", async () => {
     const completed = await handle.completed;
     assert.equal(completed.status, "failed");
     assert.match(completed.error ?? "", /ENOENT|spawn/);
+
+    const view = await buildAgentTaskPsView({ workspaceRoot });
+    assert.equal(view.rows[0]?.lastEvent, "failed");
+    assert.match(view.rows[0]?.error ?? "", /ENOENT|spawn/);
   });
 });
 

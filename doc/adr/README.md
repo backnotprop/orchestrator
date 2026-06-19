@@ -16,3 +16,5 @@
 - [14. Use JSON config for custom sub-agent runtimes](0014-use-json-config-for-custom-sub-agent-runtimes.md)
 - [15. Allow config to disable built-in agent runtimes](0015-allow-config-to-disable-built-in-agent-runtimes.md)
 - [16. Package Orchestrator usage as an agent skill](0016-package-orchestrator-usage-as-an-agent-skill.md)
+- [17. Build parent AI agent as Pi-backed package over Orchestrator core](0017-build-parent-ai-agent-as-pi-backed-package-over-orchestrator-core.md)
+- [18. Add parent-agent doctor command](0018-add-parent-agent-doctor-command.md)

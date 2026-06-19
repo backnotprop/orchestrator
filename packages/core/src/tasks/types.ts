@@ -9,6 +9,15 @@ export type TaskStatus =
   | "cancelled"
   | "timed_out";
 
+export function isTerminalTaskStatus(status: TaskStatus): boolean {
+  return (
+    status === "succeeded" ||
+    status === "failed" ||
+    status === "cancelled" ||
+    status === "timed_out"
+  );
+}
+
 export type TaskPaths = {
   taskDir: string;
   taskJson: string;
@@ -20,9 +29,27 @@ export type TaskPaths = {
   artifactsDir: string;
 };
 
+export type TaskParent = {
+  parentRunId: string;
+  parentTaskId?: string;
+  parentSessionId?: string;
+  parentToolCallId?: string;
+};
+
+export type TaskUsage = {
+  inputTokens?: number;
+  outputTokens?: number;
+  cacheReadTokens?: number;
+  cacheWriteTokens?: number;
+  totalTokens?: number;
+  costUsd?: number;
+  updatedAt: string;
+};
+
 export type AgentTaskRecord = {
   taskId: string;
   name?: string;
+  model?: string;
   runtime: string;
   launchPlan: AgentLaunchPlan;
   cwd: string;
@@ -33,6 +60,8 @@ export type AgentTaskRecord = {
   exitCode?: number | null;
   pid?: number;
   error?: string;
+  parent?: TaskParent;
+  usage?: TaskUsage;
   paths: TaskPaths;
 };
 
@@ -65,6 +94,8 @@ export type LaunchTaskInput = TaskStoreOptions & {
   plan: AgentLaunchPlan;
   taskId?: string;
   name?: string;
+  model?: string;
+  parent?: TaskParent;
   timeoutMs?: number;
   maxOutputBytes?: number;
   allowedShellCommands?: readonly string[];
@@ -82,6 +113,47 @@ export type ListTasksInput = TaskStoreOptions & {
 export type ReadTaskOutputInput = TaskStoreOptions & {
   taskId: string;
   maxBytes?: number;
+};
+
+export type WaitForTaskInput = TaskStoreOptions & {
+  taskId: string;
+  timeoutMs?: number;
+  intervalMs?: number;
+  progressIntervalMs?: number;
+  onProgress?: (progress: WaitForTaskProgress) => void;
+};
+
+export type WaitForTaskProgress = {
+  task: AgentTaskRecord;
+  elapsedMs: number;
+  timeoutMs: number;
+  remainingMs: number;
+  attempt: number;
+};
+
+export type WaitForTaskResult = {
+  retrievalStatus: "completed" | "timeout";
+  task: AgentTaskRecord;
+};
+
+export type LogStream = "stdout" | "stderr" | "all";
+
+export type ReadTaskLogsInput = TaskStoreOptions & {
+  taskId: string;
+  stream?: LogStream;
+  maxBytes?: number;
+};
+
+export type ReadTaskLogsResult = {
+  taskId: string;
+  stdout: string;
+  stderr: string;
+};
+
+export type ReadTaskEventsInput = TaskStoreOptions & {
+  taskId: string;
+  maxBytes?: number;
+  agentOnly?: boolean;
 };
 
 export type InterruptTaskInput = TaskStoreOptions & {

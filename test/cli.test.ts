@@ -1,14 +1,21 @@
 import assert from "node:assert/strict";
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { writeFile } from "node:fs/promises";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import type { AgentTaskRecord, TaskEvent } from "@backnotprop/orchestrator-core";
-import { runCli, waitForTaskStatus, waitUntilRunning, withTempWorkspace } from "./helpers.ts";
+import {
+  runCli,
+  waitForTaskStatus,
+  waitForTerminalTask,
+  waitUntilRunning,
+  withTempWorkspace,
+} from "./helpers.ts";
 
 const execFileAsync = promisify(execFile);
 const repoRoot = fileURLToPath(new URL("../", import.meta.url));
+const cliPath = fileURLToPath(new URL("../packages/cli/src/cli.ts", import.meta.url));
 
 test("workspace CLI bin invokes the packaged entrypoint", async () => {
   await withTempWorkspace(async (workspaceRoot) => {
@@ -47,6 +54,24 @@ test("CLI help teaches agents the job-control contract", async () => {
     );
 
     assert.match(result.stdout.toString(), /Agent instructions:/);
+    assert.match(result.stdout.toString(), /orchestrator doctor/);
+    assert.match(result.stdout.toString(), /orchestrator ps/);
+    assert.match(
+      result.stdout.toString(),
+      /orchestrator run "figure out what needs to change in this repo"/,
+    );
+    assert.match(result.stdout.toString(), /orchestrator run --background --name "repo plan"/);
+    assert.match(
+      result.stdout.toString(),
+      /orchestrator run --trace-tools "launch a codex child and wait for it"/,
+    );
+    assert.match(
+      result.stdout.toString(),
+      /orchestrator run --stream-json "launch a codex child and wait for it"/,
+    );
+    assert.match(result.stdout.toString(), /--trace-tools\[=text\|jsonl\]/);
+    assert.match(result.stdout.toString(), /--stream-json/);
+    assert.match(result.stdout.toString(), /--background/);
     assert.match(
       result.stdout.toString(),
       /orchestrator launch claude-code --name "review repo" --model sonnet/,
@@ -86,15 +111,156 @@ test("CLI JSON help exposes a machine-readable agent contract", async () => {
     };
 
     assert.equal(help.schemaVersion, 1);
+    assert.ok(help.agentInstructions.some((instruction) => instruction.includes("Use doctor")));
+    assert.ok(help.agentInstructions.some((instruction) => instruction.includes("Use run")));
+    assert.ok(help.agentInstructions.some((instruction) => instruction.includes("--background")));
+    assert.ok(help.agentInstructions.some((instruction) => instruction.includes("--trace-tools")));
+    assert.ok(help.agentInstructions.some((instruction) => instruction.includes("--stream-json")));
     assert.ok(help.agentInstructions.some((instruction) => instruction.includes("Capture taskId")));
+    assert.ok(help.commands.some((command) => command.name === "doctor"));
+    assert.ok(help.commands.some((command) => command.name === "run"));
+    assert.ok(help.commands.some((command) => command.name === "ps"));
     assert.ok(help.runtimes.some((runtime) => runtime.id === "claude-code" && runtime.modelFlag));
     assert.ok(help.runtimes.some((runtime) => runtime.id === "codex" && runtime.modelFlag));
     assert.ok(help.commands.some((command) => command.name === "watch"));
     assert.ok(help.commands.some((command) => command.name === "logs"));
+    assert.ok(help.examples.some((example) => example === "orchestrator doctor"));
+    assert.ok(help.examples.some((example) => example === "orchestrator ps"));
+    assert.ok(help.examples.some((example) => example === "orchestrator ps --watch"));
+    assert.ok(help.examples.some((example) => example.startsWith("orchestrator run")));
+    assert.ok(help.examples.some((example) => example.includes("--background")));
+    assert.ok(help.examples.some((example) => example.includes("--trace-tools")));
+    assert.ok(help.examples.some((example) => example.includes("--stream-json")));
     assert.ok(help.examples.some((example) => example.includes("--name")));
     assert.ok(help.examples.some((example) => example.includes("--follow")));
+    assert.ok(help.workflows.some((workflow) => workflow.name === "parent-agent"));
     assert.ok(help.workflows.some((workflow) => workflow.name === "start-and-watch"));
   }, "orchestrator-cli-json-help-");
+});
+
+test("CLI doctor reports parent-agent config paths", async () => {
+  await withTempWorkspace(async (workspaceRoot) => {
+    const doctor = await runCli(workspaceRoot, ["doctor", "--json"]);
+    const report = JSON.parse(doctor.stdout) as {
+      status: string;
+      canRunParentAgent: boolean;
+      authPath: string;
+      modelsPath: string;
+      sessionDir: string;
+      checks: { id: string; status: string }[];
+      suggestions: string[];
+    };
+
+    assert.equal(report.status, "warning");
+    assert.equal(report.canRunParentAgent, false);
+    assert.match(report.authPath, /\.orchestrator\/auth\.json$/);
+    assert.match(report.modelsPath, /\.orchestrator\/models\.json$/);
+    assert.match(report.sessionDir, /\.orchestrator\/sessions$/);
+    assert.ok(report.checks.some((check) => check.id === "auth-json"));
+    assert.ok(report.suggestions.some((suggestion) => suggestion.includes("auth.json")));
+  }, "orchestrator-cli-doctor-");
+});
+
+test("CLI run requires a user request before creating a parent session", async () => {
+  await withTempWorkspace(async (workspaceRoot) => {
+    try {
+      await runCli(workspaceRoot, ["run", "--workspace", workspaceRoot, "--trace-tools=jsonl"]);
+      assert.fail("Expected run without a request to fail.");
+    } catch (error) {
+      const stderr = error instanceof Error && "stderr" in error ? String(error.stderr) : "";
+      assert.match(stderr, /run requires a user request/);
+    }
+  }, "orchestrator-cli-run-requires-request-");
+});
+
+test("CLI run rejects final JSON and stream JSON together before creating a parent session", async () => {
+  await withTempWorkspace(async (workspaceRoot) => {
+    try {
+      await runCli(workspaceRoot, [
+        "run",
+        "--workspace",
+        workspaceRoot,
+        "--json",
+        "--stream-json",
+        "hello",
+      ]);
+      assert.fail("Expected run with --json and --stream-json to fail.");
+    } catch (error) {
+      const stderr = error instanceof Error && "stderr" in error ? String(error.stderr) : "";
+      assert.match(stderr, /run --stream-json cannot be combined with --json/);
+    }
+  }, "orchestrator-cli-run-stream-json-conflict-");
+});
+
+test("CLI run rejects unsupported trace modes before creating a parent session", async () => {
+  await withTempWorkspace(async (workspaceRoot) => {
+    try {
+      await runCli(workspaceRoot, [
+        "run",
+        "--workspace",
+        workspaceRoot,
+        "--trace-tools=verbose",
+        "hello",
+      ]);
+      assert.fail("Expected run with unsupported trace mode to fail.");
+    } catch (error) {
+      const stderr = error instanceof Error && "stderr" in error ? String(error.stderr) : "";
+      assert.match(stderr, /--trace-tools=verbose must be text or jsonl/);
+    }
+  }, "orchestrator-cli-run-trace-mode-");
+});
+
+test("CLI run rejects names outside background mode", async () => {
+  await withTempWorkspace(async (workspaceRoot) => {
+    try {
+      await runCli(workspaceRoot, [
+        "run",
+        "--workspace",
+        workspaceRoot,
+        "--name",
+        "unused",
+        "hello",
+      ]);
+      assert.fail("Expected foreground run with --name to fail.");
+    } catch (error) {
+      const stderr = error instanceof Error && "stderr" in error ? String(error.stderr) : "";
+      assert.match(stderr, /run --name requires --background/);
+    }
+  }, "orchestrator-cli-run-name-requires-background-");
+});
+
+test("CLI run --background creates a managed parent task", async () => {
+  await withTempWorkspace(async (workspaceRoot) => {
+    const invalidAgentDir = `${workspaceRoot}/agent-file`;
+    await writeFile(invalidAgentDir, "not a directory");
+
+    const launch = await runCli(workspaceRoot, [
+      "run",
+      "--workspace",
+      workspaceRoot,
+      "--agent-dir",
+      invalidAgentDir,
+      "--background",
+      "--name",
+      "parent smoke",
+      "--json",
+      "start a child later",
+    ]);
+    const launched = JSON.parse(launch.stdout) as AgentTaskRecord;
+    assert.equal(launched.runtime, "orchestrator");
+    assert.equal(launched.name, "parent smoke");
+    assert.equal(launched.launchPlan.args.at(-2), "__run-parent-task");
+
+    const finished = await waitForTerminalTask(workspaceRoot, launched.taskId, 10_000);
+    assert.equal(finished.runtime, "orchestrator");
+    assert.equal(finished.name, "parent smoke");
+    assert.equal(finished.status, "failed");
+
+    const ps = await runCli(workspaceRoot, ["ps", "--workspace", workspaceRoot, "--all"]);
+    assert.match(ps.stdout, /PARENT/);
+    assert.match(ps.stdout, /parent smoke/);
+    assert.match(ps.stdout, /orchestrator/);
+  }, "orchestrator-cli-run-background-");
 });
 
 test("CLI hides configured disabled runtimes and refuses to launch them", async () => {
@@ -205,6 +371,138 @@ test("CLI launch accepts task names and list shows names before ids", async () =
     const tasks = JSON.parse(jsonList.stdout) as AgentTaskRecord[];
     assert.equal(tasks[0]?.name, "review tests");
   }, "orchestrator-cli-names-");
+});
+
+test("CLI ps shows grouped operations view and exposes JSON rows", async () => {
+  await withTempWorkspace(async (workspaceRoot) => {
+    const command = "printf ps-ok";
+    const launch = await runCli(workspaceRoot, [
+      "launch",
+      "shell",
+      "--workspace",
+      workspaceRoot,
+      "--name",
+      "check email",
+      "--allow-disabled-runtime",
+      "--allow-shell-command",
+      command,
+      "--json",
+      command,
+    ]);
+    const launched = JSON.parse(launch.stdout) as AgentTaskRecord;
+    await waitForTaskStatus(workspaceRoot, launched.taskId, "succeeded");
+
+    const text = await runCli(workspaceRoot, ["ps", "--workspace", workspaceRoot]);
+    assert.match(text.stdout, /MANUAL\s+1 agent\s+1 done/);
+    assert.match(text.stdout, /dur\s+tokens\s+started/);
+    assert.match(text.stdout, /check email/);
+    assert.match(text.stdout, /succeeded/);
+    assert.match(text.stdout, /shell/);
+    assert.match(text.stdout, new RegExp(launched.taskId.slice(0, 8)));
+
+    const json = await runCli(workspaceRoot, ["ps", "--workspace", workspaceRoot, "--json"]);
+    const view = JSON.parse(json.stdout) as {
+      groups: Array<{
+        groupId: string;
+        label: string;
+        rows: Array<{ taskId: string; name: string; status: string; runtime: string }>;
+      }>;
+    };
+    assert.equal(view.groups[0]?.groupId, "ungrouped");
+    assert.equal(view.groups[0]?.label, "ungrouped");
+    assert.equal(view.groups[0]?.rows[0]?.taskId, launched.taskId);
+    assert.equal(view.groups[0]?.rows[0]?.name, "check email");
+    assert.equal(view.groups[0]?.rows[0]?.status, "succeeded");
+    assert.equal(view.groups[0]?.rows[0]?.runtime, "shell");
+
+    const filtered = await runCli(workspaceRoot, [
+      "ps",
+      "--workspace",
+      workspaceRoot,
+      "--runtime",
+      "shell",
+      "--status",
+      "succeeded",
+      "--parent",
+      "ungrouped",
+      "--json",
+    ]);
+    const filteredView = JSON.parse(filtered.stdout) as { rows: Array<{ taskId: string }> };
+    assert.deepEqual(
+      filteredView.rows.map((row) => row.taskId),
+      [launched.taskId],
+    );
+
+    const all = await runCli(workspaceRoot, ["ps", "--workspace", workspaceRoot, "--all"]);
+    assert.match(all.stdout, /MANUAL\s+1 agent\s+1 done/);
+  }, "orchestrator-cli-ps-");
+});
+
+test("CLI ps --watch refreshes the grouped operations view while a task runs", async () => {
+  await withTempWorkspace(async (workspaceRoot) => {
+    const command = 'node -e "setTimeout(() => {}, 700)"';
+    const launch = await runCli(workspaceRoot, [
+      "launch",
+      "shell",
+      "--workspace",
+      workspaceRoot,
+      "--name",
+      "watch group",
+      "--allow-disabled-runtime",
+      "--allow-shell-command",
+      command,
+      "--json",
+      command,
+    ]);
+    const launched = JSON.parse(launch.stdout) as AgentTaskRecord;
+
+    await waitUntilRunning(workspaceRoot, launched.taskId);
+
+    const child = spawn(
+      process.execPath,
+      [
+        "--experimental-strip-types",
+        cliPath,
+        "ps",
+        "--workspace",
+        workspaceRoot,
+        "--watch",
+        "--interval-ms",
+        "50",
+      ],
+      {
+        cwd: workspaceRoot,
+        env: {
+          ...process.env,
+          HOME: workspaceRoot,
+          XDG_CONFIG_HOME: `${workspaceRoot}/.config`,
+        },
+      },
+    );
+
+    let stdout = "";
+    let stderr = "";
+    child.stdout.on("data", (chunk: Buffer) => {
+      stdout += chunk.toString("utf8");
+    });
+    child.stderr.on("data", (chunk: Buffer) => {
+      stderr += chunk.toString("utf8");
+    });
+
+    try {
+      await waitForText(() => stdout, /watch group[\s\S]*running/);
+    } finally {
+      child.kill("SIGTERM");
+      await waitForChildExit(child);
+    }
+
+    assert.equal(stderr, "");
+    assert.match(stdout, /MANUAL\s+1 agent\s+1 running/);
+    assert.match(stdout, /watch group/);
+    assert.match(stdout, /running/);
+
+    await waitForTaskStatus(workspaceRoot, launched.taskId, "succeeded");
+  }, "orchestrator-cli-ps-watch-");
 });
 
 test("CLI loads custom process runtimes from workspace config", async () => {
@@ -540,6 +838,28 @@ async function waitForCliStdout(
   }
 
   assert.fail(`Timed out waiting for CLI output matching ${pattern}.`);
+}
+
+async function waitForText(read: () => string, pattern: RegExp): Promise<void> {
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < 5_000) {
+    if (pattern.test(read())) {
+      return;
+    }
+    await delay(25);
+  }
+
+  assert.fail(`Timed out waiting for text matching ${pattern}.`);
+}
+
+async function waitForChildExit(child: ReturnType<typeof spawn>): Promise<void> {
+  if (child.exitCode !== null || child.signalCode !== null) {
+    return;
+  }
+
+  await new Promise<void>((resolve) => {
+    child.once("exit", () => resolve());
+  });
 }
 
 async function delay(ms: number): Promise<void> {

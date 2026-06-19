@@ -4,6 +4,7 @@ import type { TaskEvent, TaskPaths } from "./types.ts";
 
 export type RuntimeOutputAdapterResult = {
   resultText?: string;
+  errorText?: string;
 };
 
 export type RuntimeOutputAdapter = {
@@ -66,6 +67,7 @@ class StdoutJsonOutputAdapter implements RuntimeOutputAdapter {
 class JsonlRuntimeOutputAdapter implements RuntimeOutputAdapter {
   private stdoutRemainder = "";
   private resultText: string | undefined;
+  private errorText: string | undefined;
   private readonly plan: AgentLaunchPlan;
   private readonly paths: TaskPaths;
   private readonly appendEvent: AppendEvent;
@@ -100,7 +102,10 @@ class JsonlRuntimeOutputAdapter implements RuntimeOutputAdapter {
     }
     this.stdoutRemainder = "";
 
-    return this.resultText !== undefined ? { resultText: this.resultText } : {};
+    return {
+      ...(this.resultText !== undefined ? { resultText: this.resultText } : {}),
+      ...(this.errorText !== undefined ? { errorText: this.errorText } : {}),
+    };
   }
 
   private async consumeJsonlLine(line: string): Promise<void> {
@@ -134,9 +139,17 @@ class JsonlRuntimeOutputAdapter implements RuntimeOutputAdapter {
 
     const normalized = normalizeRuntimeEvent(this.plan.runtime, parsed);
     if (normalized) {
+      const errorText = runtimeErrorMessage(normalized);
+      if (errorText) {
+        this.errorText = errorText;
+      }
       await this.appendEvent("agent_event", normalized);
     }
   }
+}
+
+function runtimeErrorMessage(event: Record<string, unknown>): string | undefined {
+  return stringValue(event, "kind") === "runtime.error" ? stringValue(event, "message") : undefined;
 }
 
 function normalizeRuntimeEvent(
@@ -271,14 +284,25 @@ function normalizeCodexEvent(
     });
   }
 
-  if (sourceType === "turn.failed") {
-    const error = recordValue(event, "error");
+  if (sourceType === "turn.completed") {
     return compactData({
       runtime,
       source: "stdout",
-      kind: "turn.failed",
+      kind: "agent.usage",
       sourceType,
-      message: error ? stringValue(error, "message") : undefined,
+      usage: tokenUsageFromRecord(recordValue(event, "usage")),
+    });
+  }
+
+  if (sourceType === "turn.failed") {
+    const error = recordValue(event, "error");
+    const message = error ? extractProviderErrorMessage(stringValue(error, "message")) : undefined;
+    return compactData({
+      runtime,
+      source: "stdout",
+      kind: "runtime.error",
+      sourceType,
+      message,
     });
   }
 
@@ -288,7 +312,7 @@ function normalizeCodexEvent(
       source: "stdout",
       kind: "runtime.error",
       sourceType,
-      message: stringValue(event, "message"),
+      message: extractProviderErrorMessage(stringValue(event, "message")),
     });
   }
 
@@ -434,6 +458,56 @@ function codexItemMessage(item: Record<string, unknown>): string | undefined {
 
   const error = recordValue(item, "error");
   return error ? stringValue(error, "message") : undefined;
+}
+
+function extractProviderErrorMessage(message: string | undefined): string | undefined {
+  if (!message) {
+    return undefined;
+  }
+
+  try {
+    const parsed = JSON.parse(message) as unknown;
+    if (isRecord(parsed)) {
+      const direct = stringValue(parsed, "message");
+      if (direct) {
+        return direct;
+      }
+      const error = recordValue(parsed, "error");
+      const nested = error ? stringValue(error, "message") : undefined;
+      if (nested) {
+        return nested;
+      }
+    }
+  } catch {
+    // Provider errors are often plain text; keep the original message.
+  }
+
+  return message;
+}
+
+function tokenUsageFromRecord(
+  usage: Record<string, unknown> | undefined,
+): Record<string, number> | undefined {
+  if (!usage) {
+    return undefined;
+  }
+
+  const inputTokens = numberValue(usage, "input_tokens");
+  const outputTokens = numberValue(usage, "output_tokens");
+  const cacheReadTokens = numberValue(usage, "cached_input_tokens");
+  const totalTokens =
+    inputTokens !== undefined && outputTokens !== undefined
+      ? inputTokens + outputTokens
+      : undefined;
+
+  const normalized = compactData({
+    inputTokens,
+    outputTokens,
+    cacheReadTokens,
+    totalTokens,
+  });
+
+  return Object.keys(normalized).length > 0 ? (normalized as Record<string, number>) : undefined;
 }
 
 function compactData(data: Record<string, unknown>): Record<string, unknown> {

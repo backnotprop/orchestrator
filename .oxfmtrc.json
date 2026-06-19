@@ -6,6 +6,7 @@
     "**/dist/**",
     "**/node_modules/**",
     "**/.orchestrator/**",
+    "**/.research/**",
     "**/coverage/**",
     "pnpm-lock.yaml"
   ]

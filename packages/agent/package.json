@@ -1,0 +1,27 @@
+{
+  "name": "@backnotprop/orchestrator-agent",
+  "version": "0.0.0",
+  "files": [
+    "src"
+  ],
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./doctor": "./src/doctor.ts",
+    "./instructions": "./src/instructions.ts",
+    "./run-events": "./src/run-events.ts",
+    "./session": "./src/session.ts",
+    "./tools": "./src/tools.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@backnotprop/orchestrator-core": "workspace:*",
+    "@earendil-works/pi-coding-agent": "^0.79.6",
+    "typebox": "^1.1.38"
+  },
+  "engines": {
+    "node": ">=24.0.0"
+  }
+}
