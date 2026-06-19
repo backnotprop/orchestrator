@@ -5,10 +5,8 @@
 - `packages/core`: reusable runtime, launch-plan, task-store, and supervisor code.
 - `packages/cli`: the `orchestrator` command-line entrypoint.
 - `test`: Node test suite, helpers, and JSONL fixtures.
-- `doc`: user-facing docs, internal notes, and older Architecture Decision
-  Records under `doc/adr`.
-- `adr`: current research, specs, and accepted decisions created through the ADR
-  workflow.
+- `doc`: user-facing docs and internal notes.
+- `adr`: canonical Architecture Decision Records, research, and specs.
 - `.orchestrator`: local task state; do not commit it. Often a testing artifact.
 
 Keep runtime behavior in `packages/core` and terminal rendering or argv parsing in
@@ -18,7 +16,7 @@ Keep runtime behavior in `packages/core` and terminal rendering or argv parsing 
 
 Update docs when behavior changes. Use `README.md` for the short public entry
 point, `doc/*.md` for user-facing setup and operations, `doc/internal/*.md` for
-maintainer-facing explanations, and `adr/` for research, specs, and decisions.
+maintainer-facing explanations, and `adr/` for decisions, research, and specs.
 Keep docs concrete and current with the CLI/API behavior.
 
 ## Product Direction

@@ -351,4 +351,4 @@ pnpm check
 
 Custom agent configuration is described in [doc/custom-agents.md](doc/custom-agents.md).
 The live agent view idea is tracked in [doc/live-agent-view.md](doc/live-agent-view.md).
-Architecture decisions live in [doc/adr](doc/adr/README.md).
+Architecture decisions live in [adr](adr/README.md).

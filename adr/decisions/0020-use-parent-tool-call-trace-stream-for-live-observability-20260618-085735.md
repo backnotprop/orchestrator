@@ -1,4 +1,4 @@
-# 2. Use Parent Tool-Call Trace Stream for Live Observability
+# 20. Use Parent Tool-Call Trace Stream for Live Observability
 
 Date: 2026-06-18
 

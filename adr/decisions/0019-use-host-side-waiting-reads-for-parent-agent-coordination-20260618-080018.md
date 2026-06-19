@@ -1,4 +1,4 @@
-# 1. Use Host-Side Waiting Reads for Parent Agent Coordination
+# 19. Use Host-Side Waiting Reads for Parent Agent Coordination
 
 Date: 2026-06-18
 

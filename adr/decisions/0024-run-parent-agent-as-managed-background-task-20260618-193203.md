@@ -1,4 +1,4 @@
-# 6. Run Parent Agent As Managed Background Task
+# 24. Run Parent Agent As Managed Background Task
 
 Date: 2026-06-18
 

@@ -1,4 +1,4 @@
-# 5. Build Multi-Agent Operations View From Task State
+# 23. Build Multi-Agent Operations View From Task State
 
 Date: 2026-06-18
 

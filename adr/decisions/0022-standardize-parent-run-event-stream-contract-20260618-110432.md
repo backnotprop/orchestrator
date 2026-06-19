@@ -1,4 +1,4 @@
-# 4. Standardize Parent Run Event Stream Contract
+# 22. Standardize Parent Run Event Stream Contract
 
 Date: 2026-06-18
 
@@ -8,7 +8,7 @@ Accepted
 
 ## Context
 
-ADR 3 decided that Orchestrator should expose both human-friendly trace output
+ADR 21 decided that Orchestrator should expose both human-friendly trace output
 and machine-readable JSON streams. That was directionally right, but it did not
 fully define the contract.
 
