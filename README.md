@@ -28,13 +28,13 @@ Use `run` when you want Orchestrator itself to think, launch child agents, wait
 on them, and report back.
 
 ```sh
-orchestrator run "Figure out what needs to change in this repo."
+orchestrator run "Launch a Claude Code agent to review the API package, launch a Codex agent to inspect the task store, wait for both, then summarize what they found."
 ```
 
 Use `--background` when the parent run should be managed like any other task.
 
 ```sh
-orchestrator run --background --name "repo plan" "Figure out what needs to change in this repo."
+orchestrator run --background --name "api and store review" "Launch a Claude Code agent to review the API package, launch a Codex agent to inspect the task store, wait for both, then summarize what they found."
 orchestrator ps --watch
 orchestrator read <task-id>
 ```

@@ -5,26 +5,158 @@ Now the parent agent can actually wait for a child result before answering.
 Example request:
 
 ```sh
-orchestrator run 'Launch a Codex child using model gpt-5.4-mini. Ask it to say hello, wait for it, then tell me what it said.'
+orchestrator run 'Launch a Claude Code child to review the API package, launch a Codex child using model gpt-5.4-mini to inspect the task store, wait for both, then summarize what they found.'
 ```
 
-What happens:
+## What Happens
+
+The parent agent is a Pi session with only Orchestrator tools enabled. The CLI
+owns process supervision, task files, logs, events, and final result capture.
+
+Foreground `orchestrator run`:
 
 ```text
-1. CLI starts the parent Orchestrator agent.
-2. Parent model decides to call launch_agent.
-3. launch_agent starts Codex/Claude/custom as a background task.
-4. Orchestrator writes that child task to .orchestrator/tasks/<task-id>/.
-5. Parent receives the child task id.
-6. Parent calls read_agent({ taskId, wait: true }).
-7. Core waitForTask reads task.json until the child reaches:
-   succeeded, failed, cancelled, or timed_out.
-8. read_agent reads result.md with byte limits.
-9. Parent receives:
-   retrievalStatus: "completed"
-   task: { status, runtime, name, taskDir, ... }
-   output: "child result..."
-10. Parent answers the user using the child result.
+packages/cli/src/cli.ts
+  main()
+    -> commandRun(parseRunOptions(argv))
+      -> executeParentRun(options)
+        -> createRunStreamSequencer({ runId })
+        -> createOrchestratorParentSession({
+             parentRunId,
+             parentSessionId: () => parentSessionId,
+             backgroundLauncher: launchInBackground,
+             trace?
+           })
+          -> packages/agent/src/session.ts
+             createOrchestratorParentSession()
+               -> createOrchestratorAgentTools()
+               -> createAgentSession({
+                    noTools: "builtin",
+                    tools: ["launch_agent", "list_agents", ...],
+                    customTools: orchestratorTools
+                  })
+        -> session.prompt(buildOrchestratorParentPrompt(request))
+          -> Pi owns the model/tool/model loop
+        -> session.getLastAssistantText()
+        -> print final answer, JSON, or stream-json events
+        -> session.dispose()
+```
+
+Background `orchestrator run --background`:
+
+```text
+packages/cli/src/cli.ts
+  main()
+    -> commandRun()
+      -> commandRunBackground()
+        -> taskId = randomUUID()
+        -> writeParentRunRequest()
+           .orchestrator/parent-run-requests/<task-id>.json
+        -> parentRunLaunchPlan({
+             runtime: "orchestrator",
+             executable: process.execPath,
+             args: ["--experimental-strip-types", cli.ts, "__run-parent-task", requestPath]
+           })
+        -> launchInBackground(launchInput)
+          -> writeRunRequest()
+             .orchestrator/run-requests/<task-id>.json
+          -> spawn node cli.ts __run-task <run-request>
+          -> waitForTaskRecord()
+        -> print parent task id
+
+detached supervisor process
+  cli.ts __run-task <run-request>
+    -> commandRunTask()
+      -> launchTask(launchInput)
+        -> initializeTaskFiles()
+           .orchestrator/tasks/<task-id>/
+        -> spawn node cli.ts __run-parent-task <parent-run-request>
+        -> capture stdout/stderr/events/result through normal task machinery
+
+parent task process
+  cli.ts __run-parent-task <parent-run-request>
+    -> commandRunParentTask()
+      -> executeParentRun({
+           parentRunId: parent task id,
+           parentTaskId: parent task id,
+           traceTools: "off",
+           streamJson: false
+         })
+      -> write final parent answer to stdout
+
+supervisor close handler
+  -> output adapter finalizes
+  -> result.md gets final parent answer
+  -> task.json gets succeeded/failed/cancelled/timed_out
+  -> events.jsonl gets result and terminal event
+```
+
+Child launch from the parent:
+
+```text
+Pi model chooses tool call
+  -> launch_agent(params)
+    -> packages/agent/src/tools.ts
+       createLaunchAgentTool().execute()
+         -> loadConfiguredRuntimeRegistry()
+         -> buildAgentLaunchPlan({
+              runtime: "codex" | "claude-code" | custom,
+              task: params.instructions,
+              model: params.model,
+              outputMode: params.outputMode
+            })
+         -> LaunchTaskInput {
+              taskId,
+              plan,
+              name?,
+              model?,
+              parent: {
+                parentRunId,
+                parentTaskId?,
+                parentSessionId?,
+                parentToolCallId
+              }
+            }
+         -> backgroundLauncher(launchInput)
+            // CLI parent runs pass launchInBackground here.
+         -> returns task summary to the model
+
+detached child supervisor
+  cli.ts __run-task <run-request>
+    -> commandRunTask()
+      -> launchTask()
+        -> task.json, stdout.log, stderr.log, events.jsonl,
+           transcript.jsonl, result.md, artifacts/
+        -> append queued/starting/running events
+        -> spawn provider CLI
+        -> output adapter normalizes provider stdout/stderr
+        -> on close, write result.md and terminal status
+```
+
+Waiting for a child:
+
+```text
+Pi model chooses tool call
+  -> read_agent({ taskId, wait: true, timeoutMs?, maxBytes? })
+    -> packages/agent/src/tools.ts
+       createReadAgentTool().execute()
+         -> waitForTask({
+              workspaceRoot,
+              orchestratorDir,
+              taskId,
+              timeoutMs,
+              onProgress?
+            })
+           -> packages/core/src/tasks/wait.ts
+              loop:
+                readTaskRecord(task.json)
+                if status is terminal, return completed
+                if timeout elapsed, return timeout
+                optionally emit progress trace
+                sleep interval
+         -> readTaskOutput(result.md, maxBytes)
+         -> read latest token usage from task events when present
+         -> return retrievalStatus, task summary, output, usage?
 ```
 
 If the child does not finish before `timeoutMs`, the parent gets:
@@ -46,13 +178,13 @@ So the parent can say "it’s still running," inspect logs/events, wait again, o
 `orchestrator run` stays foreground by default:
 
 ```sh
-orchestrator run "Figure out what needs to change in this repo."
+orchestrator run "Launch a Claude Code child to review the API package, launch a Codex child using model gpt-5.4-mini to inspect the task store, wait for both, then summarize what they found."
 ```
 
 Use `--background` when the parent agent itself should be a managed task:
 
 ```sh
-orchestrator run --background --name "repo plan" "Figure out what needs to change in this repo."
+orchestrator run --background --name "api and store review" "Launch a Claude Code child to review the API package, launch a Codex child using model gpt-5.4-mini to inspect the task store, wait for both, then summarize what they found."
 ```
 
 That returns a task id immediately. The parent task uses runtime id `orchestrator`
