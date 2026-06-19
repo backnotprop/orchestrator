@@ -28,7 +28,7 @@ Use `run` when you want Orchestrator itself to think, launch child agents, wait
 on them, and report back.
 
 ```sh
-orchestrator run "Launch a Claude Code agent to review the API package, launch a Codex agent to inspect the task store, wait for both, then summarize what they found."
+orchestrator run "Launch a Claude Code agent to do x, launch a Codex agent to do y"
 ```
 
 Use `--background` when the parent run should be managed like any other task.
