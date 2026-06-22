@@ -1,6 +1,12 @@
 import { isTerminalTaskStatus } from "@backnotprop/orchestrator-core";
 import type { AgentTaskPsView, TaskStatus } from "@backnotprop/orchestrator-core";
-import { formatDuration, formatInline, formatTokenUsage, padNumber } from "./terminal-format.ts";
+import {
+  formatDuration,
+  formatInline,
+  formatTokenUsageCompact,
+  formatTokenUsageLabel,
+  padNumber,
+} from "./terminal-format.ts";
 
 type PsColumnWidths = {
   runtime: number;
@@ -48,7 +54,7 @@ export function renderPsView(view: AgentTaskPsView, options: { columns?: number 
         )} ${padCell(formatStartedAt(row, view.generatedAt, widths.started), widths.started)} ${padCell(
           formatRowDuration(row),
           widths.duration,
-        )} ${padCell(formatTokenUsage(row.usage?.totalTokens), widths.tokens)} ${padCell(
+        )} ${padCell(formatTokenUsageCompact(row.usage), widths.tokens)} ${padCell(
           formatPsLast(row),
           widths.last,
         )} ${row.shortTaskId}`,
@@ -119,14 +125,18 @@ function psTableWidth(widths: PsColumnWidths): number {
 function formatPsSummary(view: AgentTaskPsView): string {
   const running = view.rows.filter((row) => !isTerminalTaskStatus(row.status)).length;
   const done = view.rows.filter((row) => row.status === "succeeded").length;
-  const failed = view.rows.filter((row) => isFailedPsStatus(row.status)).length;
+  const stopped = view.rows.filter((row) => row.status === "cancelled").length;
+  const failed = view.rows.filter((row) => row.status === "failed").length;
+  const timedOut = view.rows.filter((row) => row.status === "timed_out").length;
   const usage = sumPsTokens(view.groups);
   return [
     `updated ${formatGeneratedAt(view.generatedAt)}`,
     `${running} running`,
     `${done} done`,
+    stopped > 0 ? `${stopped} stopped` : undefined,
     failed > 0 ? `${failed} failed` : undefined,
-    usage !== undefined ? `${formatTokenUsage(usage)} tok` : undefined,
+    timedOut > 0 ? `${timedOut} timeout` : undefined,
+    usage ? `${formatTokenUsageLabel(usage)} tok` : undefined,
   ]
     .filter(Boolean)
     .join("  ");
@@ -140,9 +150,11 @@ function formatPsGroupHeading(group: AgentTaskPsView["groups"][number]): string 
     `${group.total} ${group.total === 1 ? "agent" : "agents"}`,
     group.running > 0 ? `${group.running} running` : undefined,
     group.succeeded > 0 ? `${group.succeeded} done` : undefined,
+    group.stopped > 0 ? `${group.stopped} stopped` : undefined,
     group.failed > 0 ? `${group.failed} failed` : undefined,
+    group.timedOut > 0 ? `${group.timedOut} timeout` : undefined,
     group.usage?.totalTokens !== undefined
-      ? `${formatTokenUsage(group.usage.totalTokens)} tok`
+      ? `${formatTokenUsageLabel(group.usage)} tok`
       : undefined,
   ]
     .filter(Boolean)
@@ -155,11 +167,18 @@ function psGroupLabel(group: AgentTaskPsView["groups"][number]): string {
   }
 
   const parent = group.rows.find((row) => row.taskId === group.parentTaskId);
-  return parent?.name ?? group.label;
+  return parent?.name ?? group.parentLabel ?? group.label;
 }
 
 function formatPsGroupStatus(status: AgentTaskPsView["groups"][number]["status"]): string {
-  return status === "succeeded" ? "done" : status;
+  switch (status) {
+    case "succeeded":
+      return "done";
+    case "timed_out":
+      return "timeout";
+    default:
+      return status;
+  }
 }
 
 function formatPsStatus(status: TaskStatus): string {
@@ -253,15 +272,28 @@ function messageFromUnknown(value: unknown): string | undefined {
   return undefined;
 }
 
-function isFailedPsStatus(status: TaskStatus): boolean {
-  return status === "failed" || status === "cancelled" || status === "timed_out";
-}
+function sumPsTokens(
+  groups: readonly AgentTaskPsView["groups"][number][],
+): AgentTaskPsView["groups"][number]["usage"] | undefined {
+  const usage = groups
+    .map((group) => group.usage)
+    .filter((value) => value?.totalTokens !== undefined);
+  if (usage.length === 0) {
+    return undefined;
+  }
 
-function sumPsTokens(groups: readonly AgentTaskPsView["groups"][number][]): number | undefined {
-  const known = groups
-    .map((group) => group.usage?.totalTokens)
-    .filter((value): value is number => typeof value === "number");
-  return known.length > 0 ? known.reduce((sum, value) => sum + value, 0) : undefined;
+  const totalTokens = usage
+    .map((value) => value?.totalTokens)
+    .filter((value): value is number => typeof value === "number")
+    .reduce((sum, value) => sum + value, 0);
+  const final = usage.every((value) => value?.final === true);
+  const estimated = usage.some((value) => value?.source === "estimated");
+  return {
+    totalTokens,
+    ...(estimated ? { source: "estimated" } : {}),
+    final,
+    updatedAt: usage[0]?.updatedAt ?? "",
+  };
 }
 
 function padCell(value: string, width: number): string {

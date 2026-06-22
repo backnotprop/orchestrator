@@ -8,8 +8,9 @@ Are we making the right call by treating Orchestrator's live output as
 structured events first, with human CLI output, JSONL, and the future TUI as
 renderers over those events?
 
-This spike checked local references for Pi, Claude-style agent output, Codex,
-and OpenCode.
+This spike checked architecture references for Pi, Claude-style agent output,
+Codex, and OpenCode. Claude-style findings are recorded as product behavior and
+UX inspiration rather than source-code dependency.
 
 ## Short Answer
 
@@ -64,14 +65,6 @@ That supports two choices for Orchestrator:
 - `read_agent` should return clean final output, not raw logs.
 - human trace output should summarize and bound progress instead of dumping
   every low-level event.
-
-Relevant references:
-
-- `/Users/ramos/oss-agents/cc-open/remote/sdkMessageAdapter.ts`
-- `/Users/ramos/oss-agents/cc-open/tools/AgentTool/UI.tsx`
-- `/Users/ramos/oss-agents/cc-open/tools/TaskOutputTool/TaskOutputTool.tsx`
-- `/Users/ramos/oss-agents/cc-open/utils/task/sdkProgress.ts`
-- `/Users/ramos/oss-agents/cc-open/utils/task/TaskOutput.ts`
 
 ## Codex Findings
 

@@ -6,18 +6,24 @@ import {
   type OrchestratorConfigLoadOptions,
 } from "@backnotprop/orchestrator-core/runtime";
 import {
-  interruptTask,
+  interruptTasks,
   launchTask,
   listTasks,
   readTaskEvents,
   readTaskLogs,
   readTaskOutput,
   readTaskRecord,
+  resolveTaskId,
+  selectTaskUsage,
   waitForTask,
+  usageWithUpdatedAt,
   type AgentTaskRecord,
+  type InterruptTasksResult,
+  type InterruptTasksTarget,
   type LaunchTaskInput,
   type LogStream,
   type TaskEvent,
+  type TaskUsage,
   type TaskStatus,
   type WaitForTaskProgress,
 } from "@backnotprop/orchestrator-core/tasks";
@@ -130,7 +136,10 @@ type ReadAgentLogsDetails = {
 };
 
 type InterruptAgentDetails = {
-  task: TaskSummary;
+  task?: TaskSummary;
+  interrupted?: TaskSummary[];
+  skipped?: Array<{ task: TaskSummary; reason: string }>;
+  failed?: Array<{ taskId: string; error: string }>;
 };
 
 const StatusSchema = Type.Union([
@@ -370,10 +379,10 @@ function createReadAgentTool(context: ToolContext): OrchestratorParentTool {
       const task = waitResult?.task ?? (await readTaskRecord(store, params.taskId));
       const output = await readTaskOutput({
         ...store,
-        taskId: params.taskId,
+        taskId: task.taskId,
         ...(params.maxBytes !== undefined ? { maxBytes: params.maxBytes } : {}),
       });
-      const usage = await readLatestTaskUsage(store, params.taskId);
+      const usage = await readLatestTaskUsage(store, task.taskId);
 
       return jsonResult<ReadAgentDetails>({
         ...(waitResult ? { retrievalStatus: waitResult.retrievalStatus } : {}),
@@ -399,16 +408,18 @@ function createReadAgentEventsTool(context: ToolContext): OrchestratorParentTool
     }),
     executionMode: "parallel",
     async execute(_toolCallId, params) {
+      const store = storeOptions(context);
+      const taskId = await resolveTaskId(store, params.taskId);
       const events = await readTaskEvents({
-        ...storeOptions(context),
-        taskId: params.taskId,
+        ...store,
+        taskId,
         ...(params.maxBytes ? { maxBytes: params.maxBytes } : {}),
         ...(params.agentOnly !== undefined ? { agentOnly: params.agentOnly } : {}),
       });
       const limit = Math.max(0, Math.trunc(params.limit ?? events.length));
 
       return jsonResult<ReadAgentEventsDetails>({
-        taskId: params.taskId,
+        taskId,
         events: limit > 0 ? events.slice(-limit) : [],
       });
     },
@@ -444,28 +455,100 @@ function createInterruptAgentTool(context: ToolContext): OrchestratorParentTool 
   return defineTool({
     name: "interrupt_agent",
     label: "Interrupt agent",
-    description: "Stop a running Orchestrator agent task.",
-    promptSnippet: "interrupt_agent stops a running task.",
+    description: "Stop running Orchestrator agent tasks.",
+    promptSnippet:
+      "interrupt_agent stops one task, a parent task with its children, or a ps group.",
     promptGuidelines: [
       "Use interrupt_agent when a task is no longer useful, is wasting time, or should be cancelled.",
+      "Use taskId with children: true to stop a parent task and its children.",
+      "Use taskId with taskOnly: true only when a parent should stop but its children should continue.",
+      "Use groupId to stop the running tasks in one ps group.",
     ],
     parameters: Type.Object({
-      taskId: Type.String(),
+      taskId: Type.Optional(Type.String()),
+      parentId: Type.Optional(Type.String()),
+      groupId: Type.Optional(Type.String()),
+      children: Type.Optional(Type.Boolean()),
+      taskOnly: Type.Optional(Type.Boolean()),
       reason: Type.Optional(Type.String()),
     }),
     executionMode: "sequential",
     async execute(_toolCallId, params) {
-      const task = await interruptTask({
+      const result = await interruptTasks({
         ...storeOptions(context),
-        taskId: params.taskId,
+        target: interruptTargetFromParams(params),
         ...(params.reason ? { reason: params.reason } : {}),
       });
 
-      return jsonResult<InterruptAgentDetails>({
-        task: summarizeTask(task),
-      });
+      return jsonResult<InterruptAgentDetails>(interruptAgentDetails(params, result));
     },
   });
+}
+
+function interruptTargetFromParams(params: {
+  taskId?: string;
+  parentId?: string;
+  groupId?: string;
+  children?: boolean;
+  taskOnly?: boolean;
+}): InterruptTasksTarget {
+  const selectors = [params.taskId, params.parentId, params.groupId].filter(Boolean);
+  if (selectors.length !== 1) {
+    throw new Error("interrupt_agent requires exactly one of taskId, parentId, or groupId.");
+  }
+  if (params.children && params.taskOnly) {
+    throw new Error("interrupt_agent cannot combine children and taskOnly.");
+  }
+  if (params.parentId && !params.children) {
+    throw new Error("interrupt_agent parentId requires children: true.");
+  }
+  if (params.groupId && (params.children || params.taskOnly)) {
+    throw new Error("interrupt_agent groupId cannot combine with children or taskOnly.");
+  }
+  if (params.taskOnly && !params.taskId) {
+    throw new Error("interrupt_agent taskOnly requires taskId.");
+  }
+
+  if (params.groupId) {
+    return { kind: "group", groupId: params.groupId };
+  }
+  if (params.parentId) {
+    return { kind: "parent", parentId: params.parentId, children: true };
+  }
+  if (!params.taskId) {
+    throw new Error("interrupt_agent requires exactly one of taskId, parentId, or groupId.");
+  }
+  return {
+    kind: "task",
+    taskId: params.taskId,
+    ...(params.children ? { children: true } : {}),
+    ...(params.taskOnly ? { taskOnly: true } : {}),
+  };
+}
+
+function interruptAgentDetails(
+  params: { children?: boolean; taskOnly?: boolean; parentId?: string; groupId?: string },
+  result: InterruptTasksResult,
+): InterruptAgentDetails {
+  if (
+    !params.children &&
+    !params.taskOnly &&
+    !params.parentId &&
+    !params.groupId &&
+    result.interrupted.length === 1 &&
+    result.skipped.length === 0
+  ) {
+    return { task: summarizeTask(result.interrupted[0]) };
+  }
+
+  return {
+    interrupted: result.interrupted.map(summarizeTask),
+    skipped: result.skipped.map((skipped) => ({
+      task: summarizeTask(skipped.task),
+      reason: skipped.reason,
+    })),
+    failed: result.failed,
+  };
 }
 
 async function loadRegistry(context: ToolContext) {
@@ -516,14 +599,21 @@ async function readLatestTaskUsage(
   store: ReturnType<typeof storeOptions>,
   taskId: string,
 ): Promise<TokenUsage | undefined> {
+  const task = await readTaskRecord(store, taskId);
+  const taskUsage = selectTaskUsage(undefined, task.usage);
+  if (taskUsage) {
+    return taskUsage;
+  }
+
   const events = await readTaskEvents({ ...store, taskId, agentOnly: true });
-  for (const event of [...events].reverse()) {
+  let selected: TaskUsage | undefined;
+  for (const event of events) {
     const usage = tokenUsageFromUnknown(event.data.usage);
     if (usage) {
-      return usage;
+      selected = selectTaskUsage(selected, usageWithUpdatedAt(usage, event.ts));
     }
   }
-  return undefined;
+  return selected;
 }
 
 function emitReadAgentWaitProgress(

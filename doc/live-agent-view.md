@@ -41,6 +41,9 @@ check email       running   custom       glm-5.2        30s     -        22:51:4
 
 Rows are grouped by parent run when a child was launched by `orchestrator run`.
 Manual `orchestrator launch` tasks appear under `MANUAL` in human output.
+Stopped tasks are counted separately from failed tasks. A deliberate interrupt
+should show as `stopped`, not `failed`, so agents and humans can tell the
+difference between cancelled work and broken work.
 
 Future TUI actions:
 

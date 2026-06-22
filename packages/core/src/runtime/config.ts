@@ -45,9 +45,16 @@ const DEFAULT_MAX_OUTPUT_BYTES = 200_000;
 const BUILT_IN_RUNTIME_IDS = new Set(Object.keys(BUILT_IN_AGENT_RUNTIMES));
 
 export class OrchestratorConfigError extends Error {
-  constructor(message: string) {
+  readonly reason?: string;
+  readonly input?: string;
+  readonly hint?: string;
+
+  constructor(message: string, details: { reason?: string; input?: string; hint?: string } = {}) {
     super(message);
     this.name = "OrchestratorConfigError";
+    this.reason = details.reason;
+    this.input = details.input;
+    this.hint = details.hint;
   }
 }
 
@@ -100,7 +107,11 @@ function compileOrchestratorConfigActions(
   sourcePath = "orchestrator.config.json",
 ): OrchestratorConfigAction[] {
   if (!isRecord(value)) {
-    throw new OrchestratorConfigError(`${sourcePath}: config must be a JSON object.`);
+    throw new OrchestratorConfigError(`${sourcePath}: config must be a JSON object.`, {
+      reason: "invalid_config_schema",
+      input: sourcePath,
+      hint: "Use a JSON object with an agents object.",
+    });
   }
 
   const agents = optionalRecord(value, "agents", sourcePath);
@@ -112,10 +123,19 @@ function compileOrchestratorConfigActions(
     if (!isValidRuntimeId(id)) {
       throw new OrchestratorConfigError(
         `${sourcePath}: agent id "${id}" must use letters, numbers, dots, dashes, or underscores.`,
+        {
+          reason: "invalid_config_schema",
+          input: `agents.${id}`,
+          hint: "Use agent ids with only letters, numbers, dots, dashes, or underscores.",
+        },
       );
     }
     if (!isRecord(config)) {
-      throw new OrchestratorConfigError(`${sourcePath}: agents.${id} must be an object.`);
+      throw new OrchestratorConfigError(`${sourcePath}: agents.${id} must be an object.`, {
+        reason: "invalid_config_schema",
+        input: `agents.${id}`,
+        hint: "Use an object with adapter, command, args, and output fields.",
+      });
     }
     const enabled = optionalBoolean(config, "enabled", sourcePath, id);
 
@@ -240,6 +260,11 @@ async function readConfigSource(source: ConfigSource): Promise<unknown | undefin
     if (source.required) {
       throw new OrchestratorConfigError(
         `${source.path}: config file does not exist or is unreadable.`,
+        {
+          reason: "config_unreadable",
+          input: source.path,
+          hint: "Check the --config path or remove the explicit config argument.",
+        },
       );
     }
     return undefined;
@@ -251,6 +276,11 @@ async function readConfigSource(source: ConfigSource): Promise<unknown | undefin
   } catch (error) {
     throw new OrchestratorConfigError(
       `${source.path}: invalid JSON: ${error instanceof Error ? error.message : String(error)}`,
+      {
+        reason: "invalid_config_json",
+        input: source.path,
+        hint: "Fix the JSON syntax in this config file.",
+      },
     );
   }
 }
@@ -264,33 +294,55 @@ function compileProcessRuntime(
   if (adapter !== "process") {
     throw new OrchestratorConfigError(
       `${sourcePath}: agents.${id}.adapter must be "process" in this release.`,
+      {
+        reason: "unsupported_agent_adapter",
+        input: `agents.${id}.adapter`,
+        hint: 'Use "adapter": "process". HTTP/remote custom agents are not supported in this release.',
+      },
     );
   }
 
   const command = requiredString(config, "command", sourcePath, id);
   const args = optionalStringArray(config, "args", sourcePath, id) ?? [];
-  const hasPromptPlaceholder = args.some((arg) => arg.includes("{prompt}"));
-  const hasModelPlaceholder = args.some((arg) => arg.includes("{model}"));
+  validateCommonPromptPlaceholderMistakes(args, sourcePath, id);
+  const hasPromptPlaceholder = args.some((arg) => hasTemplatePlaceholder(arg, "prompt"));
+  const hasModelPlaceholder = args.some((arg) => hasTemplatePlaceholder(arg, "model"));
   const prompt = optionalString(config, "prompt", sourcePath, id);
   const modelFlag = optionalString(config, "modelFlag", sourcePath, id);
 
   if (hasPromptPlaceholder && prompt !== undefined) {
     throw new OrchestratorConfigError(
       `${sourcePath}: agents.${id} cannot combine args {prompt} with prompt mode.`,
+      {
+        reason: "invalid_config_schema",
+        input: `agents.${id}`,
+        hint: 'Use either args with "{prompt}" or "prompt", not both.',
+      },
     );
   }
   if (hasModelPlaceholder && modelFlag !== undefined) {
     throw new OrchestratorConfigError(
       `${sourcePath}: agents.${id} cannot combine args {model} with modelFlag.`,
+      {
+        reason: "invalid_config_schema",
+        input: `agents.${id}`,
+        hint: 'Use either args with "{model}" or "modelFlag", not both.',
+      },
     );
   }
   if (hasModelPlaceholder && !hasPromptPlaceholder) {
     throw new OrchestratorConfigError(
       `${sourcePath}: agents.${id} args with {model} must also include {prompt}.`,
+      {
+        reason: "invalid_config_schema",
+        input: `agents.${id}.args`,
+        hint: 'When args include "{model}", include "{prompt}" too so the task is passed.',
+      },
     );
   }
 
   const output = parseOutputTransport(config.output, sourcePath, id);
+  const outputMode = outputModeName(output);
   const env = optionalStringRecord(config, "env", sourcePath, id);
   const timeoutMs =
     optionalPositiveInteger(config, "timeoutMs", sourcePath, id) ?? DEFAULT_TIMEOUT_MS;
@@ -310,6 +362,13 @@ function compileProcessRuntime(
       baseArgs: args,
       prompt: hasPromptPlaceholder ? { kind: "argv_template" } : parsePromptTransport(prompt),
       output,
+      defaultOutputMode: outputMode,
+      outputModes: {
+        [outputMode]: {
+          extraArgs: [],
+          output,
+        },
+      },
       ...(env ? { env } : {}),
       cwdPolicy: "workspace",
       ...(modelFlag ? { modelFlag } : {}),
@@ -335,6 +394,19 @@ function compileProcessRuntime(
   };
 }
 
+function outputModeName(output: OutputTransport): "text" | "json" | "jsonl" {
+  switch (output.kind) {
+    case "stdout_text":
+      return "text";
+    case "stdout_json":
+      return "json";
+    case "jsonl_events":
+      return "jsonl";
+    case "transcript_file":
+      return "text";
+  }
+}
+
 function parsePromptTransport(prompt: string | undefined): PromptTransport {
   switch (prompt ?? "argv-last") {
     case "argv-last":
@@ -344,7 +416,11 @@ function parsePromptTransport(prompt: string | undefined): PromptTransport {
     case "stdin":
       return { kind: "stdin", closeAfterWrite: true };
     default:
-      throw new OrchestratorConfigError(`prompt must be one of: argv-last, argv-first, stdin.`);
+      throw new OrchestratorConfigError(`prompt must be one of: argv-last, argv-first, stdin.`, {
+        reason: "invalid_config_schema",
+        input: "prompt",
+        hint: 'Use "prompt": "argv-last", "argv-first", or "stdin".',
+      });
   }
 }
 
@@ -358,17 +434,31 @@ function parseOutputTransport(output: unknown, sourcePath: string, id: string): 
   if (typeof output === "string") {
     throw new OrchestratorConfigError(
       `${sourcePath}: agents.${id}.output must be "text", "json", or an object with format "jsonl".`,
+      invalidConfigSchemaDetails(
+        `agents.${id}.output`,
+        'Use "output": "text", "output": "json", or "output": { "format": "jsonl", "finalEvent": "done" }.',
+      ),
     );
   }
   if (!isRecord(output)) {
     throw new OrchestratorConfigError(
       `${sourcePath}: agents.${id}.output must be valid output config.`,
+      invalidConfigSchemaDetails(
+        `agents.${id}.output`,
+        'Use "output": "text", "output": "json", or "output": { "format": "jsonl", "finalEvent": "done" }.',
+      ),
     );
   }
 
   const format = requiredString(output, "format", sourcePath, id, "output");
   if (format !== "jsonl") {
-    throw new OrchestratorConfigError(`${sourcePath}: agents.${id}.output.format must be "jsonl".`);
+    throw new OrchestratorConfigError(
+      `${sourcePath}: agents.${id}.output.format must be "jsonl".`,
+      invalidConfigSchemaDetails(
+        `agents.${id}.output.format`,
+        'Use "output": "text" for plain stdout, or set "output": { "format": "jsonl", "finalEvent": "done" }.',
+      ),
+    );
   }
 
   return {
@@ -387,7 +477,10 @@ function requiredString(
   const value = config[key];
   const path = configPath(id, key, prefix);
   if (typeof value !== "string" || value.trim().length === 0) {
-    throw new OrchestratorConfigError(`${sourcePath}: ${path} must be a non-empty string.`);
+    throw new OrchestratorConfigError(
+      `${sourcePath}: ${path} must be a non-empty string.`,
+      invalidConfigSchemaDetails(path, configSchemaHint(path, "Set it to a non-empty string.")),
+    );
   }
   return value;
 }
@@ -405,6 +498,10 @@ function optionalString(
   if (typeof value !== "string" || value.trim().length === 0) {
     throw new OrchestratorConfigError(
       `${sourcePath}: agents.${id}.${key} must be a non-empty string.`,
+      invalidConfigSchemaDetails(
+        `agents.${id}.${key}`,
+        `Set agents.${id}.${key} to a non-empty string.`,
+      ),
     );
   }
   return value;
@@ -421,9 +518,50 @@ function optionalStringArray(
     return undefined;
   }
   if (!Array.isArray(value) || value.some((item) => typeof item !== "string")) {
-    throw new OrchestratorConfigError(`${sourcePath}: agents.${id}.${key} must be a string array.`);
+    throw new OrchestratorConfigError(
+      `${sourcePath}: agents.${id}.${key} must be a string array.`,
+      invalidConfigSchemaDetails(
+        `agents.${id}.${key}`,
+        `Set agents.${id}.${key} to an array of strings.`,
+      ),
+    );
   }
   return value;
+}
+
+function validateCommonPromptPlaceholderMistakes(
+  args: readonly string[],
+  sourcePath: string,
+  id: string,
+): void {
+  const mistakes = [
+    {
+      pattern: /\{\{prompt\}\}/,
+      input: "{{prompt}}",
+      hint: 'Use "{prompt}" exactly; double braces are not supported.',
+    },
+    {
+      pattern: /\{\{model\}\}/,
+      input: "{{model}}",
+      hint: 'Use "{model}" exactly; double braces are not supported.',
+    },
+    {
+      pattern: /\{\{task\}\}|\{task\}/,
+      input: "{task}",
+      hint: 'Use "{prompt}" for the task text. There is no "{task}" placeholder.',
+    },
+  ];
+
+  for (const arg of args) {
+    for (const mistake of mistakes) {
+      if (mistake.pattern.test(arg)) {
+        throw new OrchestratorConfigError(
+          `${sourcePath}: agents.${id}.args contains unsupported placeholder ${mistake.input}.`,
+          invalidConfigSchemaDetails(`agents.${id}.args`, mistake.hint),
+        );
+      }
+    }
+  }
 }
 
 function optionalStringRecord(
@@ -437,7 +575,13 @@ function optionalStringRecord(
     return undefined;
   }
   if (!isRecord(value)) {
-    throw new OrchestratorConfigError(`${sourcePath}: agents.${id}.${key} must be an object.`);
+    throw new OrchestratorConfigError(
+      `${sourcePath}: agents.${id}.${key} must be an object.`,
+      invalidConfigSchemaDetails(
+        `agents.${id}.${key}`,
+        `Set agents.${id}.${key} to an object with string values.`,
+      ),
+    );
   }
 
   const result: Record<string, string> = {};
@@ -445,6 +589,10 @@ function optionalStringRecord(
     if (typeof envValue !== "string") {
       throw new OrchestratorConfigError(
         `${sourcePath}: agents.${id}.${key}.${envKey} must be a string.`,
+        invalidConfigSchemaDetails(
+          `agents.${id}.${key}.${envKey}`,
+          `Set agents.${id}.${key}.${envKey} to a string value.`,
+        ),
       );
     }
     result[envKey] = envValue;
@@ -465,6 +613,10 @@ function optionalPositiveInteger(
   if (typeof value !== "number" || !Number.isInteger(value) || value <= 0) {
     throw new OrchestratorConfigError(
       `${sourcePath}: agents.${id}.${key} must be a positive integer.`,
+      invalidConfigSchemaDetails(
+        `agents.${id}.${key}`,
+        `Set agents.${id}.${key} to a positive integer.`,
+      ),
     );
   }
   return value;
@@ -481,7 +633,13 @@ function optionalBoolean(
     return undefined;
   }
   if (typeof value !== "boolean") {
-    throw new OrchestratorConfigError(`${sourcePath}: agents.${id}.${key} must be a boolean.`);
+    throw new OrchestratorConfigError(
+      `${sourcePath}: agents.${id}.${key} must be a boolean.`,
+      invalidConfigSchemaDetails(
+        `agents.${id}.${key}`,
+        `Set agents.${id}.${key} to true or false.`,
+      ),
+    );
   }
   return value;
 }
@@ -496,13 +654,41 @@ function optionalRecord(
     return undefined;
   }
   if (!isRecord(value)) {
-    throw new OrchestratorConfigError(`${sourcePath}: ${key} must be an object.`);
+    throw new OrchestratorConfigError(
+      `${sourcePath}: ${key} must be an object.`,
+      invalidConfigSchemaDetails(key, `Set ${key} to an object.`),
+    );
   }
   return value;
 }
 
 function configPath(id: string, key: string, prefix: string): string {
   return prefix ? `agents.${id}.${prefix}.${key}` : `agents.${id}.${key}`;
+}
+
+function invalidConfigSchemaDetails(
+  input: string,
+  hint: string,
+): {
+  reason: "invalid_config_schema";
+  input: string;
+  hint: string;
+} {
+  return { reason: "invalid_config_schema", input, hint };
+}
+
+function configSchemaHint(path: string, fallback: string): string {
+  if (path.endsWith(".output.format")) {
+    return 'Use "output": "text" for plain stdout, or set "output": { "format": "jsonl", "finalEvent": "done" }.';
+  }
+  if (path.endsWith(".output.finalEvent")) {
+    return 'Set "finalEvent" to the JSONL event type that contains the final answer, for example "done".';
+  }
+  return fallback;
+}
+
+function hasTemplatePlaceholder(value: string, name: "prompt" | "model"): boolean {
+  return new RegExp(`(?<!\\$)\\{${name}\\}`, "g").test(value);
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

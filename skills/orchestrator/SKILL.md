@@ -27,60 +27,160 @@ npm install -g @backnotprop/orchestrator-cli
 Then run:
 
 ```sh
-orchestrator help --json
+orchestrator help --json --compact
 ```
 
-Use `help --json` as the current contract. It lists available runtimes,
-commands, options, examples, and agent-facing instructions. Do not assume Claude
-Code, Codex, or any custom runtime is available; config can hide runtimes.
+Use `help --json --compact` as the quick command contract. If you need the full
+contract, run `orchestrator` with `fullHelp.args`, or run `orchestrator help
+--json`. Do not assume Claude Code, Codex, or any custom runtime is available;
+config can hide runtimes. Common options like `--workspace`,
+`--orchestrator-dir`, `--config`, and `--json` may appear before or after the
+command.
+
+When runtime availability is uncertain, run:
+
+```sh
+orchestrator doctor --json --compact
+```
+
+Use `runtimeSummary.availableIds` to choose launchable runtime ids quickly.
+If compact doctor returns `parent.canRun: true`, append the user request to
+`parent.run.argsPrefix`, or use `parent.run.backgroundArgsPrefix` when the
+parent run should be managed as a background task.
 
 ## Basic Workflow
 
 Launch a named background task:
 
 ```sh
-orchestrator launch codex --name "inspect store" --model gpt-5.4-mini --json "Inspect the task store."
+orchestrator launch codex --name "inspect store" --model gpt-5.4-mini --json --compact "Inspect the task store."
 ```
 
-Capture `taskId` from stdout. Use that id for all follow-up commands:
+Or start Orchestrator itself as a managed parent task:
 
 ```sh
-orchestrator list --json
-orchestrator watch <task-id>
-orchestrator read <task-id>
-orchestrator logs <task-id> --follow
-orchestrator events <task-id> --agent-only --json
-orchestrator interrupt <task-id> --reason "no longer needed"
+orchestrator run --background --name "repo plan" --json --compact "Launch child agents as needed, wait for them, then summarize."
 ```
 
-Use `read` for the final answer. Use `watch` for a live task timeline. Use
-`logs` for raw stdout/stderr. Use `events` for normalized task and agent events.
+Capture `taskId` or `id` from stdout. If JSON output includes `commands.*.args`,
+run `orchestrator` with those portable args for follow-up. Compact `ps` output
+can include top-level commands for every listed task; use
+`commands.waitPreview.args` to wait for that listed set with bounded output. If
+JSON output includes `stop.args`, run `orchestrator` with those portable args to
+stop exactly the returned task, group, or selected active set. If a JSON lookup
+error includes `recovery.views.*.args`, run those args to recover from missing
+or ambiguous task/group ids. Use the id for follow-up commands:
+
+```sh
+orchestrator ps --json --compact --active
+orchestrator ps --json --compact --active --brief
+orchestrator watch <task-id> --agent-only --json
+orchestrator read <task-id>... --wait --json --compact
+orchestrator logs <task-id> --follow
+orchestrator events <task-id> --agent-only --json --compact
+orchestrator interrupt <task-id> <task-id> --reason "no longer needed" --json --compact
+orchestrator interrupt <task-id> --reason "no longer needed" --json
+```
+
+Use `launch --json --compact --brief` when starting many tasks and only
+id/status/stop is needed. Use `ps --json --compact --active` to find running
+tasks and stop targets. Use `ps --json --compact --active --brief` when scanning
+many running tasks. Use the top-level `commands.waitPreview.args` from compact
+`ps` to wait for the listed tasks without polling. Use
+`ps --parent <run-id|prefix> --json --compact --brief` when follow-up should
+stay scoped to one parent run. If active compact `ps` is empty after short work,
+run `views.recent.args` from the compact response. Build your own multi-task
+wait with `read <id> <id> --wait --json --compact`. Use
+`watch --agent-only --json` for a parseable stream of normalized agent events.
+Use `logs` for raw stdout/stderr. Use `events` for normalized task and agent
+events.
 
 ## Runtime Choices
 
 Common first-release runtimes are:
 
 ```sh
-orchestrator launch claude-code --name "review tests" --model sonnet "Find missing tests."
-orchestrator launch codex --name "inspect store" --model gpt-5.4-mini "Inspect the task store."
+orchestrator launch claude-code --name "review tests" --model sonnet --json --compact "Find missing tests."
+orchestrator launch codex --name "inspect store" --model gpt-5.4-mini --json --compact "Inspect the task store."
 ```
 
 Custom agents launch by their configured runtime id:
 
 ```sh
-orchestrator launch custom-email --name "check email" --model glm-5.2 "Clean my inbox."
+orchestrator launch custom-email --name "check email" --model glm-5.2 --json --compact "Clean my inbox."
 ```
 
-If a runtime is unknown, run `orchestrator help --json` and use one of the
-listed runtime ids. If no runtime is available, tell the user clearly instead
-of guessing.
+If a runtime is unknown, run `orchestrator help --json --compact` and use one
+of the listed `runtimeIds`. If no runtime is available, tell the user clearly
+instead of guessing.
 
 ## Good Agent Behavior
 
-- Use `--json` when another program or agent needs to parse output.
+- Use `--json --compact --brief` for launch when starting many tasks and you
+  only need id/status/stop.
+- Use `help --json --compact` for quick discovery; use `fullHelp.args` when you
+  need the full contract.
+- Use `doctor --json --compact` when runtime availability is uncertain.
+- If compact doctor returns `parent.canRun: true`, append the user request to the
+  returned args prefix instead of constructing `run --agent-dir` by hand.
+- Put common options before or after the command. Portable args returned by
+  Orchestrator can be passed directly after the `orchestrator` binary.
+- Use `ps --json --compact --active` to find running work and stop targets.
+- Use `ps --json --compact --active --brief` to scan many running tasks with
+  less JSON.
+- Use `ps --parent <run-id|prefix> --json --compact --brief` when you need one
+  parent run and its children.
+- If active compact `ps` is empty after short work, use
+  `views.recent.args` from the compact response to recover recent finished tasks
+  and batch read commands.
+- After starting several tasks, use `ps --json --compact --brief` and top-level
+  `commands.waitPreview.args` to collect the listed set.
+- Prefer portable `commands.*.args` from JSON output when reading, watching,
+  logging, or inspecting events.
+- If JSON lookup errors include `recovery.views.*.args`, run those args to
+  recover from missing or ambiguous task/group ids.
+- Use compact `ps` top-level `commands.waitPreview.args` when you need to wait
+  for every task in that compact view.
+- Use compact `ps` group `commands.waitPreview.args` when you need to wait for
+  one listed parent/group instead of every task in the view.
+- Use task-level `commands.read.args` for an immediate JSON read and
+  `commands.wait.args` when you need to wait for one task.
+- Use `read <id> <id> --wait --json --compact` when you need to build your own
+  multi-task wait call.
+- If compact `read` returns `active: true`, use `commands.waitPreview.args` to
+  wait with bounded output or `commands.readPreview.args` to poll again.
+- If compact batch `read` times out, use top-level `commands.waitPreview.args`
+  to wait again or `stop.args` to stop still-active work safely.
+- If compact `read` returns failed status, use `commands.logsPreview.args` for
+  bounded raw logs or `commands.events.args` for the task timeline.
+- Use `logs --json --compact` for a one-line raw stdout/stderr snapshot and
+  `events --json --compact` for a one-line task timeline.
+- If compact `read` is truncated by read limit, use `commands.read.args` to
+  fetch more output.
+- Use `commands.watch.args` for the full live event stream and
+  `commands.agentWatch.args` for normalized live agent events only.
+- Prefer portable `stop.args` from JSON output when stopping tasks or groups.
+  Compact views use concise `interrupt --json --compact` stop results.
+- Compact `ps` `stop.args` is scoped to the current view; parent/group stops may
+  include children of that selected run.
+- Use `interrupt <id> <id> --json --compact` to stop a selected subset of
+  tasks without stopping the whole workspace.
+- Use `interrupt --active --json --compact` only when all active work in the
+  selected workspace should be stopped. It is safe when none are active.
+- Use `ps --all --json --compact` when you need compact full task history.
+- Use `read --wait --json --compact` when you need to wait for status, `exitCode`,
+  output, usage, and errors in one object.
+- Check `outputTruncated`, `stdoutTruncated`, and `stderrTruncated` in JSON
+  output. `ByReadLimit` means re-read with more bytes can help; `ByCaptureLimit`
+  means the task was launched with too small a capture cap.
+- Use `watch --agent-only --json` for normalized agent events; use
+  `logs --follow` for raw output.
+- If a `--json` command exits non-zero, parse stderr as JSON. Use `reason`,
+  `input`, `matches`, and `hint` when present to recover.
 - Use `--name` so task lists remain readable.
 - Launch separate tasks for separate delegated jobs.
 - Do not block on long-running work unless the user asks; launch, then watch or
-  read later.
-- Stop stale or duplicated work with `interrupt`.
+  use `read <id> <id> --wait --json --compact`.
+- Stop stale or duplicated work with `interrupt`; pass multiple ids when stopping
+  a selected subset.
 - Report the task id, runtime, model, and current status when handing work back.

@@ -1,4 +1,5 @@
 import type { ParentToolTraceEvent } from "./tools.ts";
+import { normalizeTaskUsage, type NormalizedTaskUsage } from "@backnotprop/orchestrator-core/tasks";
 
 export const RUN_STREAM_SCHEMA_VERSION = 1 as const;
 
@@ -15,14 +16,7 @@ export type RunEventEnvelope = {
   kind: string;
 };
 
-export type TokenUsage = {
-  inputTokens?: number;
-  outputTokens?: number;
-  cacheReadTokens?: number;
-  cacheWriteTokens?: number;
-  totalTokens?: number;
-  costUsd?: number;
-};
+export type TokenUsage = NormalizedTaskUsage;
 
 export type RunStreamEvent =
   | (RunEventEnvelope & {
@@ -409,34 +403,7 @@ export function normalizeRunStreamError(error: unknown): RunStreamError {
 }
 
 export function tokenUsageFromUnknown(value: unknown): TokenUsage | undefined {
-  const record = recordFromUnknown(value);
-  if (!record) {
-    return undefined;
-  }
-
-  const inputTokens = numberFromUnknown(record.inputTokens ?? record.input_tokens);
-  const outputTokens = numberFromUnknown(record.outputTokens ?? record.output_tokens);
-  const cacheReadTokens = numberFromUnknown(
-    record.cacheReadTokens ?? record.cache_read_tokens ?? record.cached_input_tokens,
-  );
-  const cacheWriteTokens = numberFromUnknown(record.cacheWriteTokens ?? record.cache_write_tokens);
-  const totalTokens = numberFromUnknown(record.totalTokens ?? record.total_tokens);
-  const costUsd = numberFromUnknown(record.costUsd ?? record.cost_usd);
-  const inferredTotal =
-    totalTokens ??
-    (inputTokens !== undefined && outputTokens !== undefined
-      ? inputTokens + outputTokens
-      : undefined);
-  const usage: TokenUsage = {
-    ...(inputTokens !== undefined ? { inputTokens } : {}),
-    ...(outputTokens !== undefined ? { outputTokens } : {}),
-    ...(cacheReadTokens !== undefined ? { cacheReadTokens } : {}),
-    ...(cacheWriteTokens !== undefined ? { cacheWriteTokens } : {}),
-    ...(inferredTotal !== undefined ? { totalTokens: inferredTotal } : {}),
-    ...(costUsd !== undefined ? { costUsd } : {}),
-  };
-
-  return Object.keys(usage).length > 0 ? usage : undefined;
+  return normalizeTaskUsage(value);
 }
 
 function toolPayloadFromTraceEvent(event: ParentToolTraceEvent): RunStreamEventPayload {
@@ -565,10 +532,6 @@ function recordFromUnknown(value: unknown): Record<string, unknown> | undefined 
 
 function stringFromUnknown(value: unknown): string | undefined {
   return typeof value === "string" ? value : undefined;
-}
-
-function numberFromUnknown(value: unknown): number | undefined {
-  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
 }
 
 function isTerminalStatus(status: string): boolean {

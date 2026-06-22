@@ -31,9 +31,9 @@ orchestrator run "Launch a Claude Code agent to do x, launch a Codex agent to do
 Use `--background` when Orchestrator should keep running as a managed task.
 
 ```sh
-orchestrator run --background --name "repo work" "Launch a Claude Code agent to do x, launch a Codex agent to do y"
+orchestrator run --background --name "repo work" --json --compact "Launch a Claude Code agent to do x, launch a Codex agent to do y"
 orchestrator ps --watch
-orchestrator read <task-id>
+orchestrator read <task-id|prefix>... --wait --json --compact
 ```
 
 ### Coordinate Agents Yourself
@@ -53,6 +53,9 @@ inspect store    running  codex        gpt-5.4-mini   1m ago  a6d00f1d-25b4-4dd3
 check email      running  custom       glm-5.2        30s ago  d09edec6-2f14-48fc-924c-ec9f26b61ca0
 ```
 
+Task commands accept the full task ID or a unique prefix shown by `ps` and
+`list`.
+
 The CLI shape is intentionally close to tools like `kubectl`.
 
 ```sh
@@ -62,11 +65,14 @@ orchestrator run --stream-json "Launch a Codex child and wait for it."
 orchestrator ps
 orchestrator ps --all
 orchestrator ps --watch
-orchestrator watch <task-id>
-orchestrator read <task-id>
-orchestrator logs <task-id> --follow
-orchestrator events <task-id>
-orchestrator interrupt <task-id>
+orchestrator ps --json --compact --active --brief
+orchestrator launch codex --name "inspect store" --model gpt-5.4-mini --json --compact --brief "Inspect the task store."
+orchestrator watch <task-id|prefix>
+orchestrator read <task-id|prefix>... --wait --json --compact
+orchestrator logs <task-id|prefix> --follow
+orchestrator events <task-id|prefix> --json --compact
+orchestrator interrupt <task-id|prefix> <task-id|prefix> --json --compact
+orchestrator interrupt <task-id|prefix>
 ```
 
 Configure the parent agent in `~/.orchestrator/auth.json`.
@@ -179,16 +185,40 @@ The CLI package is `@backnotprop/orchestrator-cli`. The reusable runtime package
 ## Commands
 
 - `doctor`: check parent-agent auth, model, and session paths
+- `doctor --json --compact`: check configured runtime availability; use `runtimeSummary.availableIds` when software needs launchable runtime ids
+- If compact doctor returns `parent.canRun: true`, append the request to `parent.run.argsPrefix` or `parent.run.backgroundArgsPrefix`
+- `help --json --compact`: get the small command contract for agents/scripts; use `help --json` when you need the full contract
 - `run`: start the parent AI agent; add `--background` to manage it like a task, `--trace-tools` to see tool calls live, or `--stream-json` for a full JSONL stream
-- `launch`: start an agent in the background
-- `list`: see known tasks
+- `launch`: start an agent in the background; add `--json --compact` for a small machine-readable result, or `--json --compact --brief` when starting many tasks
+- `list`: see known tasks in a simple task list
 - `ps`: see grouped agent work across parent runs
 - `ps --all`: include old finished tasks hidden by the default view
-- `watch`: follow one task live
-- `read`: print the final answer
+- Common options like `--workspace`, `--orchestrator-dir`, `--config`, and `--json` may appear before or after the command
+- `ps --json --compact --active`: get active tasks and stop targets for agents/scripts
+- `ps --json --compact --active --brief`: scan many active tasks with less JSON
+- `ps --parent <run-id|prefix> --json --compact --brief`: inspect one parent run and its children
+- If active compact `ps` is empty after short work, run `views.recent.args` from the compact response to recover recent finished tasks and batch read commands
+- After starting several tasks, use `ps --json --compact --brief` and top-level `commands.waitPreview.args` to collect the listed set
+- JSON task summaries include portable `commands.*.args`; run `orchestrator` with those args to read, watch, log, or inspect events
+- JSON lookup errors can include `recovery.views.*.args`; run those args to recover from missing or ambiguous task/group ids
+- Compact `ps` output can include top-level `commands.*.args` for every listed task; use `commands.waitPreview.args` to wait for the listed set with bounded output
+- Compact `ps` group entries can include their own `commands.waitPreview.args`; use those when software should wait for one parent/group instead of the whole view
+- Use task-level `commands.read.args` for an immediate JSON read and `commands.wait.args` when software should wait for one final result
+- Use `read <id> <id> --wait --json --compact` when software needs to build its own multi-task wait call
+- If compact `read` returns `active: true`, use `commands.waitPreview.args` to wait with bounded output or `commands.readPreview.args` to poll again
+- If compact batch `read` times out, use top-level `commands.waitPreview.args` to wait again or `stop.args` to stop still-active work safely
+- If compact `read` returns failed status, use `commands.logsPreview.args` for bounded raw logs or `commands.events.args` for the task timeline
+- Use `logs --json --compact` for a one-line raw stdout/stderr snapshot and `events --json --compact` for a one-line task timeline
+- If compact `read` is truncated by read limit, use `commands.read.args` to fetch more output
+- Use `commands.watch.args` for the full live stream and `commands.agentWatch.args` for normalized live agent events only
+- JSON stop targets include portable `stop.args`; run those args to stop exactly the returned task, group, or selected active set
+- Compact `ps` `stop.args` is scoped to the current view; parent/group stops may include children of that selected run
+- `ps --all --json --compact`: get compact full task history for agents/scripts
+- `watch`: follow one task live; add `--agent-only --json` for normalized agent event JSONL
+- `read`: print the final answer; add `--json` for status, `exitCode`, output, usage, and errors
 - `logs`: show raw agent output
 - `events`: show what happened to the task
-- `interrupt`: stop a running task
+- `interrupt`: stop running tasks; pass multiple ids for a selected subset, or add `--active --json` only for deliberate workspace-wide cleanup
 
 ## Runtimes
 

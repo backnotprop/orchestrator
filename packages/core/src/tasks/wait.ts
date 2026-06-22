@@ -1,12 +1,13 @@
-import { readTaskRecord } from "./store.ts";
+import { readTaskRecord, resolveTaskId } from "./store.ts";
 import { isTerminalTaskStatus, type WaitForTaskInput, type WaitForTaskResult } from "./types.ts";
 
-const DEFAULT_WAIT_TIMEOUT_MS = 300_000;
+export const DEFAULT_WAIT_TIMEOUT_MS = 300_000;
 const MAX_WAIT_TIMEOUT_MS = 600_000;
 const DEFAULT_WAIT_INTERVAL_MS = 250;
 const DEFAULT_PROGRESS_INTERVAL_MS = 1_000;
 
 export async function waitForTask(input: WaitForTaskInput): Promise<WaitForTaskResult> {
+  const taskId = await resolveTaskId(input, input.taskId);
   const timeoutMs = normalizeTimeoutMs(input.timeoutMs);
   const intervalMs = normalizeIntervalMs(input.intervalMs);
   const progressIntervalMs = normalizeProgressIntervalMs(input.progressIntervalMs);
@@ -15,7 +16,7 @@ export async function waitForTask(input: WaitForTaskInput): Promise<WaitForTaskR
   let attempt = 0;
 
   while (true) {
-    const task = await readTaskRecord(input, input.taskId);
+    const task = await readTaskRecord(input, taskId);
     const elapsedMs = Date.now() - startedAt;
     if (isTerminalTaskStatus(task.status)) {
       return {

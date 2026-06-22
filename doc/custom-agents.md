@@ -83,8 +83,8 @@ Once configured, the custom agent launches like Claude Code or Codex:
 
 ```sh
 orchestrator launch reviewer --name "review api" "Review the API package."
-orchestrator watch <task-id>
-orchestrator read <task-id>
+orchestrator watch <task-id|prefix>
+orchestrator read <task-id|prefix>
 ```
 
 The CLI only needs the name, `reviewer`. The adapter details stay in config.
@@ -107,6 +107,42 @@ V1 fields:
 
 Do not use shell command strings here. If a custom agent is a script, expose it
 as an executable and pass arguments as an array.
+
+Only literal `{prompt}` and `{model}` placeholders are replaced. Do not use
+`{task}`, `{{prompt}}`, or `{{model}}`. JavaScript or shell template text such
+as `${prompt}` is left alone inside wrapper code.
+
+## Token Usage
+
+Custom agents do not need to report token usage. If they do not, Orchestrator
+shows usage as unknown.
+
+Agents that use JSONL output can opt in by emitting normalized usage events:
+
+```jsonl
+{"type":"usage","usage":{"inputTokens":1200,"outputTokens":300,"totalTokens":1500,"source":"provider","scope":"task","final":false}}
+{"type":"final","text":"Done.","usage":{"inputTokens":1200,"outputTokens":350,"totalTokens":1550,"source":"provider","scope":"task","final":true}}
+```
+
+JSONL agents must emit valid JSON lines and a final result event. Malformed
+JSONL without a final result is treated as a failed task so callers do not
+mistake raw broken output for a successful answer.
+
+Use `source` to say where the numbers came from:
+
+- `provider`: reported by the underlying model provider
+- `runtime`: calculated by the custom agent runtime
+- `estimated`: local estimate; useful for context pressure, not billing
+
+Use `scope` to say what the numbers describe:
+
+- `turn`: one model response or turn
+- `task`: the whole launched task
+- `session`: cumulative runtime session usage
+- `account`: account or quota usage, not task spend
+
+Orchestrator keeps the latest best task-level usage summary. A final task usage
+event will not be overwritten by later session, account, or estimated usage.
 
 ## Flue Example
 
@@ -134,6 +170,15 @@ Usage:
 ```sh
 orchestrator launch flue-triage --name "triage bug" "Triage this bug report."
 ```
+
+If the wrapper can access Flue `PromptUsage`, map it before emitting JSONL:
+
+- `input` -> `inputTokens`
+- `output` -> `outputTokens`
+- `cacheRead` -> `cacheReadTokens`
+- `cacheWrite` -> `cacheWriteTokens`
+- `totalTokens` -> `totalTokens`
+- `cost.total` -> `costUsd` only when the unit is USD
 
 If a Flue app is running as a service, it should fit the future `http` adapter
 instead. That is the path for remote agents.

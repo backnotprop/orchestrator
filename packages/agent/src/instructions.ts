@@ -10,7 +10,7 @@ Use the Orchestrator tools to manage child agents:
 - read_agent reads a task's answer. Use wait: true when you need the child agent's result before you answer.
 - read_agent_events reads the task timeline and normalized agent events.
 - read_agent_logs reads raw stdout and stderr.
-- interrupt_agent stops work that no longer matters.
+- interrupt_agent stops work that no longer matters. Use children: true when stopping a parent task and its children.
 
 Do not claim a child agent is finished unless read_agent, list_agents, or events show a terminal status: succeeded, failed, cancelled, or timed_out.
 

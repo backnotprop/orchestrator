@@ -1,5 +1,14 @@
 import { randomUUID } from "node:crypto";
-import { appendFile, mkdir, readdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import {
+  access,
+  appendFile,
+  mkdir,
+  readdir,
+  readFile,
+  rename,
+  rm,
+  writeFile,
+} from "node:fs/promises";
 import { join } from "node:path";
 import type {
   AgentTaskRecord,
@@ -8,6 +17,24 @@ import type {
   TaskStatus,
   TaskStoreOptions,
 } from "./types.ts";
+
+export type TaskLookupErrorReason = "empty" | "invalid" | "not_found" | "ambiguous";
+
+export class TaskLookupError extends Error {
+  readonly reason: TaskLookupErrorReason;
+  readonly input: string;
+  readonly matches: readonly string[];
+  readonly hint: string;
+
+  constructor(input: string, reason: TaskLookupErrorReason, matches: readonly string[] = []) {
+    super(taskLookupMessage(input, reason, matches));
+    this.name = "TaskLookupError";
+    this.reason = reason;
+    this.input = input;
+    this.matches = matches;
+    this.hint = taskLookupHint(reason);
+  }
+}
 
 export function getTaskRoot(options: TaskStoreOptions): string {
   return join(options.orchestratorDir ?? join(options.workspaceRoot, ".orchestrator"), "tasks");
@@ -50,6 +77,52 @@ export async function readTaskRecord(
   options: TaskStoreOptions,
   taskId: string,
 ): Promise<AgentTaskRecord> {
+  return await readResolvedTaskRecord(options, await resolveTaskId(options, taskId));
+}
+
+export async function resolveTaskId(options: TaskStoreOptions, input: string): Promise<string> {
+  const trimmed = input.trim();
+  if (!trimmed) {
+    throw new TaskLookupError(input, "empty");
+  }
+  if (isPathLikeTaskId(trimmed)) {
+    throw new TaskLookupError(trimmed, "invalid");
+  }
+
+  if (await taskRecordExists(options, trimmed)) {
+    return trimmed;
+  }
+
+  let entries: string[];
+  try {
+    entries = await readdir(getTaskRoot(options));
+  } catch (error) {
+    if (isNodeError(error) && error.code === "ENOENT") {
+      throw new TaskLookupError(trimmed, "not_found");
+    }
+    throw error;
+  }
+
+  const candidates = entries.filter((entry) => entry.startsWith(trimmed)).sort();
+  const matches = (
+    await Promise.all(
+      candidates.map(async (candidate) =>
+        (await taskRecordExists(options, candidate)) ? candidate : undefined,
+      ),
+    )
+  ).filter((candidate): candidate is string => Boolean(candidate));
+
+  if (matches.length === 1) {
+    return matches[0];
+  }
+
+  throw new TaskLookupError(trimmed, matches.length === 0 ? "not_found" : "ambiguous", matches);
+}
+
+async function readResolvedTaskRecord(
+  options: TaskStoreOptions,
+  taskId: string,
+): Promise<AgentTaskRecord> {
   const paths = getTaskPaths(options, taskId);
   const raw = await readFile(paths.taskJson, "utf8");
   const task = JSON.parse(raw) as AgentTaskRecord;
@@ -81,7 +154,7 @@ export async function listTasks(
   const tasks = await Promise.all(
     entries.map(async (entry) => {
       try {
-        return await readTaskRecord(options, entry);
+        return await readResolvedTaskRecord(options, entry);
       } catch (error) {
         if (isNodeError(error) && error.code === "ENOENT") {
           return undefined;
@@ -95,6 +168,23 @@ export async function listTasks(
     .filter((task): task is AgentTaskRecord => Boolean(task))
     .filter((task) => (options.status ? task.status === options.status : true))
     .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+}
+
+export async function listTaskIds(options: TaskStoreOptions): Promise<string[]> {
+  let entries: string[];
+  try {
+    entries = await readdir(getTaskRoot(options));
+  } catch (error) {
+    if (isNodeError(error) && error.code === "ENOENT") {
+      return [];
+    }
+    throw error;
+  }
+
+  const taskIds = await Promise.all(
+    entries.map(async (entry) => ((await taskRecordExists(options, entry)) ? entry : undefined)),
+  );
+  return taskIds.filter((taskId): taskId is string => Boolean(taskId)).sort();
 }
 
 export async function appendTaskEvent(paths: TaskPaths, event: TaskEvent): Promise<void> {
@@ -125,7 +215,10 @@ export async function updateTaskStatus(
   task: AgentTaskRecord,
   status: TaskStatus,
   updates: Partial<
-    Pick<AgentTaskRecord, "startedAt" | "finishedAt" | "exitCode" | "pid" | "error" | "usage">
+    Pick<
+      AgentTaskRecord,
+      "startedAt" | "finishedAt" | "exitCode" | "pid" | "error" | "usage" | "outputCapture"
+    >
   > = {},
 ): Promise<AgentTaskRecord> {
   const updated = {
@@ -140,6 +233,60 @@ export async function updateTaskStatus(
 
 function isNodeError(error: unknown): error is NodeJS.ErrnoException {
   return error instanceof Error && "code" in error;
+}
+
+async function taskRecordExists(options: TaskStoreOptions, taskId: string): Promise<boolean> {
+  try {
+    await access(getTaskPaths(options, taskId).taskJson);
+    return true;
+  } catch (error) {
+    if (isNodeError(error) && error.code === "ENOENT") {
+      return false;
+    }
+    throw error;
+  }
+}
+
+function taskLookupMessage(
+  input: string,
+  reason: TaskLookupErrorReason,
+  matches: readonly string[],
+): string {
+  if (reason === "empty") {
+    return "Task id must not be empty.";
+  }
+
+  if (reason === "ambiguous") {
+    return `Task id "${input}" is ambiguous. Matches:\n${matches
+      .map((match) => `  ${match}`)
+      .join("\n")}`;
+  }
+
+  if (reason === "invalid") {
+    return `Task id "${input}" is invalid. Use a task id or unique prefix, not a path.`;
+  }
+
+  return `Task id "${input}" did not match any task.`;
+}
+
+function taskLookupHint(reason: TaskLookupErrorReason): string {
+  if (reason === "ambiguous") {
+    return "Use one of error.matches exactly. Run orchestrator ps --json --compact --brief for recent task ids, ps --json --compact --active --brief for active task ids, or orchestrator ps --all --json --compact for history.";
+  }
+
+  if (reason === "not_found") {
+    return "Run orchestrator ps --json --compact --brief for recent tasks, ps --json --compact --active --brief for active tasks, or orchestrator ps --all --json --compact for history.";
+  }
+
+  if (reason === "invalid") {
+    return "Pass a task id or unique task id prefix, not a task directory or path.";
+  }
+
+  return "Pass a task id from launch --json --compact, run --background --json --compact, or ps --json --compact.";
+}
+
+function isPathLikeTaskId(value: string): boolean {
+  return value === "." || value === ".." || value.includes("/") || value.includes("\\");
 }
 
 async function withEventLock<T>(paths: TaskPaths, fn: () => Promise<T>): Promise<T> {

@@ -6,23 +6,36 @@ import { isTerminalTaskStatus } from "./types.ts";
 import type {
   AgentTaskRecord,
   InterruptTaskInput,
+  InterruptTasksInput,
+  InterruptTasksResult,
   LaunchTaskHandle,
   LaunchTaskInput,
   ReadTaskOutputInput,
   TaskEvent,
+  TaskStoreOptions,
 } from "./types.ts";
 import {
   appendSequencedTaskEvent,
   getTaskPaths,
   initializeTaskFiles,
+  listTasks,
   readTaskRecord,
+  resolveTaskId,
   updateTaskStatus,
 } from "./store.ts";
+import {
+  UNGROUPED_GROUP_ID,
+  childTasksForParent,
+  resolveTaskGroupId,
+  taskGroupId,
+  tasksForGroup,
+} from "./groups.ts";
 import { createRuntimeOutputAdapter } from "./output-adapters.ts";
+import { selectTaskUsage, usageWithUpdatedAt } from "./usage.ts";
 
 type RunningTask = {
   child: ChildProcessWithoutNullStreams;
-  appendEvent: (type: TaskEvent["type"], data?: Record<string, unknown>) => Promise<void>;
+  appendEvent: (type: TaskEvent["type"], data?: Record<string, unknown>) => Promise<TaskEvent>;
   cancelRequested: boolean;
   cancelReason?: string;
   cancelSignal: NodeJS.Signals;
@@ -39,9 +52,28 @@ export class TaskSupervisorError extends Error {
   }
 }
 
-export async function launchTask(input: LaunchTaskInput): Promise<LaunchTaskHandle> {
+export class TaskSupervisorSafetyError extends TaskSupervisorError {
+  readonly reason?: string;
+  readonly input?: string;
+  readonly hint?: string;
+
+  constructor(message: string, details: { reason?: string; input?: string; hint?: string } = {}) {
+    super(message);
+    this.name = "TaskSupervisorSafetyError";
+    this.reason = details.reason;
+    this.input = details.input;
+    this.hint = details.hint;
+  }
+}
+
+export function validateLaunchTaskInput(input: LaunchTaskInput): void {
   validateLaunchPlan(input.plan);
   validateShellAllowlist(input.plan, input.allowedShellCommands);
+  normalizeTaskName(input.name);
+}
+
+export async function launchTask(input: LaunchTaskInput): Promise<LaunchTaskHandle> {
+  validateLaunchTaskInput(input);
   const taskName = normalizeTaskName(input.name);
 
   const taskId = input.taskId ?? randomUUID();
@@ -63,17 +95,68 @@ export async function launchTask(input: LaunchTaskInput): Promise<LaunchTaskHand
   await initializeTaskFiles(initialTask);
 
   let eventQueue: Promise<unknown> = Promise.resolve();
+  let taskRecordQueue: Promise<unknown> = Promise.resolve();
+  const maxOutputBytes = input.maxOutputBytes ?? 2_000_000;
+  let stdoutBytes = 0;
+  let stderrBytes = 0;
+  let stdoutCaptureTruncated = false;
+  let stderrCaptureTruncated = false;
   const appendEvent = async (
     type: TaskEvent["type"],
     data: Record<string, unknown> = {},
-  ): Promise<void> => {
-    eventQueue = eventQueue.then(() => appendSequencedTaskEvent(paths, taskId, type, data));
-    await eventQueue;
+  ): Promise<TaskEvent> => {
+    const write = eventQueue.then(() => appendSequencedTaskEvent(paths, taskId, type, data));
+    eventQueue = write.catch(() => {});
+    return await write;
+  };
+  const updateTaskUsage = async (usage: AgentTaskRecord["usage"]): Promise<void> => {
+    if (!usage) {
+      return;
+    }
+
+    const update = taskRecordQueue.then(async () => {
+      const current = await readTaskRecord(input, taskId);
+      const selected = selectTaskUsage(current.usage, usage);
+      if (selected === current.usage) {
+        return;
+      }
+      await updateTaskStatus(current, current.status, { usage: selected });
+    });
+    taskRecordQueue = update.catch(() => {});
+    await update;
+  };
+  const outputCaptureSnapshot = (
+    resultTruncated = false,
+  ): NonNullable<AgentTaskRecord["outputCapture"]> => ({
+    maxBytes: maxOutputBytes,
+    stdoutBytes,
+    stderrBytes,
+    stdoutTruncated: stdoutBytes > maxOutputBytes,
+    stderrTruncated: stderrBytes > maxOutputBytes,
+    resultTruncated,
+    updatedAt: now(),
+  });
+  const shouldPersistOutputCapture = (resultTruncated = false): boolean =>
+    stdoutBytes > maxOutputBytes || stderrBytes > maxOutputBytes || resultTruncated;
+  const updateOutputCapture = async (): Promise<void> => {
+    if (!shouldPersistOutputCapture()) {
+      return;
+    }
+
+    const update = taskRecordQueue.then(async () => {
+      const current = await readTaskRecord(input, taskId);
+      await updateTaskStatus(current, current.status, {
+        outputCapture: outputCaptureSnapshot(current.outputCapture?.resultTruncated ?? false),
+      });
+    });
+    taskRecordQueue = update.catch(() => {});
+    await update;
   };
   const outputAdapter = createRuntimeOutputAdapter({
     plan: input.plan,
     paths,
     appendEvent,
+    onUsage: updateTaskUsage,
   });
 
   await appendEvent("queued", { runtime: input.plan.runtime });
@@ -100,13 +183,10 @@ export async function launchTask(input: LaunchTaskInput): Promise<LaunchTaskHand
     stdio: ["pipe", "pipe", "pipe"],
   });
 
-  let stdoutBytes = 0;
-  let stderrBytes = 0;
   let timedOut = false;
   let timeout: NodeJS.Timeout | undefined;
   let settled = false;
   const timeoutMs = input.timeoutMs;
-  const maxOutputBytes = input.maxOutputBytes ?? 2_000_000;
   const pendingWrites: Promise<unknown>[] = [];
   let stdoutQueue: Promise<unknown> = Promise.resolve();
   let stderrQueue: Promise<unknown> = Promise.resolve();
@@ -121,6 +201,11 @@ export async function launchTask(input: LaunchTaskInput): Promise<LaunchTaskHand
   child.stdout.on("data", (chunk: Buffer) => {
     stdoutBytes += chunk.byteLength;
     const currentBytes = stdoutBytes;
+    const streamTruncated = currentBytes > maxOutputBytes;
+    const shouldUpdateCapture = streamTruncated && !stdoutCaptureTruncated;
+    if (streamTruncated) {
+      stdoutCaptureTruncated = true;
+    }
     const write = stdoutQueue.then(async () => {
       await appendBoundedOutput({
         path: paths.stdoutLog,
@@ -128,7 +213,19 @@ export async function launchTask(input: LaunchTaskInput): Promise<LaunchTaskHand
         currentBytes,
         maxBytes: maxOutputBytes,
       });
-      await appendEvent("stdout", { bytes: chunk.byteLength });
+      await appendEvent("stdout", {
+        bytes: chunk.byteLength,
+        ...(streamTruncated
+          ? {
+              truncated: true,
+              maxBytes: maxOutputBytes,
+              storedBytes: Math.min(currentBytes, maxOutputBytes),
+            }
+          : {}),
+      });
+      if (shouldUpdateCapture) {
+        await updateOutputCapture();
+      }
       await outputAdapter.onStdoutChunk(chunk);
     });
     stdoutQueue = write.catch(() => {});
@@ -138,6 +235,11 @@ export async function launchTask(input: LaunchTaskInput): Promise<LaunchTaskHand
   child.stderr.on("data", (chunk: Buffer) => {
     stderrBytes += chunk.byteLength;
     const currentBytes = stderrBytes;
+    const streamTruncated = currentBytes > maxOutputBytes;
+    const shouldUpdateCapture = streamTruncated && !stderrCaptureTruncated;
+    if (streamTruncated) {
+      stderrCaptureTruncated = true;
+    }
     const write = stderrQueue.then(async () => {
       await appendBoundedOutput({
         path: paths.stderrLog,
@@ -145,7 +247,19 @@ export async function launchTask(input: LaunchTaskInput): Promise<LaunchTaskHand
         currentBytes,
         maxBytes: maxOutputBytes,
       });
-      await appendEvent("stderr", { bytes: chunk.byteLength });
+      await appendEvent("stderr", {
+        bytes: chunk.byteLength,
+        ...(streamTruncated
+          ? {
+              truncated: true,
+              maxBytes: maxOutputBytes,
+              storedBytes: Math.min(currentBytes, maxOutputBytes),
+            }
+          : {}),
+      });
+      if (shouldUpdateCapture) {
+        await updateOutputCapture();
+      }
       await outputAdapter.onStderrChunk(chunk);
     });
     stderrQueue = write.catch(() => {});
@@ -165,6 +279,7 @@ export async function launchTask(input: LaunchTaskInput): Promise<LaunchTaskHand
         await Promise.all(pendingWrites);
         await outputAdapter.finalize();
         await eventQueue;
+        await taskRecordQueue;
         runningTasks.delete(taskId);
         const failed = await updateTaskStatus(task, "failed", {
           finishedAt: now(),
@@ -189,10 +304,16 @@ export async function launchTask(input: LaunchTaskInput): Promise<LaunchTaskHand
         await Promise.all(pendingWrites);
         const adapterResult = await outputAdapter.finalize();
         await eventQueue;
+        await taskRecordQueue;
 
         const current = await readTaskRecord(input, taskId);
         const stdout = await readFile(paths.stdoutLog, "utf8");
-        const result = adapterResult.resultText ?? stdout;
+        const fallbackToStdout = adapterResult.fallbackToStdout ?? true;
+        const resultTruncated =
+          adapterResult.resultText === undefined &&
+          fallbackToStdout &&
+          stdoutBytes > maxOutputBytes;
+        const result = adapterResult.resultText ?? (fallbackToStdout ? stdout : "");
         await writeFile(paths.resultMd, result);
         await appendEvent("result", { path: paths.resultMd, bytes: Buffer.byteLength(result) });
 
@@ -201,7 +322,7 @@ export async function launchTask(input: LaunchTaskInput): Promise<LaunchTaskHand
             ? "cancelled"
             : timedOut
               ? "timed_out"
-              : code === 0
+              : code === 0 && !adapterResult.failed
                 ? "succeeded"
                 : "failed";
         const error = timedOut
@@ -218,6 +339,17 @@ export async function launchTask(input: LaunchTaskInput): Promise<LaunchTaskHand
           finishedAt: now(),
           exitCode: code,
           ...(error ? { error } : {}),
+          ...(adapterResult.usage
+            ? {
+                usage: selectTaskUsage(
+                  current.usage,
+                  usageWithUpdatedAt(adapterResult.usage, now()),
+                ),
+              }
+            : {}),
+          ...(shouldPersistOutputCapture(resultTruncated)
+            ? { outputCapture: outputCaptureSnapshot(resultTruncated) }
+            : {}),
         });
         await appendEvent(finalStatus === "succeeded" ? "completed" : finalStatus, {
           exitCode: code,
@@ -290,12 +422,12 @@ export async function readTaskOutput(input: ReadTaskOutputInput): Promise<string
 
 export async function interruptTask(input: InterruptTaskInput): Promise<AgentTaskRecord> {
   const task = await readTaskRecord(input, input.taskId);
-  const running = runningTasks.get(input.taskId);
+  const running = runningTasks.get(task.taskId);
   const reason = input.reason ?? "Interrupted.";
   const signal = input.signal ?? "SIGTERM";
 
   if (!running && isTerminalTaskStatus(task.status)) {
-    throw new TaskSupervisorError(`Task "${input.taskId}" is not running in this process.`);
+    throw new TaskSupervisorError(`Task "${task.taskId}" is not running in this process.`);
   }
 
   if (running) {
@@ -323,6 +455,198 @@ export async function interruptTask(input: InterruptTaskInput): Promise<AgentTas
   return updated;
 }
 
+export async function interruptTasks(input: InterruptTasksInput): Promise<InterruptTasksResult> {
+  const selected = await selectInterruptTasks(input);
+  const interrupted: AgentTaskRecord[] = [];
+  const skipped: InterruptTasksResult["skipped"] = [];
+  const failed: InterruptTasksResult["failed"] = [];
+
+  for (const task of selected.tasks) {
+    if (isTerminalTaskStatus(task.status)) {
+      skipped.push({ task, reason: "terminal" });
+      continue;
+    }
+
+    try {
+      interrupted.push(
+        await interruptTask({
+          workspaceRoot: input.workspaceRoot,
+          ...(input.orchestratorDir ? { orchestratorDir: input.orchestratorDir } : {}),
+          taskId: task.taskId,
+          ...(input.reason ? { reason: input.reason } : {}),
+          ...(input.signal ? { signal: input.signal } : {}),
+        }),
+      );
+    } catch (error) {
+      const latest = await readTaskRecord(input, task.taskId).catch(() => undefined);
+      if (latest && isTerminalTaskStatus(latest.status)) {
+        skipped.push({ task: latest, reason: "terminal" });
+        continue;
+      }
+      failed.push({ taskId: task.taskId, error: formatError(error) });
+    }
+  }
+
+  return {
+    target: selected.target,
+    interrupted,
+    skipped,
+    failed,
+  };
+}
+
+async function selectInterruptTasks(
+  input: InterruptTasksInput,
+): Promise<{ target: InterruptTasksInput["target"]; tasks: AgentTaskRecord[] }> {
+  const store = {
+    workspaceRoot: input.workspaceRoot,
+    ...(input.orchestratorDir ? { orchestratorDir: input.orchestratorDir } : {}),
+  };
+  const tasks = await listTasks(store);
+
+  switch (input.target.kind) {
+    case "task": {
+      const selected = await selectSingleInterruptTask(store, tasks, input.target);
+      return {
+        target: { ...input.target, taskId: selected.task.taskId },
+        tasks: selected.tasks,
+      };
+    }
+    case "tasks": {
+      const selections = await Promise.all(
+        input.target.taskIds.map((taskId) =>
+          selectSingleInterruptTask(store, tasks, { kind: "task", taskId }),
+        ),
+      );
+      const selectedTasks = selections.flatMap((selection) => selection.tasks);
+      return {
+        target: {
+          ...input.target,
+          taskIds: selections.map((selection) => selection.task.taskId),
+        },
+        tasks: orderInterruptTasks(selectedTasks, undefined),
+      };
+    }
+    case "parent": {
+      const parentTaskId = await resolveTaskId(store, input.target.parentId);
+      const parent = await readTaskRecord(store, parentTaskId);
+      return {
+        target: { ...input.target, parentId: parent.taskId },
+        tasks: orderInterruptTasks(
+          [parent, ...childTasksForParent(tasks, parent.taskId)],
+          parent.taskId,
+        ),
+      };
+    }
+    case "group": {
+      const groupId = resolveTaskGroupId(tasks, input.target.groupId);
+      if (groupId === UNGROUPED_GROUP_ID) {
+        throw new TaskSupervisorSafetyError(
+          'Group "ungrouped" is too broad to interrupt. Interrupt specific task ids instead.',
+          {
+            reason: "broad_group",
+            input: groupId,
+            hint: "Use orchestrator ps --json --compact --active, then interrupt specific task stop ids.",
+          },
+        );
+      }
+      return {
+        target: { ...input.target, groupId },
+        tasks: orderInterruptTasks(
+          tasksForGroup(tasks, groupId),
+          parentTaskIdForGroup(tasks, groupId),
+        ),
+      };
+    }
+    case "active":
+      return {
+        target: input.target,
+        tasks: orderInterruptTasks(
+          tasks.filter((task) => !isTerminalTaskStatus(task.status)),
+          undefined,
+        ),
+      };
+  }
+}
+
+async function selectSingleInterruptTask(
+  store: TaskStoreOptions,
+  allTasks: readonly AgentTaskRecord[],
+  target: Extract<InterruptTasksInput["target"], { kind: "task" }>,
+): Promise<{ task: AgentTaskRecord; tasks: AgentTaskRecord[] }> {
+  const taskId = await resolveTaskId(store, target.taskId);
+  const task = await readTaskRecord(store, taskId);
+  const children = childTasksForParent(allTasks, task.taskId);
+  const nonTerminalChildren = children.filter((child) => !isTerminalTaskStatus(child.status));
+
+  if (
+    task.runtime === "orchestrator" &&
+    nonTerminalChildren.length > 0 &&
+    !target.children &&
+    !target.taskOnly
+  ) {
+    throw new TaskSupervisorSafetyError(
+      `Task "${shortId(task.taskId)}" has ${nonTerminalChildren.length} running ${nonTerminalChildren.length === 1 ? "child" : "children"}. Use:\n  orchestrator interrupt ${shortId(task.taskId)} --children\nor:\n  orchestrator interrupt ${shortId(task.taskId)} --task-only`,
+      {
+        reason: "parent_has_running_children",
+        input: task.taskId,
+        hint: `Use "orchestrator interrupt ${shortId(task.taskId)} --children" to stop the parent and children, or "--task-only" to stop only the parent.`,
+      },
+    );
+  }
+
+  return {
+    task,
+    tasks: target.children ? orderInterruptTasks([task, ...children], task.taskId) : [task],
+  };
+}
+
+function orderInterruptTasks(
+  tasks: readonly AgentTaskRecord[],
+  parentTaskId: string | undefined,
+): AgentTaskRecord[] {
+  return uniqueTasks(tasks).sort((left, right) => {
+    if (parentTaskId) {
+      if (left.taskId === parentTaskId) {
+        return -1;
+      }
+      if (right.taskId === parentTaskId) {
+        return 1;
+      }
+    }
+    return left.createdAt.localeCompare(right.createdAt);
+  });
+}
+
+function uniqueTasks(tasks: readonly AgentTaskRecord[]): AgentTaskRecord[] {
+  const seen = new Set<string>();
+  const unique: AgentTaskRecord[] = [];
+  for (const task of tasks) {
+    if (seen.has(task.taskId)) {
+      continue;
+    }
+    seen.add(task.taskId);
+    unique.push(task);
+  }
+  return unique;
+}
+
+function parentTaskIdForGroup(
+  tasks: readonly AgentTaskRecord[],
+  groupId: string,
+): string | undefined {
+  return tasks.find((task) => taskGroupId(task) === groupId && task.runtime === "orchestrator")
+    ?.taskId;
+}
+
+function formatError(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+function shortId(value: string): string {
+  return value.slice(0, 8);
+}
+
 function validateLaunchPlan(plan: AgentLaunchPlan): void {
   if (!plan.executable.trim()) {
     throw new TaskSupervisorError("Launch plan executable must not be empty.");
@@ -343,8 +667,13 @@ function validateShellAllowlist(
 
   const command = plan.args.at(-1);
   if (!command || !allowedShellCommands?.includes(command)) {
-    throw new TaskSupervisorError(
+    throw new TaskSupervisorSafetyError(
       `Runtime "${plan.runtime}" requires an allowlisted shell command.`,
+      {
+        reason: "shell_command_not_allowlisted",
+        ...(command ? { input: command } : {}),
+        hint: "Pass --allow-shell-command with the exact command, or use a configured process agent instead of the shell runtime.",
+      },
     );
   }
 }

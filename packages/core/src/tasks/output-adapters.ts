@@ -1,10 +1,14 @@
 import { appendFile } from "node:fs/promises";
 import type { AgentLaunchPlan } from "../runtime/index.ts";
-import type { TaskEvent, TaskPaths } from "./types.ts";
+import type { TaskEvent, TaskPaths, TaskUsage } from "./types.ts";
+import { normalizeTaskUsage, usageWithUpdatedAt, type NormalizedTaskUsage } from "./usage.ts";
 
 export type RuntimeOutputAdapterResult = {
   resultText?: string;
   errorText?: string;
+  usage?: NormalizedTaskUsage;
+  failed?: boolean;
+  fallbackToStdout?: boolean;
 };
 
 export type RuntimeOutputAdapter = {
@@ -13,16 +17,23 @@ export type RuntimeOutputAdapter = {
   finalize(): Promise<RuntimeOutputAdapterResult>;
 };
 
-type AppendEvent = (type: TaskEvent["type"], data?: Record<string, unknown>) => Promise<void>;
+type AppendEvent = (type: TaskEvent["type"], data?: Record<string, unknown>) => Promise<TaskEvent>;
+type UsageSink = (usage: TaskUsage) => Promise<void>;
 
 export function createRuntimeOutputAdapter(input: {
   plan: AgentLaunchPlan;
   paths: TaskPaths;
   appendEvent: AppendEvent;
+  onUsage?: UsageSink;
 }): RuntimeOutputAdapter {
   switch (input.plan.outputTransport.kind) {
     case "jsonl_events":
-      return new JsonlRuntimeOutputAdapter(input.plan, input.paths, input.appendEvent);
+      return new JsonlRuntimeOutputAdapter(
+        input.plan,
+        input.paths,
+        input.appendEvent,
+        input.onUsage,
+      );
     case "stdout_json":
       return new StdoutJsonOutputAdapter();
     case "stdout_text":
@@ -35,12 +46,13 @@ class NoopOutputAdapter implements RuntimeOutputAdapter {
   async onStdoutChunk(): Promise<void> {}
   async onStderrChunk(): Promise<void> {}
   async finalize(): Promise<RuntimeOutputAdapterResult> {
-    return {};
+    return { fallbackToStdout: true };
   }
 }
 
 class StdoutJsonOutputAdapter implements RuntimeOutputAdapter {
   private stdout = "";
+  private usage: NormalizedTaskUsage | undefined;
 
   async onStdoutChunk(chunk: Buffer): Promise<void> {
     this.stdout += chunk.toString("utf8");
@@ -57,7 +69,15 @@ class StdoutJsonOutputAdapter implements RuntimeOutputAdapter {
     try {
       const parsed = JSON.parse(trimmed) as unknown;
       const resultText = extractGenericResultText(parsed);
-      return resultText !== undefined ? { resultText } : {};
+      this.usage = extractGenericUsage(parsed, {
+        source: "runtime",
+        scope: "task",
+        final: true,
+      });
+      return {
+        ...(resultText !== undefined ? { resultText } : {}),
+        ...(this.usage ? { usage: this.usage } : {}),
+      };
     } catch {
       return {};
     }
@@ -68,14 +88,24 @@ class JsonlRuntimeOutputAdapter implements RuntimeOutputAdapter {
   private stdoutRemainder = "";
   private resultText: string | undefined;
   private errorText: string | undefined;
+  private usage: NormalizedTaskUsage | undefined;
+  private parseErrorCount = 0;
+  private eventCount = 0;
   private readonly plan: AgentLaunchPlan;
   private readonly paths: TaskPaths;
   private readonly appendEvent: AppendEvent;
+  private readonly onUsage: UsageSink | undefined;
 
-  constructor(plan: AgentLaunchPlan, paths: TaskPaths, appendEvent: AppendEvent) {
+  constructor(
+    plan: AgentLaunchPlan,
+    paths: TaskPaths,
+    appendEvent: AppendEvent,
+    onUsage: UsageSink | undefined,
+  ) {
     this.plan = plan;
     this.paths = paths;
     this.appendEvent = appendEvent;
+    this.onUsage = onUsage;
   }
 
   async onStdoutChunk(chunk: Buffer): Promise<void> {
@@ -104,7 +134,9 @@ class JsonlRuntimeOutputAdapter implements RuntimeOutputAdapter {
 
     return {
       ...(this.resultText !== undefined ? { resultText: this.resultText } : {}),
-      ...(this.errorText !== undefined ? { errorText: this.errorText } : {}),
+      ...this.finalError(),
+      ...(this.usage ? { usage: this.usage } : {}),
+      fallbackToStdout: false,
     };
   }
 
@@ -119,6 +151,7 @@ class JsonlRuntimeOutputAdapter implements RuntimeOutputAdapter {
     try {
       parsed = JSON.parse(line) as unknown;
     } catch (error) {
+      this.parseErrorCount += 1;
       await this.appendEvent(
         "agent_event",
         compactData({
@@ -132,6 +165,7 @@ class JsonlRuntimeOutputAdapter implements RuntimeOutputAdapter {
       return;
     }
 
+    this.eventCount += 1;
     const resultText = extractRuntimeResultText(this.plan, parsed);
     if (resultText !== undefined) {
       this.resultText = resultText;
@@ -143,8 +177,48 @@ class JsonlRuntimeOutputAdapter implements RuntimeOutputAdapter {
       if (errorText) {
         this.errorText = errorText;
       }
-      await this.appendEvent("agent_event", normalized);
+      const event = await this.appendEvent("agent_event", normalized);
+      const usage = normalizeTaskUsage(normalized.usage, { updatedAt: event.ts });
+      if (usage) {
+        this.usage = usage;
+        await this.onUsage?.(usageWithUpdatedAt(usage, event.ts));
+      }
     }
+  }
+
+  private finalError(): Pick<RuntimeOutputAdapterResult, "errorText" | "failed"> {
+    if (this.errorText !== undefined) {
+      return { errorText: this.errorText, failed: true };
+    }
+
+    if (this.resultText !== undefined) {
+      return {};
+    }
+
+    if (this.parseErrorCount > 0) {
+      return {
+        errorText: `Runtime "${this.plan.runtime}" emitted malformed JSONL and no final result.`,
+        failed: true,
+      };
+    }
+
+    if (this.eventCount > 0) {
+      return {
+        errorText: `Runtime "${this.plan.runtime}" did not emit final event "${this.finalEventName()}".`,
+        failed: true,
+      };
+    }
+
+    return {
+      errorText: `Runtime "${this.plan.runtime}" did not emit structured output.`,
+      failed: true,
+    };
+  }
+
+  private finalEventName(): string {
+    return this.plan.outputTransport.kind === "jsonl_events"
+      ? this.plan.outputTransport.finalEvent
+      : "final";
   }
 }
 
@@ -169,13 +243,43 @@ function normalizeRuntimeEvent(
   }
 
   const sourceType = stringValue(event, "type") ?? "event";
+  const usage = extractGenericUsage(event, {
+    scope: "task",
+    source: "runtime",
+    ...(sourceType === "final" ? { final: true } : {}),
+  });
+  if (sourceType === "usage" || sourceType === "agent.usage") {
+    return compactData({
+      runtime,
+      source: "stdout",
+      kind: "agent.usage",
+      sourceType,
+      usage,
+    });
+  }
+
+  if (sourceType === "error" || sourceType === "runtime.error" || sourceType === "agent.error") {
+    const error = recordValue(event, "error");
+    return compactData({
+      runtime,
+      source: "stdout",
+      kind: "runtime.error",
+      sourceType,
+      message:
+        extractProviderErrorMessage(stringValue(event, "message")) ??
+        (error ? stringValue(error, "message") : undefined),
+      usage,
+    });
+  }
+
   return compactData({
     runtime,
     source: "stdout",
-    kind: sourceType,
+    kind: sourceType === "final" ? "agent.result" : sourceType,
     sourceType,
     message:
       stringValue(event, "message") ?? stringValue(event, "result") ?? stringValue(event, "text"),
+    usage,
   });
 }
 
@@ -188,6 +292,7 @@ function normalizeClaudeEvent(
 
   if (sourceType === "assistant") {
     const content = claudeContentSummary(event);
+    const message = recordValue(event, "message");
     return compactData({
       runtime,
       source: "stdout",
@@ -198,6 +303,11 @@ function normalizeClaudeEvent(
       toolName: content.toolName,
       message: content.message,
       sessionId: stringValue(event, "session_id"),
+      usage: extractClaudeUsage(message ? message.usage : undefined, {
+        source: "provider",
+        scope: "turn",
+        final: false,
+      }),
     });
   }
 
@@ -223,6 +333,7 @@ function normalizeClaudeEvent(
       message: stringValue(event, "result"),
       terminalReason: stringValue(event, "terminal_reason") ?? stringValue(event, "stop_reason"),
       sessionId: stringValue(event, "session_id"),
+      usage: extractClaudeResultUsage(event),
     });
   }
 
@@ -290,7 +401,11 @@ function normalizeCodexEvent(
       source: "stdout",
       kind: "agent.usage",
       sourceType,
-      usage: tokenUsageFromRecord(recordValue(event, "usage")),
+      usage: extractCodexUsage(recordValue(event, "usage"), {
+        source: "provider",
+        scope: "task",
+        final: true,
+      }),
     });
   }
 
@@ -375,6 +490,98 @@ function extractGenericResultText(value: unknown): string | undefined {
   }
 
   return undefined;
+}
+
+function extractGenericUsage(
+  value: unknown,
+  defaults: Partial<Pick<NormalizedTaskUsage, "source" | "scope" | "final">> = {},
+): NormalizedTaskUsage | undefined {
+  if (!isRecord(value)) {
+    return undefined;
+  }
+
+  return normalizeTaskUsage(recordValue(value, "usage") ?? value, { defaults });
+}
+
+function extractClaudeResultUsage(event: Record<string, unknown>): NormalizedTaskUsage | undefined {
+  const defaults = {
+    source: "provider" as const,
+    scope: "task" as const,
+    final: true,
+  };
+  const usage = extractClaudeUsage(event.usage, defaults);
+  const costUsd =
+    numberValue(event, "total_cost_usd") ??
+    numberValue(event, "totalCostUsd") ??
+    numberValue(event, "cost_usd") ??
+    numberValue(event, "costUsd");
+
+  if (!usage) {
+    return costUsd === undefined ? undefined : { costUsd, ...defaults };
+  }
+
+  return {
+    ...usage,
+    ...(costUsd !== undefined ? { costUsd } : {}),
+  };
+}
+
+function extractClaudeUsage(
+  value: unknown,
+  defaults: Partial<Pick<NormalizedTaskUsage, "source" | "scope" | "final">> = {},
+): NormalizedTaskUsage | undefined {
+  const source = isRecord(value) ? (recordValue(value, "usage") ?? value) : undefined;
+  if (!source) {
+    return undefined;
+  }
+
+  const usage = normalizeTaskUsage(
+    compactData({
+      inputTokens: numberValue(source, "inputTokens") ?? numberValue(source, "input_tokens"),
+      outputTokens: numberValue(source, "outputTokens") ?? numberValue(source, "output_tokens"),
+      cacheReadTokens:
+        numberValue(source, "cacheReadTokens") ??
+        numberValue(source, "cache_read_tokens") ??
+        numberValue(source, "cacheRead") ??
+        numberValue(source, "cache_read") ??
+        numberValue(source, "cache_read_input_tokens"),
+      cacheWriteTokens:
+        numberValue(source, "cacheWriteTokens") ??
+        numberValue(source, "cache_write_tokens") ??
+        numberValue(source, "cacheWrite") ??
+        numberValue(source, "cache_write") ??
+        numberValue(source, "cache_creation_input_tokens"),
+      reasoningTokens:
+        numberValue(source, "reasoningTokens") ?? numberValue(source, "reasoning_tokens"),
+      totalTokens: numberValue(source, "totalTokens") ?? numberValue(source, "total_tokens"),
+      costUsd: numberValue(source, "costUsd") ?? numberValue(source, "cost_usd"),
+      source: stringValue(source, "source"),
+      scope: stringValue(source, "scope"),
+      final: booleanValue(source, "final"),
+    }),
+    { defaults },
+  );
+  if (!usage) {
+    return undefined;
+  }
+  const hasExplicitTotal =
+    numberValue(source, "totalTokens") !== undefined ||
+    numberValue(source, "total_tokens") !== undefined;
+
+  return {
+    ...usage,
+    totalTokens: hasExplicitTotal ? usage.totalTokens : sumKnownTokens(usage),
+  };
+}
+
+function sumKnownTokens(usage: NormalizedTaskUsage): number | undefined {
+  const values = [
+    usage.inputTokens,
+    usage.outputTokens,
+    usage.cacheReadTokens,
+    usage.cacheWriteTokens,
+  ].filter((value): value is number => typeof value === "number");
+  return values.length > 0 ? values.reduce((sum, value) => sum + value, 0) : undefined;
 }
 
 function claudeContentSummary(event: Record<string, unknown>): {
@@ -485,29 +692,42 @@ function extractProviderErrorMessage(message: string | undefined): string | unde
   return message;
 }
 
-function tokenUsageFromRecord(
+function extractCodexUsage(
   usage: Record<string, unknown> | undefined,
-): Record<string, number> | undefined {
+  defaults: Partial<Pick<NormalizedTaskUsage, "source" | "scope" | "final">> = {},
+): NormalizedTaskUsage | undefined {
   if (!usage) {
     return undefined;
   }
 
-  const inputTokens = numberValue(usage, "input_tokens");
-  const outputTokens = numberValue(usage, "output_tokens");
-  const cacheReadTokens = numberValue(usage, "cached_input_tokens");
-  const totalTokens =
-    inputTokens !== undefined && outputTokens !== undefined
-      ? inputTokens + outputTokens
-      : undefined;
-
-  const normalized = compactData({
-    inputTokens,
-    outputTokens,
-    cacheReadTokens,
-    totalTokens,
-  });
-
-  return Object.keys(normalized).length > 0 ? (normalized as Record<string, number>) : undefined;
+  return normalizeTaskUsage(
+    compactData({
+      inputTokens: numberValue(usage, "inputTokens") ?? numberValue(usage, "input_tokens"),
+      outputTokens: numberValue(usage, "outputTokens") ?? numberValue(usage, "output_tokens"),
+      cacheReadTokens:
+        numberValue(usage, "cacheReadTokens") ??
+        numberValue(usage, "cache_read_tokens") ??
+        numberValue(usage, "cacheRead") ??
+        numberValue(usage, "cache_read") ??
+        numberValue(usage, "cached_input_tokens"),
+      cacheWriteTokens:
+        numberValue(usage, "cacheWriteTokens") ??
+        numberValue(usage, "cache_write_tokens") ??
+        numberValue(usage, "cacheWrite") ??
+        numberValue(usage, "cache_write"),
+      reasoningTokens:
+        numberValue(usage, "reasoningTokens") ??
+        numberValue(usage, "reasoning_tokens") ??
+        numberValue(usage, "reasoningOutputTokens") ??
+        numberValue(usage, "reasoning_output_tokens"),
+      totalTokens: numberValue(usage, "totalTokens") ?? numberValue(usage, "total_tokens"),
+      costUsd: numberValue(usage, "costUsd") ?? numberValue(usage, "cost_usd"),
+      source: stringValue(usage, "source"),
+      scope: stringValue(usage, "scope"),
+      final: booleanValue(usage, "final"),
+    }),
+    { defaults },
+  );
 }
 
 function compactData(data: Record<string, unknown>): Record<string, unknown> {
@@ -534,6 +754,11 @@ function stringValue(record: Record<string, unknown>, key: string): string | und
 function numberValue(record: Record<string, unknown>, key: string): number | undefined {
   const value = record[key];
   return typeof value === "number" ? value : undefined;
+}
+
+function booleanValue(record: Record<string, unknown>, key: string): boolean | undefined {
+  const value = record[key];
+  return typeof value === "boolean" ? value : undefined;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

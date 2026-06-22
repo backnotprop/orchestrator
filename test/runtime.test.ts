@@ -173,6 +173,8 @@ test("custom process config compiles into a launchable runtime", () => {
   assert.deepEqual(runtime.launch.baseArgs, ["run", "--prompt", "{prompt}"]);
   assert.deepEqual(runtime.launch.prompt, { kind: "argv_template" });
   assert.deepEqual(runtime.launch.output, { kind: "jsonl_events", finalEvent: "done" });
+  assert.equal(runtime.launch.defaultOutputMode, "jsonl");
+  assert.deepEqual(Object.keys(runtime.launch.outputModes ?? {}), ["jsonl"]);
 
   const plan = buildAgentLaunchPlan(
     {
@@ -187,6 +189,140 @@ test("custom process config compiles into a launchable runtime", () => {
   assert.deepEqual(plan.args, ["run", "--prompt", sampleTask, "--model", "small"]);
   assert.deepEqual(plan.outputTransport, { kind: "jsonl_events", finalEvent: "done" });
   assert.equal(plan.safety.acceptsShellCommand, false);
+
+  const explicitOutputModePlan = buildAgentLaunchPlan(
+    {
+      runtime: "reviewer",
+      task: sampleTask,
+      cwd: sampleCwd,
+      outputMode: "jsonl",
+    },
+    { reviewer: runtime },
+  );
+  assert.deepEqual(explicitOutputModePlan.outputTransport, {
+    kind: "jsonl_events",
+    finalEvent: "done",
+  });
+});
+
+test("custom process argv templates do not rewrite JavaScript template literals", () => {
+  const [runtime] = compileOrchestratorConfig({
+    agents: {
+      "jsonl-wrapper": {
+        adapter: "process",
+        command: "node",
+        args: ["-e", "console.log(`${prompt}:${model}`)", "{prompt}", "{model}"],
+        output: { format: "jsonl", finalEvent: "final" },
+      },
+    },
+  });
+
+  assert.ok(runtime);
+  const plan = buildAgentLaunchPlan(
+    {
+      runtime: "jsonl-wrapper",
+      task: sampleTask,
+      cwd: sampleCwd,
+      model: "small",
+    },
+    { "jsonl-wrapper": runtime },
+  );
+
+  assert.deepEqual(plan.args, ["-e", "console.log(`${prompt}:${model}`)", sampleTask, "small"]);
+});
+
+test("custom process config rejects common prompt placeholder mistakes", () => {
+  for (const args of [["{{prompt}}"], ["{task}"], ["{{task}}"], ["{{model}}", "{prompt}"]]) {
+    assert.throws(
+      () =>
+        compileOrchestratorConfig({
+          agents: {
+            "bad-wrapper": {
+              adapter: "process",
+              command: "bad-wrapper",
+              args,
+              output: "text",
+            },
+          },
+        }),
+      (error) =>
+        error instanceof Error &&
+        error.name === "OrchestratorConfigError" &&
+        "reason" in error &&
+        error.reason === "invalid_config_schema" &&
+        "hint" in error &&
+        typeof error.hint === "string" &&
+        (error.hint.includes("{prompt}") || error.hint.includes("{model}")),
+    );
+  }
+});
+
+test("custom config schema errors are machine-readable", () => {
+  assert.throws(
+    () => compileOrchestratorConfig([]),
+    (error) =>
+      error instanceof Error &&
+      error.name === "OrchestratorConfigError" &&
+      "reason" in error &&
+      error.reason === "invalid_config_schema" &&
+      "input" in error &&
+      error.input === "orchestrator.config.json" &&
+      "hint" in error &&
+      typeof error.hint === "string" &&
+      error.hint.includes("agents object"),
+  );
+});
+
+test("custom config adapter errors include recovery details", () => {
+  assert.throws(
+    () =>
+      compileOrchestratorConfig({
+        agents: {
+          remote: {
+            adapter: "http",
+            command: "agent-server",
+            args: ["{prompt}"],
+            output: "text",
+          },
+        },
+      }),
+    (error) =>
+      error instanceof Error &&
+      error.name === "OrchestratorConfigError" &&
+      "reason" in error &&
+      error.reason === "unsupported_agent_adapter" &&
+      "input" in error &&
+      error.input === "agents.remote.adapter" &&
+      "hint" in error &&
+      typeof error.hint === "string" &&
+      error.hint.includes('"adapter": "process"'),
+  );
+});
+
+test("custom config output errors include recovery details", () => {
+  assert.throws(
+    () =>
+      compileOrchestratorConfig({
+        agents: {
+          reviewer: {
+            adapter: "process",
+            command: "reviewer-agent",
+            args: ["{prompt}"],
+            output: { mode: "text" },
+          },
+        },
+      }),
+    (error) =>
+      error instanceof Error &&
+      error.name === "OrchestratorConfigError" &&
+      "reason" in error &&
+      error.reason === "invalid_config_schema" &&
+      "input" in error &&
+      error.input === "agents.reviewer.output.format" &&
+      "hint" in error &&
+      typeof error.hint === "string" &&
+      error.hint.includes('"output": "text"'),
+  );
 });
 
 test("custom config loader merges XDG, home, workspace, and explicit config", async () => {
@@ -475,7 +611,11 @@ test("unknown runtimes and unsupported output modes fail before producing a plan
         task: sampleTask,
         cwd: sampleCwd,
       }),
-    /Unknown runtime/,
+    (error) =>
+      error instanceof LaunchPlanError &&
+      error.reason === "unknown_runtime" &&
+      error.input === "missing-runtime" &&
+      error.hint?.includes("help --json --compact") === true,
   );
 
   assert.throws(
@@ -486,7 +626,11 @@ test("unknown runtimes and unsupported output modes fail before producing a plan
         cwd: sampleCwd,
         outputMode: "xml",
       }),
-    /does not support output mode/,
+    (error) =>
+      error instanceof LaunchPlanError &&
+      error.reason === "unsupported_output_mode" &&
+      error.input === "xml" &&
+      error.hint?.includes("stream_json") === true,
   );
 });
 

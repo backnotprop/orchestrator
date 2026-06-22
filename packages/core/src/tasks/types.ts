@@ -1,13 +1,16 @@
 import type { AgentLaunchPlan } from "../runtime/index.ts";
 
-export type TaskStatus =
-  | "queued"
-  | "starting"
-  | "running"
-  | "succeeded"
-  | "failed"
-  | "cancelled"
-  | "timed_out";
+export const TASK_STATUSES = [
+  "queued",
+  "starting",
+  "running",
+  "succeeded",
+  "failed",
+  "cancelled",
+  "timed_out",
+] as const;
+
+export type TaskStatus = (typeof TASK_STATUSES)[number];
 
 export function isTerminalTaskStatus(status: TaskStatus): boolean {
   return (
@@ -41,8 +44,22 @@ export type TaskUsage = {
   outputTokens?: number;
   cacheReadTokens?: number;
   cacheWriteTokens?: number;
+  reasoningTokens?: number;
   totalTokens?: number;
   costUsd?: number;
+  source?: "provider" | "runtime" | "estimated";
+  scope?: "turn" | "task" | "session" | "account";
+  final?: boolean;
+  updatedAt: string;
+};
+
+export type TaskOutputCapture = {
+  maxBytes: number;
+  stdoutBytes: number;
+  stderrBytes: number;
+  stdoutTruncated: boolean;
+  stderrTruncated: boolean;
+  resultTruncated: boolean;
   updatedAt: string;
 };
 
@@ -62,6 +79,7 @@ export type AgentTaskRecord = {
   error?: string;
   parent?: TaskParent;
   usage?: TaskUsage;
+  outputCapture?: TaskOutputCapture;
   paths: TaskPaths;
 };
 
@@ -160,4 +178,51 @@ export type InterruptTaskInput = TaskStoreOptions & {
   taskId: string;
   reason?: string;
   signal?: NodeJS.Signals;
+};
+
+export type InterruptTasksTarget =
+  | {
+      kind: "task";
+      taskId: string;
+      children?: boolean;
+      taskOnly?: boolean;
+    }
+  | {
+      kind: "tasks";
+      taskIds: readonly string[];
+    }
+  | {
+      kind: "parent";
+      parentId: string;
+      children: true;
+    }
+  | {
+      kind: "group";
+      groupId: string;
+    }
+  | {
+      kind: "active";
+    };
+
+export type InterruptTasksInput = TaskStoreOptions & {
+  target: InterruptTasksTarget;
+  reason?: string;
+  signal?: NodeJS.Signals;
+};
+
+export type InterruptTasksSkipped = {
+  task: AgentTaskRecord;
+  reason: "terminal";
+};
+
+export type InterruptTasksFailed = {
+  taskId: string;
+  error: string;
+};
+
+export type InterruptTasksResult = {
+  target: InterruptTasksTarget;
+  interrupted: AgentTaskRecord[];
+  skipped: InterruptTasksSkipped[];
+  failed: InterruptTasksFailed[];
 };

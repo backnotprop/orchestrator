@@ -6,6 +6,16 @@ This is the canonical ADR workspace.
 - `research/`: research spikes used to inform decisions
 - `specs/`: draft specs used before a decision is final
 
+## Backlog
+
+- [Job-control UX backlog](specs/job-control-ux-backlog-20260619-203821.md)
+
+## Specs
+
+- [Short ID resolution](specs/short-id-resolution-20260619-205022.md)
+- [Group and parent interruption](specs/group-and-parent-interruption-20260619-231405.md)
+- [Compact machine control view](specs/compact-machine-control-view-20260620-082105.md)
+
 ## Decisions
 
 - [1. Record architecture decisions](decisions/0001-record-architecture-decisions.md)
@@ -32,3 +42,7 @@ This is the canonical ADR workspace.
 - [22. Standardize parent run event stream contract](decisions/0022-standardize-parent-run-event-stream-contract-20260618-110432.md)
 - [23. Build multi-agent operations view from task state](decisions/0023-build-multi-agent-operations-view-from-task-state-20260618-145801.md)
 - [24. Run parent agent as managed background task](decisions/0024-run-parent-agent-as-managed-background-task-20260618-193203.md)
+- [25. Normalize token usage at runtime adapter boundaries](decisions/0025-normalize-token-usage-at-runtime-adapter-boundaries-20260619-154303.md)
+- [26. Accept short task ID prefixes](decisions/0026-accept-short-task-id-prefixes-20260619-212812.md)
+- [27. Add group and safer parent interruption](decisions/0027-add-group-and-safer-parent-interruption-20260619-231629.md)
+- [28. Add compact machine control view](decisions/0028-add-compact-machine-control-view-20260620-082105.md)

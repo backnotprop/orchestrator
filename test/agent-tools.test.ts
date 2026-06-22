@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -27,6 +27,7 @@ type TestToolResult<T> = {
 };
 
 type ToolDetails = {
+  taskId?: string;
   task?: {
     taskId: string;
     runtime: string;
@@ -40,6 +41,22 @@ type ToolDetails = {
     status: string;
     name?: string;
   }>;
+  interrupted?: Array<{
+    taskId: string;
+    runtime: string;
+    status: string;
+    name?: string;
+  }>;
+  skipped?: Array<{
+    task: {
+      taskId: string;
+      runtime: string;
+      status: string;
+      name?: string;
+    };
+    reason: string;
+  }>;
+  failed?: Array<{ taskId: string; error: string }>;
   output?: string;
   stdout?: string;
   stderr?: string;
@@ -48,7 +65,11 @@ type ToolDetails = {
     inputTokens?: number;
     outputTokens?: number;
     cacheReadTokens?: number;
+    reasoningTokens?: number;
     totalTokens?: number;
+    source?: string;
+    scope?: string;
+    final?: boolean;
   };
 };
 
@@ -85,6 +106,36 @@ function codexFixturePlan(fixturePath: string, cwd: string): AgentLaunchPlan {
   };
 }
 
+function shellPlan(command: string, cwd: string): AgentLaunchPlan {
+  return {
+    runtime: "shell",
+    displayName: "shell",
+    executable: "sh",
+    args: ["-lc", command],
+    env: {},
+    cwd,
+    promptTransport: { kind: "argv", position: "last" },
+    outputTransport: { kind: "stdout_text" },
+    expectedProcesses: ["sh"],
+    interrupt: "process_group",
+    canSteerRunning: false,
+    handlesOwnAuth: false,
+    enabled: true,
+    safety: {
+      requiresAllowlist: false,
+      acceptsShellCommand: false,
+    },
+  };
+}
+
+function orchestratorPlan(command: string, cwd: string): AgentLaunchPlan {
+  return {
+    ...shellPlan(command, cwd),
+    runtime: "orchestrator",
+    displayName: "Orchestrator",
+  };
+}
+
 function quoteShellArg(value: string): string {
   return `'${value.replaceAll("'", "'\\''")}'`;
 }
@@ -109,19 +160,35 @@ async function executeTool<TDetails>(
 }
 
 async function waitForTerminalTask(workspaceRoot: string, taskId: string): Promise<string> {
+  return (
+    await waitForTaskState(
+      workspaceRoot,
+      taskId,
+      (task) => isTerminalTaskStatus(task.status),
+      "terminal",
+    )
+  ).status;
+}
+
+async function waitForTaskState(
+  workspaceRoot: string,
+  taskId: string,
+  predicate: (task: Awaited<ReturnType<typeof listTasks>>[number]) => boolean,
+  description: string,
+): Promise<Awaited<ReturnType<typeof listTasks>>[number]> {
   const startedAt = Date.now();
 
   while (Date.now() - startedAt < 5_000) {
     const task = (await listTasks({ workspaceRoot })).find(
       (candidate) => candidate.taskId === taskId,
     );
-    if (task && isTerminalTaskStatus(task.status)) {
-      return task.status;
+    if (task && predicate(task)) {
+      return task;
     }
     await delay(25);
   }
 
-  assert.fail(`Timed out waiting for task ${taskId}.`);
+  assert.fail(`Timed out waiting for task ${taskId} to be ${description}.`);
 }
 
 test("parent agent tools manage a background Orchestrator task", async () => {
@@ -171,14 +238,16 @@ test("parent agent tools manage a background Orchestrator task", async () => {
 
     const taskId = launch.details.task?.taskId;
     assert.ok(taskId);
+    const shortTaskId = taskId.slice(0, 8);
     assert.equal(await waitForTerminalTask(workspaceRoot, taskId), "succeeded");
 
     const read = await executeTool<ToolDetails>(getTool(tools, "read_agent"), {
-      taskId,
+      taskId: shortTaskId,
       wait: true,
       timeoutMs: 5_000,
     });
     assert.equal(read.details.retrievalStatus, "completed");
+    assert.equal(read.details.task?.taskId, taskId);
     assert.equal(read.details.task?.status, "succeeded");
     assert.equal(read.details.output, "final answer from worker\n");
 
@@ -194,13 +263,17 @@ test("parent agent tools manage a background Orchestrator task", async () => {
       parentToolCallId: "test-tool-call",
     });
 
-    const logs = await executeTool<ToolDetails>(getTool(tools, "read_agent_logs"), { taskId });
+    const logs = await executeTool<ToolDetails>(getTool(tools, "read_agent_logs"), {
+      taskId: shortTaskId,
+    });
+    assert.equal(logs.details.taskId, taskId);
     assert.equal(logs.details.stdout, "final answer from worker\n");
     assert.equal(logs.details.stderr, "worker stderr\n");
 
     const events = await executeTool<ToolDetails>(getTool(tools, "read_agent_events"), {
-      taskId,
+      taskId: shortTaskId,
     });
+    assert.equal(events.details.taskId, taskId);
     assert.ok(events.details.events?.some((event) => event.type === "completed"));
 
     assert.equal(
@@ -214,6 +287,167 @@ test("parent agent tools manage a background Orchestrator task", async () => {
       (await readTaskEvents({ workspaceRoot, taskId })).some(
         (event) => event.type === "agent_event" && event.data.kind === "task.parent",
       ),
+    );
+  });
+});
+
+test("interrupt_agent accepts short task ids", async () => {
+  await withTempWorkspace(async (workspaceRoot) => {
+    const command = 'node -e "setTimeout(() => {}, 5000)"';
+    let completed: Promise<unknown> | undefined;
+    const tools = createOrchestratorAgentTools({
+      workspaceRoot,
+      allowDisabledRuntime: true,
+      allowedShellCommands: [command],
+      configEnv: {
+        HOME: workspaceRoot,
+        XDG_CONFIG_HOME: join(workspaceRoot, ".config"),
+      },
+      backgroundLauncher: async (input) => {
+        const handle = await launchTask(input);
+        completed = handle.completed.catch(() => {});
+        return handle.task;
+      },
+    });
+
+    const launch = await executeTool<ToolDetails>(getTool(tools, "launch_agent"), {
+      runtime: "shell",
+      instructions: command,
+      name: "cancel me",
+    });
+
+    const taskId = launch.details.task?.taskId;
+    assert.ok(taskId);
+    await waitForTaskState(workspaceRoot, taskId, (task) => task.status === "running", "running");
+
+    const interrupted = await executeTool<ToolDetails>(getTool(tools, "interrupt_agent"), {
+      taskId: taskId.slice(0, 8),
+      reason: "tool cancellation",
+    });
+    assert.equal(interrupted.details.task?.taskId, taskId);
+    assert.equal(interrupted.details.task?.status, "cancelled");
+
+    assert.equal(await waitForTerminalTask(workspaceRoot, taskId), "cancelled");
+    const persisted = await waitForTaskState(
+      workspaceRoot,
+      taskId,
+      (task) => task.status === "cancelled",
+      "cancelled",
+    );
+    assert.equal(persisted.error, "tool cancellation");
+    await completed;
+  });
+});
+
+test("interrupt_agent can stop parent children and groups", async () => {
+  await withTempWorkspace(async (workspaceRoot) => {
+    const command = 'node -e "setTimeout(() => {}, 5000)"';
+    const tools = createOrchestratorAgentTools({ workspaceRoot });
+
+    const parent = await launchTask({
+      workspaceRoot,
+      taskId: "tool-parent-children-00000001",
+      plan: orchestratorPlan(command, workspaceRoot),
+      name: "tool parent",
+    });
+    const child = await launchTask({
+      workspaceRoot,
+      taskId: "tool-child-children-00000001",
+      plan: shellPlan(command, workspaceRoot),
+      name: "tool child",
+      parent: {
+        parentRunId: parent.task.taskId,
+        parentTaskId: parent.task.taskId,
+      },
+    });
+
+    await Promise.all([
+      waitForTaskState(
+        workspaceRoot,
+        parent.task.taskId,
+        (task) => task.status === "running",
+        "running",
+      ),
+      waitForTaskState(
+        workspaceRoot,
+        child.task.taskId,
+        (task) => task.status === "running",
+        "running",
+      ),
+    ]);
+
+    const interruptedParent = await executeTool<ToolDetails>(getTool(tools, "interrupt_agent"), {
+      parentId: parent.task.taskId.slice(0, 8),
+      children: true,
+      reason: "tool parent stop",
+    });
+    assert.deepEqual(
+      interruptedParent.details.interrupted?.map((task) => task.taskId),
+      [parent.task.taskId, child.task.taskId],
+    );
+    await Promise.all([parent.completed, child.completed]);
+
+    const groupParent = await launchTask({
+      workspaceRoot,
+      taskId: "tool-group-parent-00000001",
+      plan: orchestratorPlan(command, workspaceRoot),
+      name: "tool group parent",
+    });
+    const groupChild = await launchTask({
+      workspaceRoot,
+      taskId: "tool-group-child-00000001",
+      plan: shellPlan(command, workspaceRoot),
+      name: "tool group child",
+      parent: {
+        parentRunId: groupParent.task.taskId,
+        parentTaskId: groupParent.task.taskId,
+      },
+    });
+    await Promise.all([
+      waitForTaskState(
+        workspaceRoot,
+        groupParent.task.taskId,
+        (task) => task.status === "running",
+        "running",
+      ),
+      waitForTaskState(
+        workspaceRoot,
+        groupChild.task.taskId,
+        (task) => task.status === "running",
+        "running",
+      ),
+    ]);
+
+    const interruptedGroup = await executeTool<ToolDetails>(getTool(tools, "interrupt_agent"), {
+      groupId: groupParent.task.taskId.slice(0, 8),
+      reason: "tool group stop",
+    });
+    assert.deepEqual(
+      interruptedGroup.details.interrupted?.map((task) => task.taskId),
+      [groupParent.task.taskId, groupChild.task.taskId],
+    );
+    await Promise.all([groupParent.completed, groupChild.completed]);
+  });
+});
+
+test("interrupt_agent rejects invalid multi-task selectors", async () => {
+  await withTempWorkspace(async (workspaceRoot) => {
+    const tools = createOrchestratorAgentTools({ workspaceRoot });
+
+    await assert.rejects(
+      () =>
+        executeTool<ToolDetails>(getTool(tools, "interrupt_agent"), {
+          taskId: "task",
+          groupId: "group",
+        }),
+      /exactly one/,
+    );
+    await assert.rejects(
+      () =>
+        executeTool<ToolDetails>(getTool(tools, "interrupt_agent"), {
+          parentId: "parent",
+        }),
+      /children: true/,
     );
   });
 });
@@ -270,12 +504,86 @@ test("read_agent includes latest normalized usage when available", async () => {
       taskId: completed.taskId,
     });
 
-    assert.deepEqual(read.details.usage, {
-      inputTokens: 16484,
-      outputTokens: 31,
-      cacheReadTokens: 10624,
-      totalTokens: 16515,
+    assert.equal(read.details.usage?.inputTokens, 16484);
+    assert.equal(read.details.usage?.outputTokens, 31);
+    assert.equal(read.details.usage?.cacheReadTokens, 10624);
+    assert.equal(read.details.usage?.reasoningTokens, 20);
+    assert.equal(read.details.usage?.totalTokens, 16515);
+    assert.equal(read.details.usage?.source, "provider");
+    assert.equal(read.details.usage?.scope, "task");
+    assert.equal(read.details.usage?.final, true);
+  });
+});
+
+test("read_agent event fallback keeps final task usage over later session usage", async () => {
+  await withTempWorkspace(async (workspaceRoot) => {
+    const fixturePath = join(workspaceRoot, "custom-agent.jsonl");
+    await writeFile(
+      fixturePath,
+      [
+        JSON.stringify({
+          type: "final",
+          text: "custom done",
+          usage: {
+            inputTokens: 2,
+            outputTokens: 3,
+            totalTokens: 5,
+            source: "provider",
+            scope: "task",
+            final: true,
+          },
+        }),
+        JSON.stringify({
+          type: "usage",
+          usage: {
+            totalTokens: 100,
+            source: "provider",
+            scope: "session",
+            final: true,
+          },
+        }),
+      ].join("\n"),
+    );
+    const handle = await launchTask({
+      workspaceRoot,
+      plan: {
+        runtime: "custom",
+        displayName: "custom",
+        executable: "sh",
+        args: ["-lc", `cat ${quoteShellArg(fixturePath)}`],
+        env: {},
+        cwd: workspaceRoot,
+        promptTransport: { kind: "argv", position: "last" },
+        outputTransport: { kind: "jsonl_events", finalEvent: "final" },
+        expectedProcesses: ["sh"],
+        interrupt: "process_group",
+        canSteerRunning: false,
+        handlesOwnAuth: false,
+        enabled: true,
+        safety: {
+          requiresAllowlist: false,
+          acceptsShellCommand: false,
+        },
+      },
     });
+    const completed = await handle.completed;
+    assert.equal(completed.status, "succeeded");
+
+    const taskRecord = JSON.parse(await readFile(completed.paths.taskJson, "utf8")) as Record<
+      string,
+      unknown
+    >;
+    delete taskRecord.usage;
+    await writeFile(completed.paths.taskJson, `${JSON.stringify(taskRecord, null, 2)}\n`);
+
+    const tools = createOrchestratorAgentTools({ workspaceRoot });
+    const read = await executeTool<ToolDetails>(getTool(tools, "read_agent"), {
+      taskId: completed.taskId,
+    });
+
+    assert.equal(read.details.usage?.totalTokens, 5);
+    assert.equal(read.details.usage?.scope, "task");
+    assert.equal(read.details.usage?.final, true);
   });
 });
 

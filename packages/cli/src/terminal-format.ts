@@ -35,6 +35,42 @@ export function formatTokenUsage(tokens: number | undefined): string {
   return `${(tokens / 1_000_000).toFixed(1)}m`;
 }
 
+export type TokenUsageDisplay = {
+  totalTokens?: number;
+  source?: string;
+  final?: boolean;
+};
+
+export function formatTokenUsageCompact(usage: TokenUsageDisplay | undefined): string {
+  if (!usage) {
+    return "-";
+  }
+
+  const value = formatTokenUsage(usage.totalTokens);
+  if (value === "-") {
+    return value;
+  }
+  if (usage.source === "estimated") {
+    return `~${value}`;
+  }
+  return value;
+}
+
+export function formatTokenUsageLabel(usage: TokenUsageDisplay | undefined): string {
+  if (!usage) {
+    return "-";
+  }
+
+  const value = formatTokenUsage(usage.totalTokens);
+  if (value === "-") {
+    return value;
+  }
+  if (usage.source === "estimated") {
+    return `${value} est`;
+  }
+  return value;
+}
+
 export function padNumber(value: number): string {
   return String(value).padStart(2, "0");
 }

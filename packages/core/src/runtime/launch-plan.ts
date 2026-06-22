@@ -8,9 +8,16 @@ import type {
 } from "./types.ts";
 
 export class LaunchPlanError extends Error {
-  constructor(message: string) {
+  readonly reason?: string;
+  readonly input?: string;
+  readonly hint?: string;
+
+  constructor(message: string, details: { reason?: string; input?: string; hint?: string } = {}) {
     super(message);
     this.name = "LaunchPlanError";
+    this.reason = details.reason;
+    this.input = details.input;
+    this.hint = details.hint;
   }
 }
 
@@ -25,6 +32,11 @@ export function buildAgentLaunchPlan(
   if (!runtime.enabled && !input.allowDisabledRuntime) {
     throw new LaunchPlanError(
       `Runtime "${input.runtime}" is disabled. Enable it explicitly before building launch plans.`,
+      {
+        reason: "disabled_runtime",
+        input: input.runtime,
+        hint: "Enable the runtime in config or choose an enabled runtime from orchestrator help --json --compact.",
+      },
     );
   }
 
@@ -102,7 +114,11 @@ function getRuntimeOrThrow(
 ): HeadlessAgentRuntimeConfig {
   const runtime = getRuntimeConfig(runtimeId, registry);
   if (!runtime) {
-    throw new LaunchPlanError(`Unknown runtime "${runtimeId}".`);
+    throw new LaunchPlanError(`Unknown runtime "${runtimeId}".`, {
+      reason: "unknown_runtime",
+      input: runtimeId,
+      hint: "Run orchestrator help --json --compact to list available runtime ids.",
+    });
   }
   return runtime;
 }
@@ -125,6 +141,14 @@ function resolveOutputMode(
     throw new LaunchPlanError(
       `Runtime "${runtime.id}" does not support output mode "${selectedOutputMode}".` +
         (supportedModes.length > 0 ? ` Supported modes: ${supportedModes.join(", ")}.` : ""),
+      {
+        reason: "unsupported_output_mode",
+        input: selectedOutputMode,
+        hint:
+          supportedModes.length > 0
+            ? `Use one of: ${supportedModes.join(", ")}.`
+            : "Omit --output-mode for this runtime.",
+      },
     );
   }
 
@@ -188,15 +212,24 @@ function applyArgTemplate(args: {
   let sawPromptPlaceholder = false;
 
   const rendered = args.template.map((arg) => {
-    if (arg.includes("{prompt}")) {
+    if (hasTemplatePlaceholder(arg, "prompt")) {
       sawPromptPlaceholder = true;
     }
-    if (arg.includes("{model}") && !args.model) {
+    if (hasTemplatePlaceholder(arg, "model") && !args.model) {
       throw new LaunchPlanError(
         `Runtime "${args.runtime.id}" argv template uses {model}; pass --model or use modelFlag.`,
+        {
+          reason: "missing_model",
+          input: args.runtime.id,
+          hint: "Pass --model <model> when launching this runtime.",
+        },
       );
     }
-    return arg.replaceAll("{prompt}", args.task).replaceAll("{model}", args.model ?? "");
+    return replaceTemplatePlaceholder(
+      replaceTemplatePlaceholder(arg, "prompt", args.task),
+      "model",
+      args.model ?? "",
+    );
   });
 
   if (!sawPromptPlaceholder) {
@@ -206,4 +239,20 @@ function applyArgTemplate(args: {
   }
 
   return rendered;
+}
+
+function hasTemplatePlaceholder(value: string, name: "prompt" | "model"): boolean {
+  return templatePlaceholderPattern(name).test(value);
+}
+
+function replaceTemplatePlaceholder(
+  value: string,
+  name: "prompt" | "model",
+  replacement: string,
+): string {
+  return value.replaceAll(templatePlaceholderPattern(name), replacement);
+}
+
+function templatePlaceholderPattern(name: "prompt" | "model"): RegExp {
+  return new RegExp(`(?<![$\\{])\\{${name}\\}(?!\\})`, "g");
 }
