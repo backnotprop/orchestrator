@@ -89,7 +89,6 @@ function jsonlCommandPlan(input: {
     handlesOwnAuth: false,
     enabled: true,
     safety: {
-      requiresAllowlist: false,
       acceptsShellCommand: false,
     },
   };
@@ -107,6 +106,7 @@ function controlViewRow(taskId: string, name: string): AgentTaskPsView["rows"][n
     status: "running",
     runtime: "orchestrator",
     cwd: "/tmp",
+    workspaceRoot: "/tmp",
     createdAt: "2026-06-20T00:00:00.000Z",
     startedAt: "2026-06-20T00:00:00.000Z",
     ageMs: 0,
@@ -145,13 +145,11 @@ test("task store resolves unique task id prefixes", async () => {
       workspaceRoot,
       taskId: firstTaskId,
       plan: shellPlan(firstCommand, workspaceRoot),
-      allowedShellCommands: [firstCommand],
     });
     const second = await launchTask({
       workspaceRoot,
       taskId: secondTaskId,
       plan: shellPlan(secondCommand, workspaceRoot),
-      allowedShellCommands: [secondCommand],
     });
 
     await Promise.all([first.completed, second.completed]);
@@ -240,7 +238,7 @@ async function delay(ms: number): Promise<void> {
   await new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-test("launchTask creates task files, runs allowlisted shell command, and captures output", async () => {
+test("launchTask creates task files, runs shell command, and captures output", async () => {
   await withTempWorkspace(async (workspaceRoot) => {
     const command = "echo hello";
     const plan = shellPlan(command, workspaceRoot);
@@ -249,7 +247,6 @@ test("launchTask creates task files, runs allowlisted shell command, and capture
       workspaceRoot,
       plan,
       name: "  hello   task  ",
-      allowedShellCommands: [command],
     });
 
     assert.equal(handle.task.status, "starting");
@@ -313,7 +310,6 @@ test("launchTask persists parent metadata and ps groups child tasks by parent ru
         parentSessionId: "session-123",
         parentToolCallId: "tool-call-123",
       },
-      allowedShellCommands: [command],
     });
 
     const completed = await handle.completed;
@@ -358,7 +354,6 @@ test("ps groups managed parent tasks with their child tasks by parent task id", 
       },
       taskId: "parent-task-12345678",
       name: "parent run",
-      allowedShellCommands: [parentCommand],
     });
     const childHandle = await launchTask({
       workspaceRoot,
@@ -370,7 +365,6 @@ test("ps groups managed parent tasks with their child tasks by parent task id", 
         parentSessionId: "session-123",
         parentToolCallId: "tool-call-123",
       },
-      allowedShellCommands: [childCommand],
     });
 
     await parentHandle.completed;
@@ -405,7 +399,6 @@ test("ps status filters preserve parent group labels", async () => {
       },
       taskId: "filtered-parent-12345678",
       name: "filtered parent",
-      allowedShellCommands: [parentCommand],
     });
     const childHandle = await launchTask({
       workspaceRoot,
@@ -415,7 +408,6 @@ test("ps status filters preserve parent group labels", async () => {
         parentRunId: "filtered-parent-12345678",
         parentTaskId: "filtered-parent-12345678",
       },
-      allowedShellCommands: [failedChildCommand],
     });
 
     await parentHandle.completed;
@@ -445,25 +437,21 @@ test("ps hides old finished tasks by default and keeps them with all", async () 
       workspaceRoot,
       plan: shellPlan(oldCommand, workspaceRoot),
       name: "old done",
-      allowedShellCommands: [oldCommand],
     });
     const recentHandle = await launchTask({
       workspaceRoot,
       plan: shellPlan(recentCommand, workspaceRoot),
       name: "recent done",
-      allowedShellCommands: [recentCommand],
     });
     const oldFailureHandle = await launchTask({
       workspaceRoot,
       plan: shellPlan(oldFailureCommand, workspaceRoot),
       name: "old failed",
-      allowedShellCommands: [oldFailureCommand],
     });
     const recentFailureHandle = await launchTask({
       workspaceRoot,
       plan: shellPlan(recentFailureCommand, workspaceRoot),
       name: "recent failed",
-      allowedShellCommands: [recentFailureCommand],
     });
 
     const oldCompleted = await oldHandle.completed;
@@ -557,19 +545,16 @@ test("ps sorts active tasks before failed tasks and succeeded tasks", async () =
       workspaceRoot,
       plan: shellPlan(successCommand, workspaceRoot),
       name: "succeeded child",
-      allowedShellCommands: [successCommand],
     });
     const failureHandle = await launchTask({
       workspaceRoot,
       plan: shellPlan(failureCommand, workspaceRoot),
       name: "failed child",
-      allowedShellCommands: [failureCommand],
     });
     const runningHandle = await launchTask({
       workspaceRoot,
       plan: shellPlan(runningCommand, workspaceRoot),
       name: "running child",
-      allowedShellCommands: [runningCommand],
     });
 
     await successHandle.completed;
@@ -591,7 +576,6 @@ test("waitForTask emits progress after the progress interval", async () => {
     const handle = await launchTask({
       workspaceRoot,
       plan: shellPlan(command, workspaceRoot),
-      allowedShellCommands: [command],
     });
     const progressEvents: number[] = [];
 
@@ -626,7 +610,6 @@ test("launchTask rejects empty task names", async () => {
           workspaceRoot,
           plan: shellPlan(command, workspaceRoot),
           name: "   ",
-          allowedShellCommands: [command],
         }),
       /Task name must not be empty/,
     );
@@ -837,7 +820,6 @@ test("launchTask accepts custom JSONL usage and keeps final task usage over sess
         handlesOwnAuth: false,
         enabled: true,
         safety: {
-          requiresAllowlist: false,
           acceptsShellCommand: false,
         },
       },
@@ -876,6 +858,7 @@ test("compact ps view expands stop ids until they are unambiguous", () => {
   const right = controlViewRow("control-parent-b-00000001", "right parent");
   const view: AgentTaskPsView = {
     generatedAt: "2026-06-20T00:00:00.000Z",
+    scope: { workspaces: "current", workspaceRoot: "/tmp" },
     rows: [left, right],
     groups: [controlViewGroup(left.taskId, left), controlViewGroup(right.taskId, right)],
   };
@@ -1025,6 +1008,7 @@ test("compact ps view exposes selected stop for non-parent active tasks", () => 
   };
   const view: AgentTaskPsView = {
     generatedAt: "2026-06-20T00:00:00.000Z",
+    scope: { workspaces: "current", workspaceRoot: "/tmp" },
     rows: [first, second],
     groups: [
       {
@@ -1058,6 +1042,7 @@ test("compact ps view keeps last activity short for agent control payloads", () 
   };
   const view: AgentTaskPsView = {
     generatedAt: "2026-06-20T00:00:00.000Z",
+    scope: { workspaces: "current", workspaceRoot: "/tmp" },
     rows: [row],
     groups: [controlViewGroup(row.taskId, row)],
   };
@@ -1202,7 +1187,6 @@ test("launchTask caps stored output at maxOutputBytes, including partial chunks"
     const handle = await launchTask({
       workspaceRoot,
       plan: shellPlan(command, workspaceRoot),
-      allowedShellCommands: [command],
       maxOutputBytes: 3,
     });
 
@@ -1218,32 +1202,12 @@ test("launchTask caps stored output at maxOutputBytes, including partial chunks"
   });
 });
 
-test("launchTask refuses shell commands that are not explicitly allowlisted", async () => {
-  await withTempWorkspace(async (workspaceRoot) => {
-    const command = "echo nope";
-
-    await assert.rejects(
-      () =>
-        launchTask({
-          workspaceRoot,
-          plan: shellPlan(command, workspaceRoot),
-        }),
-      (error) =>
-        error instanceof TaskSupervisorSafetyError &&
-        error.reason === "shell_command_not_allowlisted" &&
-        error.input === command &&
-        error.hint?.includes("--allow-shell-command") === true,
-    );
-  });
-});
-
 test("launchTask marks non-zero exit as failed and captures stderr", async () => {
   await withTempWorkspace(async (workspaceRoot) => {
     const command = "echo bad >&2; exit 7";
     const handle = await launchTask({
       workspaceRoot,
       plan: shellPlan(command, workspaceRoot),
-      allowedShellCommands: [command],
     });
 
     const completed = await handle.completed;
@@ -1271,7 +1235,6 @@ test("launchTask marks spawn errors as failed", async () => {
     const handle = await launchTask({
       workspaceRoot,
       plan,
-      allowedShellCommands: [command],
     });
 
     const completed = await handle.completed;
@@ -1290,7 +1253,6 @@ test("launchTask enforces timeout and marks task timed_out", async () => {
     const handle = await launchTask({
       workspaceRoot,
       plan: shellPlan(command, workspaceRoot),
-      allowedShellCommands: [command],
       timeoutMs: 50,
     });
 
@@ -1312,7 +1274,6 @@ test("interruptTasks blocks plain parent interruption and supports children", as
       taskId: parentId,
       plan: orchestratorPlan(command, workspaceRoot),
       name: "parent run",
-      allowedShellCommands: [command],
     });
     const child = await launchTask({
       workspaceRoot,
@@ -1323,7 +1284,6 @@ test("interruptTasks blocks plain parent interruption and supports children", as
         parentRunId: parentId,
         parentTaskId: parentId,
       },
-      allowedShellCommands: [command],
     });
 
     await Promise.all([
@@ -1387,7 +1347,6 @@ test("interruptTasks taskOnly stops only the parent task", async () => {
       taskId: parentId,
       plan: orchestratorPlan(command, workspaceRoot),
       name: "parent only",
-      allowedShellCommands: [command],
     });
     const child = await launchTask({
       workspaceRoot,
@@ -1398,7 +1357,6 @@ test("interruptTasks taskOnly stops only the parent task", async () => {
         parentRunId: parentId,
         parentTaskId: parentId,
       },
-      allowedShellCommands: [command],
     });
 
     await Promise.all([
@@ -1447,7 +1405,6 @@ test("interruptTasks stops a ps group and skips terminal children", async () => 
       taskId: parentId,
       plan: orchestratorPlan(runningCommand, workspaceRoot),
       name: "group parent",
-      allowedShellCommands: [runningCommand],
     });
     const runningChild = await launchTask({
       workspaceRoot,
@@ -1458,7 +1415,6 @@ test("interruptTasks stops a ps group and skips terminal children", async () => 
         parentRunId: parentId,
         parentTaskId: parentId,
       },
-      allowedShellCommands: [runningCommand],
     });
     const doneChild = await launchTask({
       workspaceRoot,
@@ -1469,7 +1425,6 @@ test("interruptTasks stops a ps group and skips terminal children", async () => 
         parentRunId: parentId,
         parentTaskId: parentId,
       },
-      allowedShellCommands: [doneCommand],
     });
 
     await doneChild.completed;
@@ -1517,19 +1472,16 @@ test("interruptTasks rejects ambiguous group prefixes and broad ungrouped interr
       workspaceRoot,
       taskId: "ambiguous-parent-a-00000001",
       plan: orchestratorPlan(command, workspaceRoot),
-      allowedShellCommands: [command],
     });
     const second = await launchTask({
       workspaceRoot,
       taskId: "ambiguous-parent-b-00000001",
       plan: orchestratorPlan(command, workspaceRoot),
-      allowedShellCommands: [command],
     });
     const ungrouped = await launchTask({
       workspaceRoot,
       taskId: "ungrouped-task-00000001",
       plan: shellPlan(command, workspaceRoot),
-      allowedShellCommands: [command],
     });
     await Promise.all([first.completed, second.completed, ungrouped.completed]);
 
@@ -1568,8 +1520,13 @@ test("interruptTask cancels a running task", async () => {
     const handle = await launchTask({
       workspaceRoot,
       plan: shellPlan(command, workspaceRoot),
-      allowedShellCommands: [command],
     });
+    await waitForTaskState(
+      workspaceRoot,
+      handle.task.taskId,
+      (task) => task.status === "running",
+      "running",
+    );
 
     const interrupted = await interruptTask({
       workspaceRoot,

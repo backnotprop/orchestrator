@@ -17,6 +17,7 @@ their progress in one place.
 orchestrator ps
 orchestrator ps --all
 orchestrator ps --watch
+orchestrator ps -A
 orchestrator ps --runtime codex
 orchestrator ps --status running
 orchestrator ps --parent <run-id>
@@ -25,6 +26,7 @@ orchestrator ps --json
 
 `ps` is the grouped human view. It shows active tasks and recent finished tasks
 by default. `ps --all` includes old finished tasks too.
+`ps -A` shows tasks across all workspaces.
 `ps --watch` redraws the same view while agents run. `ps --json` returns the
 same grouped data for scripts and future UI code.
 
@@ -33,14 +35,15 @@ same grouped data for scripts and future UI code.
 The live view shows one row per agent task:
 
 ```text
-name              status    runtime      model          dur     tokens   started   last
-review tests      running   claude-code  sonnet         2m      77.0k    22:50:42  agent.reasoning
-inspect store     running   codex        gpt-5.4-mini   1m      18.4k    22:51:12  agent.message
-check email       running   custom       glm-5.2        30s     -        22:51:42  stdout
+agent        work           status   model          started  dur   tok   last
+claude-code  review tests   running  sonnet         22:50:42 2m    77k   agent.reasoning
+codex        inspect store  running  gpt-5.4-mini   22:51:12 1m    18k   agent.message
+custom       check email    running  glm-5.2        22:51:42 30s   -     stdout
 ```
 
 Rows are grouped by parent run when a child was launched by `orchestrator run`.
-Manual `orchestrator launch` tasks appear under `MANUAL` in human output.
+Manual `orchestrator launch` tasks appear under `manual launches` in human
+output.
 Stopped tasks are counted separately from failed tasks. A deliberate interrupt
 should show as `stopped`, not `failed`, so agents and humans can tell the
 difference between cancelled work and broken work.

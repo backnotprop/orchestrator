@@ -50,7 +50,6 @@ export function customJsonlPlan(command: string, cwd: string): AgentLaunchPlan {
     handlesOwnAuth: false,
     enabled: true,
     safety: {
-      requiresAllowlist: false,
       acceptsShellCommand: false,
     },
   };

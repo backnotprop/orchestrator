@@ -57,7 +57,7 @@ test("every enabled runtime can produce an argv-based launch plan", () => {
     assert.equal(plan.env.ORCHESTRATOR_TEST, "1");
     assert.equal(typeof plan.outputTransport.kind, "string");
     assert.equal(Object.hasOwn(plan, "command"), false);
-    assert.equal(plan.safety.acceptsShellCommand, false);
+    assert.equal(plan.safety.acceptsShellCommand, runtime.id === "shell");
   }
 });
 
@@ -579,27 +579,16 @@ test("config can disable custom runtimes", async () => {
   }
 });
 
-test("disabled shell runtime requires explicit opt-in", () => {
-  assert.throws(
-    () =>
-      buildAgentLaunchPlan({
-        runtime: "shell",
-        task: "echo hello",
-        cwd: sampleCwd,
-      }),
-    LaunchPlanError,
-  );
-
+test("shell runtime is enabled and launches local commands directly", () => {
   const plan = buildAgentLaunchPlan({
     runtime: "shell",
     task: "echo hello",
     cwd: sampleCwd,
-    allowDisabledRuntime: true,
   });
 
   assert.equal(plan.executable, "sh");
   assert.deepEqual(plan.args, ["-lc", "echo hello"]);
-  assert.equal(plan.safety.requiresAllowlist, true);
+  assert.equal(plan.enabled, true);
   assert.equal(plan.safety.acceptsShellCommand, true);
 });
 

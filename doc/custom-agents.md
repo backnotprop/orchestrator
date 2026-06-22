@@ -64,7 +64,8 @@ Later config files can re-enable a built-in agent:
 ## Process Agents
 
 Process means local. Orchestrator starts a command on your machine, passes the
-task prompt to it, captures output, and stores the run under `.orchestrator/`.
+task prompt to it, captures output, and stores the run under
+`~/.orchestrator/tasks`.
 
 ```json
 {

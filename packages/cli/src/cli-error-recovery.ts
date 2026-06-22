@@ -1,4 +1,5 @@
-import { resolve } from "node:path";
+import { existsSync } from "node:fs";
+import { dirname, resolve } from "node:path";
 import { cliErrorJson } from "./cli-errors.ts";
 import { compactPsViewCommands, type PsViewCommands } from "./ps-view-commands.ts";
 
@@ -42,7 +43,7 @@ function recoveryCommonOptionsFromArgv(argv: readonly string[]): {
     workspaceRoot: string;
     orchestratorDir?: string;
     configPath?: string;
-  } = { workspaceRoot: process.cwd() };
+  } = { workspaceRoot: resolveDefaultWorkspaceRoot(process.cwd()) };
 
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index];
@@ -72,4 +73,23 @@ function recoveryCommonOptionsFromArgv(argv: readonly string[]): {
   }
 
   return common;
+}
+
+function resolveDefaultWorkspaceRoot(cwd: string): string {
+  const resolved = resolve(cwd);
+  return findNearestGitRoot(resolved) ?? resolved;
+}
+
+function findNearestGitRoot(start: string): string | undefined {
+  let current = start;
+  while (true) {
+    if (existsSync(resolve(current, ".git"))) {
+      return current;
+    }
+    const parent = dirname(current);
+    if (parent === current) {
+      return undefined;
+    }
+    current = parent;
+  }
 }

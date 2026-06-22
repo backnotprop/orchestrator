@@ -5,10 +5,9 @@ description: Use Orchestrator to launch, watch, read, log, and interrupt backgro
 
 # Orchestrator
 
-Use this skill to manage background agents through the `orchestrator` CLI. Treat
-Orchestrator like a small job-control tool for agents: launch work, keep the
-task id, watch progress, read the answer, inspect logs/events, and stop work
-that no longer matters.
+Use this skill to manage background agents through the `orchestrator` CLI.
+Orchestrator uses one default machine store at `~/.orchestrator/tasks`.
+Workspace is project scope. `cwd` is where the agent process runs.
 
 ## Check Or Install
 
@@ -56,6 +55,12 @@ Launch a named background task:
 orchestrator launch codex --name "inspect store" --model gpt-5.4-mini --json --compact "Inspect the task store."
 ```
 
+Launch several tasks from one JSON manifest:
+
+```sh
+orchestrator launch -f agents.json --json --compact --brief
+```
+
 Or start Orchestrator itself as a managed parent task:
 
 ```sh
@@ -74,6 +79,7 @@ or ambiguous task/group ids. Use the id for follow-up commands:
 ```sh
 orchestrator ps --json --compact --active
 orchestrator ps --json --compact --active --brief
+orchestrator ps -A --json --compact --active --brief
 orchestrator watch <task-id> --agent-only --json
 orchestrator read <task-id>... --wait --json --compact
 orchestrator logs <task-id> --follow
@@ -82,11 +88,15 @@ orchestrator interrupt <task-id> <task-id> --reason "no longer needed" --json --
 orchestrator interrupt <task-id> --reason "no longer needed" --json
 ```
 
-Use `launch --json --compact --brief` when starting many tasks and only
-id/status/stop is needed. Use `ps --json --compact --active` to find running
-tasks and stop targets. Use `ps --json --compact --active --brief` when scanning
-many running tasks. Use the top-level `commands.waitPreview.args` from compact
-`ps` to wait for the listed tasks without polling. Use
+Use `launch -f <manifest.json|-> --json --compact --brief` when several tasks
+should start from one manifest. Use `launch --json --compact --brief` when
+starting one task and only id/status/stop is needed. Use
+`ps --json --compact --active` to find running tasks and stop targets in the
+current workspace. Use `ps -A --json --compact --active --brief` to scan active
+work across the machine. Use `ps --json --compact --active --brief` when
+scanning many running tasks in one workspace. Use
+the top-level `commands.waitPreview.args` from compact `ps` to wait for the
+listed tasks without polling. Use
 `ps --parent <run-id|prefix> --json --compact --brief` when follow-up should
 stay scoped to one parent run. If active compact `ps` is empty after short work,
 run `views.recent.args` from the compact response. Build your own multi-task
@@ -116,8 +126,10 @@ instead of guessing.
 
 ## Good Agent Behavior
 
-- Use `--json --compact --brief` for launch when starting many tasks and you
-  only need id/status/stop.
+- Use `--json --compact --brief` for single launch when you only need
+  id/status/stop.
+- Prefer `launch -f <manifest.json|-> --json --compact --brief` when you need
+  to start several tasks at once.
 - Use `help --json --compact` for quick discovery; use `fullHelp.args` when you
   need the full contract.
 - Use `doctor --json --compact` when runtime availability is uncertain.
@@ -125,9 +137,12 @@ instead of guessing.
   returned args prefix instead of constructing `run --agent-dir` by hand.
 - Put common options before or after the command. Portable args returned by
   Orchestrator can be passed directly after the `orchestrator` binary.
-- Use `ps --json --compact --active` to find running work and stop targets.
+- Use `ps --json --compact --active` to find running work and stop targets in
+  the current workspace.
 - Use `ps --json --compact --active --brief` to scan many running tasks with
   less JSON.
+- Use `ps -A --json --compact --active --brief` to scan active tasks across all
+  workspaces.
 - Use `ps --parent <run-id|prefix> --json --compact --brief` when you need one
   parent run and its children.
 - If active compact `ps` is empty after short work, use
@@ -167,7 +182,12 @@ instead of guessing.
   tasks without stopping the whole workspace.
 - Use `interrupt --active --json --compact` only when all active work in the
   selected workspace should be stopped. It is safe when none are active.
-- Use `ps --all --json --compact` when you need compact full task history.
+- Use `interrupt -A --active --yes --json --compact` only when all active work
+  across all workspaces should be stopped.
+- Use `ps --all --json --compact` when you need compact full task history for
+  the current workspace.
+- Use `ps -A --all --json --compact` when you need compact full task history
+  across all workspaces.
 - Use `read --wait --json --compact` when you need to wait for status, `exitCode`,
   output, usage, and errors in one object.
 - Check `outputTruncated`, `stdoutTruncated`, and `stderrTruncated` in JSON

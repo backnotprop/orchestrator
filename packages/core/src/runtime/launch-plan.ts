@@ -90,7 +90,6 @@ export function buildAgentLaunchPlan(
     handlesOwnAuth: runtime.capabilities.handlesOwnAuth,
     enabled: runtime.enabled,
     safety: {
-      requiresAllowlist: runtime.safety?.requiresAllowlist ?? false,
       acceptsShellCommand: runtime.safety?.acceptsShellCommand ?? false,
     },
     ...(stdin ? { stdin } : {}),

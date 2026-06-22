@@ -1,9 +1,9 @@
 #!/usr/bin/env -S node --experimental-strip-types
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { realpathSync } from "node:fs";
+import { existsSync, realpathSync } from "node:fs";
 import { access, mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
-import { resolve } from "node:path";
+import { dirname, isAbsolute, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   buildOrchestratorParentPrompt,
@@ -22,6 +22,7 @@ import {
   buildAgentTaskPsView,
   buildAgentLaunchPlan,
   compactAgentTaskPsView,
+  getOrchestratorDir,
   getTaskPaths,
   getRuntimeConfig,
   interruptTasks,
@@ -65,6 +66,11 @@ import {
 } from "./cli-errors.ts";
 import { cliErrorJsonWithRecovery } from "./cli-error-recovery.ts";
 import { jsonLine } from "./json-output.ts";
+import {
+  parseLaunchManifest,
+  type LaunchManifestCliDefaults,
+  type NormalizedLaunchRequest,
+} from "./launch-manifest.ts";
 import { compactPsViewCommands } from "./ps-view-commands.ts";
 import { renderPsView } from "./render-ps.ts";
 import { renderRunTraceEvents } from "./render-run-trace.ts";
@@ -89,9 +95,10 @@ type CommonOptions = {
 };
 
 type LaunchOptions = CommonOptions & {
-  runtime: AgentRuntimeId;
-  task: string;
-  cwd: string;
+  runtime?: AgentRuntimeId;
+  task?: string;
+  file?: string;
+  cwd?: string;
   name?: string;
   model?: string;
   outputMode?: string;
@@ -101,11 +108,11 @@ type LaunchOptions = CommonOptions & {
   compact: boolean;
   brief: boolean;
   allowDisabledRuntime: boolean;
-  allowedShellCommands?: readonly string[];
 };
 
 type ListOptions = CommonOptions & {
   status?: TaskStatus;
+  allWorkspaces: boolean;
 };
 
 type PsOptions = CommonOptions & {
@@ -113,6 +120,8 @@ type PsOptions = CommonOptions & {
   runtime?: string;
   parentRunId?: string;
   all: boolean;
+  allWorkspaces: boolean;
+  cwd?: string;
   watch: boolean;
   compact: boolean;
   brief: boolean;
@@ -157,8 +166,10 @@ type InterruptOptions = CommonOptions & {
   parentId?: string;
   groupId?: string;
   active: boolean;
+  allWorkspaces: boolean;
   children: boolean;
   taskOnly: boolean;
+  yes: boolean;
   reason?: string;
   signal?: NodeJS.Signals;
   compact: boolean;
@@ -417,30 +428,13 @@ async function commandLaunch(options: LaunchOptions): Promise<void> {
     workspaceRoot: options.workspaceRoot,
     ...(options.configPath ? { configPath: options.configPath } : {}),
   });
-  const runtime = getRuntimeConfig(options.runtime, registry);
-  const plan = buildAgentLaunchPlan(
-    {
-      runtime: options.runtime,
-      task: options.task,
-      cwd: options.cwd,
-      model: options.model,
-      outputMode: options.outputMode,
-      allowDisabledRuntime: options.allowDisabledRuntime,
-    },
-    registry,
-  );
 
-  const launchInput: LaunchTaskInput = {
-    workspaceRoot: options.workspaceRoot,
-    ...(options.orchestratorDir ? { orchestratorDir: options.orchestratorDir } : {}),
-    taskId: randomUUID(),
-    ...(options.name ? { name: options.name } : {}),
-    ...(options.model ? { model: options.model } : {}),
-    plan,
-    timeoutMs: options.timeoutMs ?? runtime?.defaults.timeoutMs,
-    maxOutputBytes: options.maxOutputBytes ?? runtime?.defaults.maxOutputBytes,
-    allowedShellCommands: options.allowedShellCommands,
-  };
+  if (options.file) {
+    await commandBatchLaunch(options, registry);
+    return;
+  }
+
+  const launchInput = buildCliLaunchTaskInput(singleLaunchRequest(options), options, registry);
 
   if (options.wait) {
     const handle = await launchTask(launchInput);
@@ -451,6 +445,116 @@ async function commandLaunch(options: LaunchOptions): Promise<void> {
 
   const task = await launchInBackground(launchInput);
   await printLaunchTask(task, options);
+}
+
+async function commandBatchLaunch(
+  options: LaunchOptions,
+  registry: RuntimeRegistry,
+): Promise<void> {
+  if (!options.file) {
+    throw new CliError("launch -f requires a manifest path.");
+  }
+  if (options.wait) {
+    throw new CliError("launch -f does not support --wait yet.", {
+      reason: "incompatible_options",
+      input: "--wait",
+      hint: "Use the returned commands.waitPreview.args to wait for the launched tasks.",
+    });
+  }
+
+  const raw = await readLaunchManifestInput(options.file);
+  const requests = parseLaunchManifest(raw, {
+    workspaceRoot: options.workspaceRoot,
+    cliDefaults: launchCliDefaults(options),
+  });
+  const launchInputs = requests.map((request) =>
+    buildCliLaunchTaskInput(request, options, registry),
+  );
+  const tasks = await Promise.all(launchInputs.map((input) => launchInBackground(input)));
+  await printBatchLaunchTasks(tasks, options);
+}
+
+function singleLaunchRequest(options: LaunchOptions): NormalizedLaunchRequest {
+  if (!options.runtime) {
+    throw new CliError("launch requires a runtime.");
+  }
+  if (!options.task) {
+    throw new CliError("launch requires task instructions.");
+  }
+  return {
+    runtime: options.runtime,
+    task: options.task,
+    workspaceRoot: options.workspaceRoot,
+    cwd: resolveLaunchCwd(options.cwd, options.workspaceRoot),
+    ...(options.name ? { name: options.name } : {}),
+    ...(options.model ? { model: options.model } : {}),
+    ...(options.outputMode ? { outputMode: options.outputMode } : {}),
+    ...(options.timeoutMs ? { timeoutMs: options.timeoutMs } : {}),
+    ...(options.maxOutputBytes ? { maxOutputBytes: options.maxOutputBytes } : {}),
+  };
+}
+
+function launchCliDefaults(options: LaunchOptions): LaunchManifestCliDefaults {
+  return {
+    ...(options.runtime ? { runtime: options.runtime } : {}),
+    workspaceRoot: options.workspaceRoot,
+    ...(options.cwd ? { cwd: options.cwd } : {}),
+    ...(options.model ? { model: options.model } : {}),
+    ...(options.outputMode ? { outputMode: options.outputMode } : {}),
+    ...(options.timeoutMs ? { timeoutMs: options.timeoutMs } : {}),
+    ...(options.maxOutputBytes ? { maxOutputBytes: options.maxOutputBytes } : {}),
+  };
+}
+
+function buildCliLaunchTaskInput(
+  request: NormalizedLaunchRequest,
+  options: LaunchOptions,
+  registry: RuntimeRegistry,
+): LaunchTaskInput {
+  const runtime = getRuntimeConfig(request.runtime, registry);
+  const plan = buildAgentLaunchPlan(
+    {
+      runtime: request.runtime,
+      task: request.task,
+      cwd: request.cwd,
+      model: request.model,
+      outputMode: request.outputMode,
+      allowDisabledRuntime: options.allowDisabledRuntime,
+    },
+    registry,
+  );
+
+  const launchInput: LaunchTaskInput = {
+    workspaceRoot: options.workspaceRoot,
+    ...(options.orchestratorDir ? { orchestratorDir: options.orchestratorDir } : {}),
+    taskId: randomUUID(),
+    ...(request.name ? { name: request.name } : {}),
+    ...(request.model ? { model: request.model } : {}),
+    location: {
+      kind: "local",
+      workspaceRoot: request.workspaceRoot,
+      workspaceName: workspaceName(request.workspaceRoot),
+      cwd: request.cwd,
+    },
+    plan,
+    ...(request.labels ? { labels: request.labels } : {}),
+    timeoutMs: request.timeoutMs ?? runtime?.defaults.timeoutMs,
+    maxOutputBytes: request.maxOutputBytes ?? runtime?.defaults.maxOutputBytes,
+  };
+  validateLaunchTaskInput(launchInput);
+  return launchInput;
+}
+
+function resolveLaunchCwd(cwd: string | undefined, workspaceRoot: string): string {
+  if (!cwd) {
+    return workspaceRoot;
+  }
+  return isAbsolute(cwd) ? resolve(cwd) : resolve(workspaceRoot, cwd);
+}
+
+function workspaceName(workspaceRoot: string): string {
+  const parts = workspaceRoot.split("/").filter(Boolean);
+  return parts[parts.length - 1] ?? workspaceRoot;
 }
 
 function buildCliHelpText(registry: RuntimeRegistry = BUILT_IN_AGENT_RUNTIMES): string {
@@ -474,8 +578,9 @@ Usage:
   orchestrator doctor [--agent-dir <path>] [--session-dir <path>] [--json [--compact]]
   orchestrator run [--agent-dir <path>] [--session-dir <path>] [--name <name>] [--background] [--json [--compact [--brief]]] [--trace-tools[=text|jsonl]] [--stream-json] "<request>"
   orchestrator launch <runtime> [--name <name>] [--model <model>] [--cwd <path>] [--wait] [--json [--compact [--brief]]] "<task>"
-  orchestrator list [--status <status>] [--json]
-  orchestrator ps [--all] [--watch] [--runtime <runtime>] [--status <status>] [--parent <run-id>] [--json [--compact [--active] [--brief]]]
+  orchestrator launch -f <manifest.json|-> --json [--compact [--brief]]
+  orchestrator list [--status <status>] [-A|--all-workspaces] [--json]
+  orchestrator ps [--all] [-A|--all-workspaces] [--cwd <path>] [--watch] [--runtime <runtime>] [--status <status>] [--parent <run-id>] [--json [--compact [--active] [--brief]]]
   orchestrator read <task-id|prefix>... [--wait] [--timeout-ms <ms>] [--interval-ms <ms>] [--max-bytes <bytes>] [--json [--compact]]
   orchestrator logs <task-id|prefix> [--stream stdout|stderr|all] [--max-bytes <bytes>] [--follow] [--json [--compact]]
   orchestrator events <task-id|prefix> [--agent-only] [--max-bytes <bytes>] [--json [--compact]]
@@ -484,7 +589,7 @@ Usage:
   orchestrator interrupt <task-id|prefix> [--children|--task-only] [--reason <text>] [--json [--compact]]
   orchestrator interrupt --parent <task-id|prefix> --children [--reason <text>] [--json [--compact]]
   orchestrator interrupt --group <group-id|prefix> [--reason <text>] [--json [--compact]]
-  orchestrator interrupt --active [--reason <text>] [--json [--compact]]
+  orchestrator interrupt --active [-A|--all-workspaces --yes] [--reason <text>] [--json [--compact]]
   orchestrator help [--json [--compact]]
 
 Agent instructions:
@@ -496,47 +601,51 @@ Agent instructions:
   6. Use run --trace-tools when you need to see parent tool calls live.
   7. Use run --stream-json when another program needs the full run event stream.
   8. Treat launch as a background job by default. Capture taskId from stdout.
-  9. Task commands accept full task ids or unique prefixes shown by ps/list.
-  10. Common options like --workspace, --orchestrator-dir, --config, and --json may appear before or after the command.
-  11. Prefer launch --json --compact and ps --json --compact for normal agent control.
-  12. Use help --json --compact when software needs a smaller command contract.
-  13. When --json is present, command errors are JSON on stderr with reason/input/matches/hint and recovery.views.*.args when available.
-  14. Use ps for the multi-agent operations view.
-  15. Use ps --watch to watch the whole agent system update live.
-  16. Use ps --json --compact --active when an agent or script needs active task and stop targets.
-  17. Use ps --json --compact --active --brief to scan many running tasks with less JSON.
-  18. Use ps --parent <run-id|prefix> --json --compact --brief to inspect one parent run and its children.
-  19. If active ps is empty after short work, run views.recent.args from compact ps to recover recent finished tasks and batch read commands.
-  20. Use launch --json --compact --brief when starting many tasks and only task id/status/stop is needed.
-  21. After starting several tasks, run ps --json --compact --brief and use top-level commands.waitPreview.args to collect the listed set.
-  22. When compact JSON returns stop.args, run those portable args to stop exactly the returned task, group, or selected active set.
-  23. Compact ps stop.args are scoped to the current view; parent/group stops may include children of that selected run.
-  24. When JSON output returns commands.*.args, pass those portable args to orchestrator for read/watch/logs/events follow-up.
-  25. Use compact ps top-level commands.waitPreview.args to wait for every listed task with bounded output.
-  26. Use compact ps group commands.waitPreview.args to wait for one listed group with bounded output.
-  27. Use commands.readPreview, commands.waitPreview, or commands.logsPreview when another agent needs bounded output before deciding whether to fetch more.
-  28. Use watch to follow one task live. Use watch --agent-only --json for normalized agent event JSONL.
-  29. Use read for final agent answers. Use read <id> <id> --wait --json --compact to build your own multi-task wait call.
-  30. If compact read returns active: true, use commands.waitPreview.args to wait with bounded output or commands.readPreview.args to poll again.
-  31. If compact batch read times out, use its top-level commands.waitPreview.args to wait again or stop.args to stop still-active work safely.
-  32. If compact read returns failed status, use commands.logsPreview.args for bounded raw logs or commands.events.args for the task timeline.
-  33. Check outputTruncated/stdoutTruncated/stderrTruncated in JSON output; ByReadLimit means re-read with more bytes can help, ByCaptureLimit means the task was launched with too small a capture cap.
-  34. If compact read is truncated by read limit, use commands.read.args to fetch more output.
-  35. Use logs --json --compact for a one-line raw stdout/stderr snapshot and events --json --compact for a one-line task timeline.
-  36. Use interrupt to cancel running agents. Use interrupt <id> <id> --json --compact to stop a selected subset.
-  37. Use --children for parent runs with children.
-  38. Use interrupt --active only for deliberate workspace-wide cleanup when every active task in the selected workspace should stop; it is safe when none are active.
-  39. Model values are passed through to the provider CLI; aliases are not normalized yet.
+  9. Orchestrator uses one default machine store at ~/.orchestrator/tasks; workspace is a project scope/filter, and cwd is the agent process directory.
+  10. Task commands accept full task ids or unique prefixes shown by ps/list from the same store.
+  11. Common options like --workspace, --orchestrator-dir, --config, and --json may appear before or after the command.
+  12. Prefer launch --json --compact and ps --json --compact for normal agent control.
+  13. Use help --json --compact when software needs a smaller command contract.
+  14. When --json is present, command errors are JSON on stderr with reason/input/matches/hint and recovery.views.*.args when available.
+  15. Use ps for the current workspace operations view; use ps -A for all workspaces.
+  16. Use ps --watch to watch the selected scope update live.
+  17. Use ps --json --compact --active when an agent or script needs active task and stop targets.
+  18. Use ps --json --compact --active --brief to scan many running tasks with less JSON.
+  19. Use ps -A --json --compact --active --brief to scan active work across the machine.
+  20. Use ps --parent <run-id|prefix> --json --compact --brief to inspect one parent run and its children.
+  21. If active ps is empty after short work, run views.recent.args from compact ps to recover recent finished tasks and batch read commands.
+  22. Use launch -f <manifest.json|-> --json --compact --brief to start several tasks in one call.
+  23. Use launch --json --compact --brief when starting one task and only task id/status/stop is needed.
+  24. When compact JSON returns stop.args, run those portable args to stop exactly the returned task, group, or selected active set.
+  25. Compact ps stop.args are scoped to the current view; parent/group stops may include children of that selected run.
+  26. When JSON output returns commands.*.args, pass those portable args to orchestrator for read/watch/logs/events follow-up.
+  27. Use compact ps top-level commands.waitPreview.args to wait for every listed task with bounded output.
+  28. Use compact ps group commands.waitPreview.args to wait for one listed group with bounded output.
+  29. Use commands.readPreview, commands.waitPreview, or commands.logsPreview when another agent needs bounded output before deciding whether to fetch more.
+  30. Use watch to follow one task live. Use watch --agent-only --json for normalized agent event JSONL.
+  31. Use read for final agent answers. Use read <id> <id> --wait --json --compact to build your own multi-task wait call.
+  32. If compact read returns active: true, use commands.waitPreview.args to wait with bounded output or commands.readPreview.args to poll again.
+  33. If compact batch read times out, use its top-level commands.waitPreview.args to wait again or stop.args to stop still-active work safely.
+  34. If compact read returns failed status, use commands.logsPreview.args for bounded raw logs or commands.events.args for the task timeline.
+  35. Check outputTruncated/stdoutTruncated/stderrTruncated in JSON output; ByReadLimit means re-read with more bytes can help, ByCaptureLimit means the task was launched with too small a capture cap.
+  36. If compact read is truncated by read limit, use commands.read.args to fetch more output.
+  37. Use logs --json --compact for a one-line raw stdout/stderr snapshot and events --json --compact for a one-line task timeline.
+  38. Use interrupt to cancel running agents. Use interrupt <id> <id> --json --compact to stop a selected subset.
+  39. Use --children for parent runs with children.
+  40. Use interrupt --active only for deliberate workspace cleanup; use interrupt -A --active --yes only for deliberate all-workspace cleanup.
+  41. Model values are passed through to the provider CLI; aliases are not normalized yet.
 
 Common options:
-  --workspace <path>          Workspace root. Defaults to the current directory.
-  --orchestrator-dir <path>   Store directory. Defaults to <workspace>/.orchestrator.
+  --workspace <path>          Workspace scope. Defaults to the nearest git repo, then current directory.
+  --orchestrator-dir <path>   Advanced store override. Defaults to ~/.orchestrator.
   --config <path>             Extra config file. Defaults also load global and workspace config.
   --json                      Print machine-readable JSON when the command supports it.
 
 Launch options:
+  -f, --file <path|->       Launch several tasks from a JSON manifest file or stdin.
   --name <name>               Short label shown in list output.
   --model <model>             Runtime model hint, for example sonnet or gpt-5.4-mini.
+  --cwd <path>                Process directory. Defaults to the workspace; relative paths resolve inside the workspace.
   --output-mode <mode>        Adapter-selected output mode.
   --timeout-ms <ms>           Override runtime timeout.
   --max-output-bytes <bytes>  Override captured output cap.
@@ -545,7 +654,9 @@ Launch options:
   --brief                     With --compact, omit follow-up command bundles.
 
 Ps options:
+  -A, --all-workspaces        Show tasks across every workspace in the selected store.
   --all                       Show full task history instead of hiding old finished tasks.
+  --cwd <path>                Filter tasks by process cwd. Relative paths resolve inside the workspace.
   --watch                     Refresh the grouped view until interrupted.
   --interval-ms <ms>          Refresh interval for --watch.
   --runtime <runtime>         Filter to one runtime.
@@ -556,6 +667,8 @@ Ps options:
   --brief                     With --compact, omit repeated follow-up command bundles.
 
 Interrupt options:
+  -A, --all-workspaces        With --active, select active tasks across every workspace.
+  --yes                       Required with -A --active.
   --children                  Stop a parent task and its children.
   --parent <task-id|prefix>   Stop a parent task and children with --children.
   --group <group-id|prefix>   Stop running tasks in one ps group.
@@ -588,9 +701,8 @@ ${renderedRuntimeLines}
 Examples:
 ${examples}
 
-Shell test options:
-  --allow-disabled-runtime    Permit launching disabled runtimes such as shell.
-  --allow-shell-command <cmd> Allow one exact shell command.
+Advanced launch options:
+  --allow-disabled-runtime    Permit launching disabled runtimes.
 `;
 }
 
@@ -613,20 +725,25 @@ function buildCliHelpDocument(
       "Use run --stream-json when a plugin, script, TUI, or other program needs the full live run stream.",
       "Use launch to start a registered runtime.",
       "Use launch --json --compact when software needs only the new task id and status.",
-      "Capture taskId from launch output. Task commands accept the full id or a unique prefix shown by ps/list.",
+      "Use launch -f <manifest.json|-> --json --compact --brief when software needs to start several tasks in one call.",
+      "Orchestrator uses one default machine store at ~/.orchestrator/tasks; workspace is project scope, and cwd is the agent process directory.",
+      "Capture taskId from launch output. Task commands accept the full id or a unique prefix shown by ps/list from the same store.",
       "Common options like --workspace, --orchestrator-dir, --config, and --json may appear before or after the command.",
       "Prefer launch --json --compact and ps --json --compact for normal agent control.",
       "Use help --json --compact when software needs a smaller command contract; use help --json for the full contract.",
       "When --json is present, command errors are JSON on stderr with reason/input/matches/hint and recovery.views.*.args when available.",
-      "Use ps for the grouped multi-agent operations view. It hides old finished tasks by default.",
-      "Use ps --all for full task history.",
-      "Use ps --watch to watch the whole agent system update live.",
+      "Use ps for the current workspace operations view. It hides old finished tasks by default.",
+      "Use ps -A for all workspaces.",
+      "Use ps --all for full task history in the selected workspace.",
+      "Use ps -A --all for full task history across all workspaces.",
+      "Use ps --watch to watch the selected scope update live.",
       "Use ps --json --compact --active when an agent or script needs active task and stop targets.",
       "Use ps --json --compact --active --brief to scan many running tasks with less JSON.",
+      "Use ps -A --json --compact --active --brief to scan active work across the machine.",
       "Use ps --parent <run-id|prefix> --json --compact --brief when software needs one parent run and its children.",
       "If active ps is empty after short work, run views.recent.args from compact ps to recover recent finished tasks and batch read commands.",
-      "Use launch --json --compact --brief when starting many tasks and only task id/status/stop is needed.",
-      "After starting several tasks, run ps --json --compact --brief and use top-level commands.waitPreview.args to collect the listed set.",
+      "Use launch --json --compact --brief for one compact task result, or launch -f <manifest.json|-> --json --compact --brief to start several tasks from a manifest.",
+      "After starting several tasks, use the returned commands.waitPreview.args or run ps --json --compact --brief to collect the listed set.",
       "When JSON output returns stop.args, pass those portable args to orchestrator to stop exactly the returned task, group, or selected active set.",
       "Compact ps stop.args are scoped to the current view; parent/group stops may include children of that selected run.",
       "When JSON output returns commands.*.args, pass those portable args to orchestrator for read/watch/logs/events follow-up.",
@@ -643,7 +760,8 @@ function buildCliHelpDocument(
       "Use watch to follow one task live. Use watch --agent-only --json for normalized agent event JSONL.",
       "Pass model names exactly as the underlying provider CLI expects; this CLI does not normalize model aliases yet.",
       "Use interrupt to cancel a running task by process group.",
-      "Use interrupt --active --json --compact only for deliberate workspace-wide cleanup when every active task in the selected workspace should stop; it is safe when none are active.",
+      "Use interrupt --active --json --compact only for deliberate workspace cleanup when every active task in the selected workspace should stop; it is safe when none are active.",
+      "Use interrupt -A --active --yes --json --compact only for deliberate all-workspace cleanup.",
     ],
     runtimes: runtimes.map((runtime) => ({
       id: runtime.id,
@@ -699,13 +817,16 @@ function buildCliHelpDocument(
       {
         name: "launch",
         usage:
-          'orchestrator launch <runtime> [--name <name>] [--model <model>] [--cwd <path>] [--wait] [--json [--compact [--brief]]] "<task>"',
-        semantics: "Starts one agent task. Background by default; prints task metadata.",
+          'orchestrator launch <runtime> [--name <name>] [--model <model>] [--cwd <path>] [--wait] [--json [--compact [--brief]]] "<task>"; or orchestrator launch -f <manifest.json|-> --json [--compact [--brief]]',
+        semantics:
+          "Starts one agent task, or starts several normal tasks from a JSON manifest with -f.",
         options: [
           "--workspace <path>",
           "--orchestrator-dir <path>",
           "--config <path>",
           "--json",
+          "-f <manifest.json|->",
+          "--file <manifest.json|->",
           "--name <name>",
           "--model <model>",
           "--output-mode <mode>",
@@ -718,21 +839,24 @@ function buildCliHelpDocument(
       },
       {
         name: "list",
-        usage: "orchestrator list [--status <status>] [--json]",
-        semantics: "Lists known task records from the workspace task store.",
+        usage: "orchestrator list [--status <status>] [-A|--all-workspaces] [--json]",
+        semantics: "Lists task records in the current workspace scope, or all workspaces with -A.",
         options: [
           "--workspace <path>",
           "--orchestrator-dir <path>",
           "--config <path>",
           "--status <status>",
+          "-A",
+          "--all-workspaces",
           "--json",
         ],
       },
       {
         name: "ps",
         usage:
-          "orchestrator ps [--all] [--watch] [--runtime <runtime>] [--status <status>] [--parent <run-id>] [--json [--compact [--active] [--brief]]]",
-        semantics: "Shows grouped agent work across parent runs and ungrouped manual tasks.",
+          "orchestrator ps [--all] [-A|--all-workspaces] [--cwd <path>] [--watch] [--runtime <runtime>] [--status <status>] [--parent <run-id>] [--json [--compact [--active] [--brief]]]",
+        semantics:
+          "Shows grouped agent work in the current workspace scope, or all workspaces with -A.",
         options: [
           "--workspace <path>",
           "--orchestrator-dir <path>",
@@ -741,6 +865,9 @@ function buildCliHelpDocument(
           "--runtime <runtime>",
           "--parent <run-id|ungrouped>",
           "--all",
+          "-A",
+          "--all-workspaces",
+          "--cwd <path>",
           "--watch",
           "--interval-ms <ms>",
           "--json",
@@ -814,7 +941,7 @@ function buildCliHelpDocument(
       {
         name: "interrupt",
         usage:
-          "orchestrator interrupt <task-id|prefix>...|--parent <id>|--group <id>|--active [--children|--task-only] [--reason <text>] [--signal <signal>] [--json [--compact]]",
+          "orchestrator interrupt <task-id|prefix>...|--parent <id>|--group <id>|--active [-A|--all-workspaces --yes] [--children|--task-only] [--reason <text>] [--signal <signal>] [--json [--compact]]",
         semantics:
           "Cancels running tasks. Use returned stop.args for scoped cleanup; use --active only when every active task in the selected workspace should stop.",
         options: [
@@ -825,6 +952,9 @@ function buildCliHelpDocument(
           "--parent <task-id|prefix>",
           "--group <group-id|prefix>",
           "--active",
+          "-A",
+          "--all-workspaces",
+          "--yes",
           "--task-only",
           "--reason <text>",
           "--signal <signal>",
@@ -880,7 +1010,8 @@ function buildCliHelpDocument(
         name: "start-and-watch",
         steps: [
           'Run launch with a short name, runtime, model, and task: orchestrator launch codex --name "inspect store" --model gpt-5.4-mini --json --compact "task".',
-          "Add --brief to compact launch when starting many tasks and only id/status/stop is needed.",
+          "Add --brief to compact launch when one task only needs id/status/stop.",
+          "Use launch -f <manifest.json|-> --json --compact --brief when several tasks should start from one manifest.",
           "Extract taskId from launch output, or use the short id shown by ps/list when it is unique.",
           "Run list to see named tasks.",
           "Run ps to see grouped agent work.",
@@ -924,6 +1055,7 @@ function compactCliHelpDocument(
   const preferredExamples = new Set([
     "orchestrator doctor",
     "orchestrator ps --json --compact --active --brief",
+    "orchestrator ps -A --json --compact --active --brief",
     "orchestrator ps --parent <run-id|prefix> --json --compact --brief",
     "orchestrator read <task-id|prefix>... --wait --json --compact",
     'orchestrator interrupt <task-id|prefix> <task-id|prefix> --json --compact --reason "selected cleanup"',
@@ -945,7 +1077,7 @@ function compactCliHelpDocument(
       "Run doctor --json --compact when runtime availability is uncertain.",
       "If compact doctor returns parent.canRun: true, append the request to parent.run.argsPrefix or parent.run.backgroundArgsPrefix.",
       ...(canLaunchChildAgents
-        ? ["Start many tasks with launch --json --compact --brief."]
+        ? ["Start many tasks with launch -f <manifest.json|-> --json --compact --brief."]
         : ["If runtimeIds is empty, do not call launch; add or enable an agent config first."]),
       "Find running tasks with ps --json --compact --active --brief.",
       "Narrow one parent run with ps --parent <run-id|prefix> --json --compact --brief.",
@@ -1009,6 +1141,7 @@ function buildCliExamples(registry: RuntimeRegistry): string[] {
   );
   examples.push('orchestrator run --trace-tools "launch a codex child and wait for it"');
   examples.push('orchestrator run --stream-json "launch a codex child and wait for it"');
+  examples.push("orchestrator launch -f agents.json --json --compact --brief");
   if (registry["claude-code"]?.enabled) {
     examples.push(
       'orchestrator launch claude-code --name "review repo" --model sonnet --json --compact "review this repo"',
@@ -1025,6 +1158,9 @@ function buildCliExamples(registry: RuntimeRegistry): string[] {
     "orchestrator help --json --compact",
     "orchestrator ps",
     "orchestrator ps --all",
+    "orchestrator ps -A",
+    "orchestrator ps -A --all",
+    "orchestrator ps -A --json --compact --active --brief",
     "orchestrator ps --all --json --compact",
     "orchestrator ps --watch",
     "orchestrator ps --json --compact --active",
@@ -1039,7 +1175,8 @@ function buildCliExamples(registry: RuntimeRegistry): string[] {
     'orchestrator interrupt <task-id|prefix> <task-id|prefix> --json --compact --reason "selected cleanup"',
     'orchestrator interrupt <parent-id|prefix> --children --reason "stopping stale run"',
     'orchestrator interrupt --group <group-id|prefix> --reason "stopping stale group"',
-    'orchestrator interrupt --active --json --compact --reason "cleanup"',
+    'orchestrator interrupt --active --json --compact --reason "workspace cleanup"',
+    'orchestrator interrupt -A --active --yes --json --compact --reason "all-workspace cleanup"',
   ];
 }
 
@@ -1048,11 +1185,17 @@ async function commandList(options: ListOptions): Promise<void> {
     workspaceRoot: options.workspaceRoot,
     ...(options.configPath ? { configPath: options.configPath } : {}),
   });
-  const tasks = await listTasks({
+  const allTasks = await listTasks({
     workspaceRoot: options.workspaceRoot,
     ...(options.orchestratorDir ? { orchestratorDir: options.orchestratorDir } : {}),
     status: options.status,
   });
+  const tasks = options.allWorkspaces
+    ? allTasks
+    : allTasks.filter(
+        (task) =>
+          task.location?.kind !== "local" || task.location.workspaceRoot === options.workspaceRoot,
+      );
 
   if (options.json) {
     process.stdout.write(`${JSON.stringify(tasks, null, 2)}\n`);
@@ -1109,7 +1252,9 @@ async function loadPsView(options: PsOptions): Promise<AgentTaskPsView> {
     ...(options.orchestratorDir ? { orchestratorDir: options.orchestratorDir } : {}),
     ...(options.status ? { status: options.status } : {}),
     ...(options.runtime ? { runtime: options.runtime } : {}),
+    ...(options.cwd ? { cwd: options.cwd } : {}),
     all: options.all,
+    allWorkspaces: options.allWorkspaces,
     activeOnly: options.compact && options.active,
   });
   return options.parentRunId ? filterPsViewByParent(view, options.parentRunId) : view;
@@ -1174,26 +1319,48 @@ async function formatPsJsonView(view: AgentTaskPsView, options: PsOptions): Prom
 }
 
 function withPortableStopArgs<T extends AgentTaskControlView>(view: T, options: CommonOptions): T {
-  const suffix = stopArgsSuffix(options);
-  if (suffix.length === 0) {
+  const taskSuffix = stopArgsSuffix(options);
+  const viewSuffix = viewArgsSuffix(options);
+  if (taskSuffix.length === 0 && viewSuffix.length === 0) {
     return view;
   }
 
   return {
     ...view,
-    ...(view.commands ? { commands: appendControlCommandArgs(view.commands, suffix) } : {}),
-    ...(view.stop ? { stop: appendStopArgs(view.stop, suffix) } : {}),
+    ...(view.commands ? { commands: appendControlCommandArgs(view.commands, taskSuffix) } : {}),
+    ...(view.stop ? { stop: appendStopArgs(view.stop, taskSuffix) } : {}),
     groups: view.groups.map((group) => ({
       ...group,
-      ...(group.commands ? { commands: appendControlCommandArgs(group.commands, suffix) } : {}),
-      ...(group.stop ? { stop: appendStopArgs(group.stop, suffix) } : {}),
+      ...(group.commands
+        ? { commands: appendGroupControlCommandArgs(group.commands, taskSuffix, viewSuffix) }
+        : {}),
+      ...(group.stop ? { stop: appendStopArgs(group.stop, taskSuffix) } : {}),
     })),
     tasks: view.tasks.map((task) => ({
       ...task,
-      ...(task.commands ? { commands: appendControlCommandArgs(task.commands, suffix) } : {}),
-      ...(task.stop ? { stop: appendStopArgs(task.stop, suffix) } : {}),
+      ...(task.commands ? { commands: appendControlCommandArgs(task.commands, taskSuffix) } : {}),
+      ...(task.stop ? { stop: appendStopArgs(task.stop, taskSuffix) } : {}),
     })),
   };
+}
+
+function appendGroupControlCommandArgs<T extends Record<string, { args: string[] }>>(
+  commands: T,
+  taskSuffix: readonly string[],
+  viewSuffix: readonly string[],
+): T {
+  return Object.fromEntries(
+    Object.entries(commands).map(([name, command]) => [
+      name,
+      {
+        ...command,
+        args: [
+          ...command.args,
+          ...(name === "ps" || name === "activePs" ? viewSuffix : taskSuffix),
+        ],
+      },
+    ]),
+  ) as T;
 }
 
 function appendControlCommandArgs<T extends Record<string, { args: string[] }>>(
@@ -1213,10 +1380,17 @@ function appendStopArgs<T extends { args: string[] }>(stop: T, suffix: readonly 
 }
 
 function stopArgsSuffix(options: CommonOptions): string[] {
+  return [...(options.orchestratorDir ? ["--orchestrator-dir", options.orchestratorDir] : [])];
+}
+
+function viewArgsSuffix(
+  options: CommonOptions & { allWorkspaces?: boolean; cwd?: string; configPath?: string },
+): string[] {
   return [
-    "--workspace",
-    options.workspaceRoot,
+    ...(options.allWorkspaces ? ["-A"] : ["--workspace", options.workspaceRoot]),
+    ...(options.cwd ? ["--cwd", options.cwd] : []),
     ...(options.orchestratorDir ? ["--orchestrator-dir", options.orchestratorDir] : []),
+    ...(options.configPath ? ["--config", options.configPath] : []),
   ];
 }
 
@@ -1225,6 +1399,7 @@ function filterPsViewByParent(view: AgentTaskPsView, parentRunId: string): Agent
   if (!groupId) {
     return {
       generatedAt: view.generatedAt,
+      scope: view.scope,
       groups: [],
       rows: [],
     };
@@ -1233,6 +1408,7 @@ function filterPsViewByParent(view: AgentTaskPsView, parentRunId: string): Agent
   const groupIds = new Set(groups.map((group) => group.groupId));
   return {
     generatedAt: view.generatedAt,
+    scope: view.scope,
     groups,
     rows: view.rows.filter((row) => groupIds.has(psRowGroupId(row))),
   };
@@ -1739,6 +1915,7 @@ async function commandInterrupt(options: InterruptOptions): Promise<number> {
     workspaceRoot: options.workspaceRoot,
     ...(options.orchestratorDir ? { orchestratorDir: options.orchestratorDir } : {}),
     target: interruptTargetFromOptions(options),
+    allWorkspaces: options.allWorkspaces,
     reason: options.reason,
     signal: options.signal,
   });
@@ -1952,6 +2129,12 @@ async function commandRunBackground(options: RunOptions): Promise<void> {
       workspaceRoot: options.workspaceRoot,
       requestPath,
     }),
+    location: {
+      kind: "local",
+      workspaceRoot: options.workspaceRoot,
+      workspaceName: workspaceName(options.workspaceRoot),
+      cwd: options.workspaceRoot,
+    },
   };
 
   const task = await launchInBackground(launchInput);
@@ -2171,8 +2354,24 @@ async function launchInBackground(input: LaunchTaskInput): Promise<AgentTaskReco
   return waitForTaskRecord(input, taskId);
 }
 
+async function readLaunchManifestInput(file: string): Promise<string> {
+  if (file === "-") {
+    return await readStdin();
+  }
+  return await readFile(resolve(file), "utf8");
+}
+
+async function readStdin(): Promise<string> {
+  process.stdin.setEncoding("utf8");
+  let data = "";
+  for await (const chunk of process.stdin) {
+    data += String(chunk);
+  }
+  return data;
+}
+
 async function writeRunRequest(input: LaunchTaskInput): Promise<string> {
-  const orchestratorDir = input.orchestratorDir ?? resolve(input.workspaceRoot, ".orchestrator");
+  const orchestratorDir = getOrchestratorDir(input);
   return writeJsonRequest({
     orchestratorDir,
     requestDirName: "run-requests",
@@ -2185,8 +2384,7 @@ async function writeParentRunRequest(
   request: ParentRunTaskRequest,
   taskId: string,
 ): Promise<string> {
-  const orchestratorDir =
-    request.orchestratorDir ?? resolve(request.workspaceRoot, ".orchestrator");
+  const orchestratorDir = getOrchestratorDir(request);
   return writeJsonRequest({
     orchestratorDir,
     requestDirName: "parent-run-requests",
@@ -2233,7 +2431,6 @@ function parentRunLaunchPlan(input: {
     handlesOwnAuth: true,
     enabled: true,
     safety: {
-      requiresAllowlist: false,
       acceptsShellCommand: false,
     },
   };
@@ -2259,7 +2456,7 @@ async function waitForTaskRecord(input: LaunchTaskInput, taskId: string): Promis
 }
 
 function parseHelpOptions(args: readonly string[]): HelpOptions {
-  let workspaceRoot = process.cwd();
+  let workspaceRoot = resolveDefaultWorkspaceRoot(process.cwd());
   let configPath: string | undefined;
   let json = false;
   let compact = false;
@@ -2307,6 +2504,7 @@ function parseLaunchOptions(args: readonly string[]): LaunchOptions {
   const common = defaultCommonOptions();
   let runtime: string | undefined;
   const taskParts: string[] = [];
+  let file: string | undefined;
   let cwd: string | undefined;
   let name: string | undefined;
   let model: string | undefined;
@@ -2317,7 +2515,6 @@ function parseLaunchOptions(args: readonly string[]): LaunchOptions {
   let compact = false;
   let brief = false;
   let allowDisabledRuntime = false;
-  const allowedShellCommands: string[] = [];
 
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index];
@@ -2344,8 +2541,12 @@ function parseLaunchOptions(args: readonly string[]): LaunchOptions {
       case "--json":
         common.json = true;
         break;
+      case "--file":
+      case "-f":
+        file = requireValue(args, ++index, arg);
+        break;
       case "--cwd":
-        cwd = resolve(requireValue(args, ++index, arg));
+        cwd = requireValue(args, ++index, arg);
         break;
       case "--name":
         name = parseTaskName(requireValue(args, ++index, arg));
@@ -2374,9 +2575,6 @@ function parseLaunchOptions(args: readonly string[]): LaunchOptions {
       case "--allow-disabled-runtime":
         allowDisabledRuntime = true;
         break;
-      case "--allow-shell-command":
-        allowedShellCommands.push(requireValue(args, ++index, arg));
-        break;
       default:
         if (!arg) {
           break;
@@ -2388,12 +2586,41 @@ function parseLaunchOptions(args: readonly string[]): LaunchOptions {
     }
   }
 
-  if (!runtime) {
+  if (file && (runtime || taskParts.length > 0)) {
+    throw new CliError("launch -f cannot be combined with a positional runtime or task.", {
+      reason: "incompatible_options",
+      input: "--file",
+      hint: "Use launch -f <manifest.json> --json, or use launch <runtime> <task>.",
+    });
+  }
+  if (file && wait) {
+    throw new CliError("launch -f does not support --wait yet.", {
+      reason: "incompatible_options",
+      input: "--wait",
+      hint: "Use the returned commands.waitPreview.args to wait for the launched tasks.",
+    });
+  }
+  if (file && name) {
+    throw new CliError("launch -f does not support --name.", {
+      reason: "incompatible_options",
+      input: "--name",
+      hint: "Set name on each task in the launch manifest.",
+    });
+  }
+  if (file && !common.json) {
+    throw new CliError("launch -f requires --json.", {
+      reason: "missing_required_option",
+      input: "--json",
+      hint: "Use launch -f <manifest.json> --json --compact --brief.",
+    });
+  }
+
+  if (!file && !runtime) {
     throw new CliError("launch requires a runtime.");
   }
 
   const task = taskParts.join(" ").trim();
-  if (!task) {
+  if (!file && !task) {
     throw new CliError("launch requires task instructions.");
   }
   if (compact && !common.json) {
@@ -2413,9 +2640,10 @@ function parseLaunchOptions(args: readonly string[]): LaunchOptions {
 
   return {
     ...common,
-    runtime,
-    task,
-    cwd: cwd ?? common.workspaceRoot,
+    ...(runtime ? { runtime } : {}),
+    ...(task ? { task } : {}),
+    ...(file ? { file } : {}),
+    ...(cwd ? { cwd } : {}),
     ...(name ? { name } : {}),
     ...(model ? { model } : {}),
     ...(outputMode ? { outputMode } : {}),
@@ -2425,13 +2653,13 @@ function parseLaunchOptions(args: readonly string[]): LaunchOptions {
     compact,
     brief,
     allowDisabledRuntime,
-    ...(allowedShellCommands.length > 0 ? { allowedShellCommands } : {}),
   };
 }
 
 function parseListOptions(args: readonly string[]): ListOptions {
   const common = defaultCommonOptions();
   let status: TaskStatus | undefined;
+  let allWorkspaces = false;
 
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index];
@@ -2451,6 +2679,10 @@ function parseListOptions(args: readonly string[]): ListOptions {
       case "--status":
         status = parseTaskStatus(requireValue(args, ++index, arg), arg);
         break;
+      case "-A":
+      case "--all-workspaces":
+        allWorkspaces = true;
+        break;
       default:
         throw unknownOptionError("list", String(arg));
     }
@@ -2459,6 +2691,7 @@ function parseListOptions(args: readonly string[]): ListOptions {
   return {
     ...common,
     ...(status ? { status } : {}),
+    allWorkspaces,
   };
 }
 
@@ -2468,6 +2701,8 @@ function parsePsOptions(args: readonly string[]): PsOptions {
   let runtime: string | undefined;
   let parentRunId: string | undefined;
   let all = false;
+  let allWorkspaces = false;
+  let cwd: string | undefined;
   let watch = false;
   let compact = false;
   let brief = false;
@@ -2500,6 +2735,13 @@ function parsePsOptions(args: readonly string[]): PsOptions {
         break;
       case "--all":
         all = true;
+        break;
+      case "-A":
+      case "--all-workspaces":
+        allWorkspaces = true;
+        break;
+      case "--cwd":
+        cwd = requireValue(args, ++index, arg);
         break;
       case "--watch":
       case "-w":
@@ -2550,6 +2792,8 @@ function parsePsOptions(args: readonly string[]): PsOptions {
     ...(runtime ? { runtime } : {}),
     ...(parentRunId ? { parentRunId } : {}),
     all,
+    allWorkspaces,
+    ...(cwd ? { cwd: resolveLaunchCwd(cwd, common.workspaceRoot) } : {}),
     watch,
     compact,
     brief,
@@ -2836,8 +3080,10 @@ function parseInterruptOptions(args: readonly string[]): InterruptOptions {
   let parentId: string | undefined;
   let groupId: string | undefined;
   let active = false;
+  let allWorkspaces = false;
   let children = false;
   let taskOnly = false;
+  let yes = false;
   let reason: string | undefined;
   let signal: NodeJS.Signals | undefined;
   let compact = false;
@@ -2868,6 +3114,13 @@ function parseInterruptOptions(args: readonly string[]): InterruptOptions {
         break;
       case "--active":
         active = true;
+        break;
+      case "-A":
+      case "--all-workspaces":
+        allWorkspaces = true;
+        break;
+      case "--yes":
+        yes = true;
         break;
       case "--children":
         children = true;
@@ -2926,6 +3179,13 @@ function parseInterruptOptions(args: readonly string[]): InterruptOptions {
       "Use a task id with --children or --task-only when targeting one task.",
     ]);
   }
+  if (active && allWorkspaces && !yes) {
+    throw new CliError("interrupt -A --active requires --yes.", {
+      reason: "confirmation_required",
+      input: "-A --active",
+      hint: "Use interrupt --active --workspace <path> to stop active tasks in one workspace, or add --yes for deliberate all-workspace cleanup.",
+    });
+  }
   if (taskIds.length > 1 && (children || taskOnly)) {
     throw incompatibleInterruptOptionsError("task-id...,--children|--task-only", [
       "Use interrupt <id> <id> for selected tasks.",
@@ -2946,8 +3206,10 @@ function parseInterruptOptions(args: readonly string[]): InterruptOptions {
     ...(parentId ? { parentId } : {}),
     ...(groupId ? { groupId } : {}),
     active,
+    allWorkspaces,
     children,
     taskOnly,
+    yes,
     ...(reason ? { reason } : {}),
     ...(signal ? { signal } : {}),
     compact,
@@ -3207,9 +3469,28 @@ function parseInternalRunTaskOptions(args: readonly string[]): string {
 
 function defaultCommonOptions(): CommonOptions {
   return {
-    workspaceRoot: process.cwd(),
+    workspaceRoot: resolveDefaultWorkspaceRoot(process.cwd()),
     json: false,
   };
+}
+
+function resolveDefaultWorkspaceRoot(cwd: string): string {
+  const resolved = resolve(cwd);
+  return findNearestGitRoot(resolved) ?? resolved;
+}
+
+function findNearestGitRoot(start: string): string | undefined {
+  let current = start;
+  while (true) {
+    if (existsSync(resolve(current, ".git"))) {
+      return current;
+    }
+    const parent = dirname(current);
+    if (parent === current) {
+      return undefined;
+    }
+    current = parent;
+  }
 }
 
 function printTask(task: AgentTaskRecord, json: boolean): void {
@@ -3234,6 +3515,85 @@ async function printLaunchTask(task: AgentTaskRecord, options: LaunchOptions): P
   }
 
   printTask(task, options.json);
+}
+
+async function printBatchLaunchTasks(
+  tasks: readonly AgentTaskRecord[],
+  options: LaunchOptions,
+): Promise<void> {
+  if (!options.json) {
+    throw new CliError("launch -f requires --json.", {
+      reason: "missing_required_option",
+      input: "--json",
+      hint: "Use launch -f <manifest.json> --json --compact --brief.",
+    });
+  }
+
+  const storeOptions = {
+    workspaceRoot: options.workspaceRoot,
+    ...(options.orchestratorDir ? { orchestratorDir: options.orchestratorDir } : {}),
+  };
+  const taskIds = await listTaskIds(storeOptions);
+  const suffix = stopArgsSuffix(options);
+  const summaries = tasks.map((task, index) => {
+    const summary = taskCommandSummary(task, taskIds, { stopArgsSuffix: suffix });
+    const rendered = options.compact
+      ? briefTaskSummaryJsonPayload(summary, options.brief)
+      : summary;
+    const { schemaVersion: _schemaVersion, ...withoutSchemaVersion } = rendered;
+    return {
+      index,
+      ...withoutSchemaVersion,
+    };
+  });
+  const ids = summaries.map((task) => task.id);
+  const activeIds = summaries.filter((task) => task.active).map((task) => task.id);
+  const stop = batchLaunchStopTarget(summaries, activeIds, suffix);
+
+  process.stdout.write(
+    jsonLine(
+      {
+        schemaVersion: 1,
+        summary: batchLaunchSummary(tasks),
+        commands: taskBatchControlCommands(ids, suffix),
+        ...(stop ? { stop } : {}),
+        tasks: summaries,
+      },
+      options,
+    ),
+  );
+}
+
+function batchLaunchSummary(tasks: readonly AgentTaskRecord[]): {
+  requested: number;
+  launched: number;
+  active: number;
+  failed: number;
+} {
+  return {
+    requested: tasks.length,
+    launched: tasks.length,
+    active: tasks.filter((task) => !isTerminalStatus(task.status)).length,
+    failed: tasks.filter((task) => task.status === "failed").length,
+  };
+}
+
+function batchLaunchStopTarget(
+  summaries: readonly { id: string; stop?: AgentTaskControlStopTarget }[],
+  activeIds: readonly string[],
+  argsSuffix: readonly string[],
+): AgentTaskControlStopTarget | undefined {
+  if (activeIds.length === 0) {
+    return undefined;
+  }
+  if (activeIds.length === 1) {
+    return summaries.find((task) => task.id === activeIds[0])?.stop;
+  }
+  return {
+    kind: "tasks",
+    ids: [...activeIds],
+    args: ["interrupt", ...activeIds, "--json", "--compact", ...argsSuffix],
+  };
 }
 
 async function printTaskSummaryJson(

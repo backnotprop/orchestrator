@@ -165,7 +165,7 @@ Update `packages/agent/src/instructions.ts`:
 
 Add focused automated tests. Do not require live Claude or Codex.
 
-Use the existing disabled `shell` runtime with an allowlisted command.
+Use the `shell` runtime with short deterministic local commands.
 
 Test cases:
 

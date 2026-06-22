@@ -4,6 +4,8 @@ export type PsViewCommandOptions = {
   configPath?: string;
   parentRunId?: string;
   runtime?: string;
+  allWorkspaces?: boolean;
+  cwd?: string;
 };
 
 export type PsViewCommands = {
@@ -33,8 +35,8 @@ function compactPsViewArgs(
     "--compact",
     ...(view.active ? ["--active"] : []),
     "--brief",
-    "--workspace",
-    options.workspaceRoot,
+    ...(options.allWorkspaces ? ["-A"] : ["--workspace", options.workspaceRoot]),
+    ...(options.cwd ? ["--cwd", options.cwd] : []),
     ...(options.orchestratorDir ? ["--orchestrator-dir", options.orchestratorDir] : []),
     ...(options.configPath ? ["--config", options.configPath] : []),
   ];

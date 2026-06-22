@@ -53,5 +53,5 @@ Tests should iterate the registry and verify that every enabled runtime can
 produce a launch plan for a smoke-test prompt.
 
 We should store executable and argv arrays, not shell-quoted command strings.
-Only the explicit `shell` runtime may accept shell strings, and it must stay
-behind an allowlist.
+Only the explicit `shell` runtime may accept shell strings. Custom process
+runtimes should stay argv-based so quoting rules remain predictable.

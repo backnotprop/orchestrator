@@ -158,7 +158,7 @@ export const PI_RUNTIME = {
 export const SHELL_RUNTIME = {
   id: "shell",
   displayName: "Shell",
-  enabled: false,
+  enabled: true,
   detect: {
     command: "sh",
     expectedProcesses: ["sh"],
@@ -189,7 +189,6 @@ export const SHELL_RUNTIME = {
     isolation: "shared",
   },
   safety: {
-    requiresAllowlist: true,
     acceptsShellCommand: true,
   },
 } satisfies HeadlessAgentRuntimeConfig;

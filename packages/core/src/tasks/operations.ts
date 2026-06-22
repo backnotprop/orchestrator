@@ -1,5 +1,6 @@
 import { readFile, stat } from "node:fs/promises";
-import { listTasks } from "./store.ts";
+import { relative, resolve } from "node:path";
+import { listTasks, taskCwd, taskWorkspaceRoot } from "./store.ts";
 import { readTaskEvents } from "./readers.ts";
 import { UNGROUPED_GROUP_ID, taskGroupId, uniqueIdPrefix } from "./groups.ts";
 import { isTerminalTaskStatus } from "./types.ts";
@@ -8,6 +9,7 @@ import { DEFAULT_WAIT_TIMEOUT_MS } from "./wait.ts";
 import type {
   AgentTaskRecord,
   TaskEvent,
+  TaskLocation,
   TaskStatus,
   TaskStoreOptions,
   TaskUsage,
@@ -18,6 +20,8 @@ export type AgentTaskPsInput = TaskStoreOptions & {
   runtime?: string;
   parentRunId?: string;
   all?: boolean;
+  allWorkspaces?: boolean;
+  cwd?: string;
   activeOnly?: boolean;
   recentFinishedWindowMs?: number;
   maxEventBytes?: number;
@@ -33,6 +37,10 @@ export type AgentTaskRow = {
   model?: string;
   exitCode?: number | null;
   cwd: string;
+  workspaceRoot: string;
+  workspaceName?: string;
+  relativeCwd?: string;
+  location?: TaskLocation;
   createdAt: string;
   startedAt?: string;
   finishedAt?: string;
@@ -77,6 +85,11 @@ export type AgentTaskGroup = {
 
 export type AgentTaskPsView = {
   generatedAt: string;
+  scope: {
+    workspaces: "current" | "all";
+    workspaceRoot?: string;
+    cwd?: string;
+  };
   groups: AgentTaskGroup[];
   rows: AgentTaskRow[];
 };
@@ -168,6 +181,7 @@ export type AgentTaskControlTask = {
   tokens?: number;
   last?: string;
   durationMs?: number;
+  location?: TaskLocation;
   commands?: AgentTaskControlTaskCommands;
   stop?: AgentTaskControlStopTarget;
 };
@@ -175,6 +189,7 @@ export type AgentTaskControlTask = {
 export type AgentTaskControlView = {
   schemaVersion: 1;
   generatedAt: string;
+  scope: AgentTaskPsView["scope"];
   summary: {
     tasks: number;
     active: number;
@@ -207,6 +222,8 @@ export async function buildAgentTaskPsView(input: AgentTaskPsInput): Promise<Age
     .filter((task) => (input.status ? task.status === input.status : true))
     .filter((task) => (input.runtime ? task.runtime === input.runtime : true))
     .filter((task) => matchesParentFilter(task, input.parentRunId))
+    .filter((task) => matchesWorkspaceFilter(task, input))
+    .filter((task) => matchesCwdFilter(task, input.cwd))
     .filter((task) => (input.activeOnly ? !isTerminalTaskStatus(task.status) : true))
     .filter((task) =>
       input.all
@@ -230,7 +247,7 @@ export async function buildAgentTaskPsView(input: AgentTaskPsInput): Promise<Age
       ),
     )
   ).sort(compareRows);
-  const taskIds = rows.map((row) => row.taskId);
+  const taskIds = tasks.map((task) => task.taskId);
   const rowsWithUniqueIds = rows.map((row) => ({
     ...row,
     shortTaskId: uniqueIdPrefix(row.taskId, taskIds),
@@ -238,6 +255,11 @@ export async function buildAgentTaskPsView(input: AgentTaskPsInput): Promise<Age
 
   return {
     generatedAt: now.toISOString(),
+    scope: {
+      workspaces: input.allWorkspaces ? "all" : "current",
+      ...(input.allWorkspaces ? {} : { workspaceRoot: resolve(input.workspaceRoot) }),
+      ...(input.cwd ? { cwd: resolve(input.cwd) } : {}),
+    },
     rows: rowsWithUniqueIds,
     groups: groupRows(rowsWithUniqueIds, groupLabels),
   };
@@ -299,6 +321,7 @@ export function compactAgentTaskPsView(
   return {
     schemaVersion: 1,
     generatedAt: view.generatedAt,
+    scope: view.scope,
     summary: {
       tasks: tasks.length,
       active,
@@ -370,6 +393,9 @@ async function buildAgentTaskRow(
   const lastMessage = error ?? eventSummary.lastMessage ?? succeededOutputDetail;
   const taskDurationMs = durationMs(task, input.now);
   const model = taskModel(task);
+  const workspaceRoot = taskWorkspaceRoot(task, input.workspaceRoot);
+  const cwd = taskCwd(task);
+  const relativeCwd = relativeCwdForDisplay(workspaceRoot, cwd);
 
   return {
     taskId: task.taskId,
@@ -379,7 +405,13 @@ async function buildAgentTaskRow(
     runtime: task.runtime,
     ...(model ? { model } : {}),
     ...(task.exitCode !== undefined ? { exitCode: task.exitCode } : {}),
-    cwd: task.cwd,
+    cwd,
+    workspaceRoot,
+    ...(task.location?.kind === "local" && task.location.workspaceName
+      ? { workspaceName: task.location.workspaceName }
+      : {}),
+    ...(relativeCwd ? { relativeCwd } : {}),
+    ...(task.location ? { location: task.location } : {}),
     createdAt: task.createdAt,
     ...(task.startedAt ? { startedAt: task.startedAt } : {}),
     ...(task.finishedAt ? { finishedAt: task.finishedAt } : {}),
@@ -524,6 +556,7 @@ function compactTask(
     ...(row.usage?.totalTokens !== undefined ? { tokens: row.usage.totalTokens } : {}),
     ...optionalLast(row),
     ...(row.durationMs !== undefined ? { durationMs: row.durationMs } : {}),
+    ...(row.location ? { location: row.location } : {}),
     ...(options.brief ? {} : { commands: taskControlCommands(id) }),
     ...(active ? { stop: compactTaskStopTarget(row, id) } : {}),
   };
@@ -826,6 +859,31 @@ function matchesParentFilter(task: AgentTaskRecord, parentRunId: string | undefi
     task.parent?.parentTaskId === parentRunId ||
     task.parent?.parentRunId === parentRunId
   );
+}
+
+function matchesWorkspaceFilter(task: AgentTaskRecord, input: AgentTaskPsInput): boolean {
+  if (input.allWorkspaces) {
+    return true;
+  }
+  return taskWorkspaceRoot(task, input.workspaceRoot) === resolve(input.workspaceRoot);
+}
+
+function matchesCwdFilter(task: AgentTaskRecord, cwd: string | undefined): boolean {
+  if (!cwd) {
+    return true;
+  }
+  return taskCwd(task) === resolve(cwd);
+}
+
+function relativeCwdForDisplay(workspaceRoot: string, cwd: string): string | undefined {
+  const relativeCwd = relative(workspaceRoot, cwd);
+  if (!relativeCwd) {
+    return ".";
+  }
+  if (relativeCwd.startsWith("..")) {
+    return undefined;
+  }
+  return relativeCwd;
 }
 
 function shouldShowByDefault(

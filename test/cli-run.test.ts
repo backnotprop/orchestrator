@@ -243,15 +243,7 @@ test("CLI run --background creates a managed parent task", async () => {
         kind: "parent",
         id: launched.id,
         taskId: launched.taskId,
-        args: [
-          "interrupt",
-          launched.id,
-          "--children",
-          "--json",
-          "--compact",
-          "--workspace",
-          workspaceRoot,
-        ],
+        args: ["interrupt", launched.id, "--children", "--json", "--compact"],
       });
     } else {
       assert.equal(launched.stop, undefined);
@@ -301,16 +293,12 @@ test("CLI run --background creates a managed parent task", async () => {
       String(AGENT_CONTROL_PREVIEW_MAX_BYTES),
       "--json",
       "--compact",
-      "--workspace",
-      workspaceRoot,
     ]);
     assert.deepEqual(parsedCompactRead.commands?.events?.args, [
       "events",
       launched.id,
       "--json",
       "--compact",
-      "--workspace",
-      workspaceRoot,
     ]);
     assert.deepEqual(parsedCompactRead.commands?.agentEvents?.args, [
       "events",
@@ -318,8 +306,6 @@ test("CLI run --background creates a managed parent task", async () => {
       "--agent-only",
       "--json",
       "--compact",
-      "--workspace",
-      workspaceRoot,
     ]);
   }, "orchestrator-cli-run-background-");
 });

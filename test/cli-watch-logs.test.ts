@@ -21,9 +21,6 @@ test("CLI launch defaults cwd to --workspace when --cwd is not provided", async 
         "shell",
         "--workspace",
         workspaceRoot,
-        "--allow-disabled-runtime",
-        "--allow-shell-command",
-        command,
         "--json",
         command,
       ]);
@@ -54,9 +51,6 @@ test("CLI logs, events, and watch work while a task is running", async () => {
       "shell",
       "--workspace",
       workspaceRoot,
-      "--allow-disabled-runtime",
-      "--allow-shell-command",
-      command,
       "--json",
       command,
     ]);
@@ -102,9 +96,6 @@ test("CLI watch --json emits only parseable task events", async () => {
       "shell",
       "--workspace",
       workspaceRoot,
-      "--allow-disabled-runtime",
-      "--allow-shell-command",
-      command,
       "--json",
       command,
     ]);
@@ -163,7 +154,6 @@ test("CLI watch --agent-only --json streams only normalized agent events", async
       workspaceRoot,
       plan: customJsonlPlan(command, workspaceRoot),
       name: "agent-only watch",
-      allowedShellCommands: [command],
     });
     const shortTaskId = handle.task.taskId.slice(0, 8);
 
@@ -201,9 +191,6 @@ test("CLI logs --follow streams raw output until the task exits", async () => {
       "shell",
       "--workspace",
       workspaceRoot,
-      "--allow-disabled-runtime",
-      "--allow-shell-command",
-      command,
       "--json",
       command,
     ]);

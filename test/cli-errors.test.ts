@@ -23,14 +23,12 @@ test("CLI --json errors are machine-readable", async () => {
       taskId: "json-error-alpha-00000001",
       plan: shellPlan(command, workspaceRoot),
       name: "json error alpha",
-      allowedShellCommands: [command],
     });
     await launchTask({
       workspaceRoot,
       taskId: "json-error-beta-00000001",
       plan: shellPlan(command, workspaceRoot),
       name: "json error beta",
-      allowedShellCommands: [command],
     });
 
     try {
@@ -291,31 +289,6 @@ test("CLI --json errors are machine-readable", async () => {
       assert.equal(parsed.error.reason, "unknown_runtime");
       assert.equal(parsed.error.input, "missing-runtime");
       assert.match(parsed.error.hint ?? "", /help --json --compact/);
-    }
-
-    try {
-      await runCli(workspaceRoot, [
-        "launch",
-        "shell",
-        "--workspace",
-        workspaceRoot,
-        "--allow-disabled-runtime",
-        "--json",
-        "--compact",
-        "printf hi",
-      ]);
-      assert.fail("Expected shell launch without allowlisted command to fail.");
-    } catch (error) {
-      const stderr = error instanceof Error && "stderr" in error ? String(error.stderr) : "";
-      const parsed = JSON.parse(stderr) as {
-        schemaVersion: number;
-        error: { name: string; reason?: string; input?: string; hint?: string };
-      };
-      assert.equal(parsed.schemaVersion, 1);
-      assert.equal(parsed.error.name, "TaskSupervisorSafetyError");
-      assert.equal(parsed.error.reason, "shell_command_not_allowlisted");
-      assert.equal(parsed.error.input, "printf hi");
-      assert.match(parsed.error.hint ?? "", /--allow-shell-command/);
     }
 
     await withTempWorkspace(async (badConfigRoot) => {

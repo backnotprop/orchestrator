@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
+import { getOrchestratorDir, getTaskPaths } from "@backnotprop/orchestrator-core";
 import type { AgentTaskRecord, TaskStatus } from "@backnotprop/orchestrator-core";
 
 const execFileAsync = promisify(execFile);
@@ -15,9 +16,18 @@ export async function withTempWorkspace<T>(
   prefix = "orchestrator-test-",
 ): Promise<T> {
   const workspaceRoot = await realpath(await mkdtemp(join(tmpdir(), prefix)));
+  const previousHome = process.env.HOME;
+  const previousXdgConfigHome = process.env.XDG_CONFIG_HOME;
+  const previousOrchestratorHome = process.env.ORCHESTRATOR_HOME;
+  process.env.HOME = workspaceRoot;
+  process.env.XDG_CONFIG_HOME = join(workspaceRoot, ".config");
+  process.env.ORCHESTRATOR_HOME = join(workspaceRoot, ".orchestrator");
   try {
     return await fn(workspaceRoot);
   } finally {
+    restoreEnv("HOME", previousHome);
+    restoreEnv("XDG_CONFIG_HOME", previousXdgConfigHome);
+    restoreEnv("ORCHESTRATOR_HOME", previousOrchestratorHome);
     await removeWorkspace(workspaceRoot);
   }
 }
@@ -39,6 +49,7 @@ export async function runCli(
         ...process.env,
         HOME: workspaceRoot,
         XDG_CONFIG_HOME: join(workspaceRoot, ".config"),
+        ORCHESTRATOR_HOME: join(workspaceRoot, ".orchestrator"),
         ...env,
       },
     },
@@ -50,11 +61,16 @@ export async function runCli(
   };
 }
 
+function restoreEnv(name: string, value: string | undefined): void {
+  if (value === undefined) {
+    delete process.env[name];
+    return;
+  }
+  process.env[name] = value;
+}
+
 export async function readTask(workspaceRoot: string, taskId: string): Promise<AgentTaskRecord> {
-  const raw = await readFile(
-    join(workspaceRoot, ".orchestrator", "tasks", taskId, "task.json"),
-    "utf8",
-  );
+  const raw = await readFile(getTaskPaths({ workspaceRoot }, taskId).taskJson, "utf8");
   return JSON.parse(raw) as AgentTaskRecord;
 }
 
@@ -130,7 +146,7 @@ async function waitForTask(
 }
 
 async function waitForSupervisorExit(workspaceRoot: string, taskId: string): Promise<void> {
-  const requestPath = join(workspaceRoot, ".orchestrator", "run-requests", `${taskId}.json`);
+  const requestPath = join(getOrchestratorDir({}), "run-requests", `${taskId}.json`);
   const startedAt = Date.now();
 
   while (Date.now() - startedAt < 5_000) {

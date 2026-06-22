@@ -8,6 +8,7 @@ import {
   type InterruptTasksResult,
   type InterruptTasksTarget,
   type LogStream,
+  type TaskLocation,
   type TaskEvent,
   type TaskStatus,
 } from "@backnotprop/orchestrator-core";
@@ -27,6 +28,7 @@ export type TaskCommandSummary = {
   status: TaskStatus;
   active: boolean;
   exitCode?: number | null;
+  location?: TaskLocation;
   commands: AgentTaskControlTaskCommands;
   stop?: AgentTaskControlStopTarget;
 };
@@ -48,6 +50,7 @@ export function taskCommandSummary(
     status: task.status,
     active,
     ...(task.exitCode !== undefined ? { exitCode: task.exitCode } : {}),
+    ...(task.location ? { location: task.location } : {}),
     commands: taskControlCommands(id, options.stopArgsSuffix ?? []),
     ...(active ? { stop: taskStopTarget(task, id, options.stopArgsSuffix ?? []) } : {}),
   };

@@ -72,7 +72,6 @@ export type HeadlessAgentRuntimeConfig = {
     isolation: IsolationDefault;
   };
   safety?: {
-    requiresAllowlist?: boolean;
     acceptsShellCommand?: boolean;
   };
 };
@@ -105,7 +104,6 @@ export type AgentLaunchPlan = {
   handlesOwnAuth: boolean;
   enabled: boolean;
   safety: {
-    requiresAllowlist: boolean;
     acceptsShellCommand: boolean;
   };
   stdin?: {

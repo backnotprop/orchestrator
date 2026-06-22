@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -33,6 +33,7 @@ type ToolDetails = {
     runtime: string;
     status: string;
     name?: string;
+    location?: { kind: string; workspaceRoot?: string; cwd?: string };
   };
   retrievalStatus?: "completed" | "timeout";
   tasks?: Array<{
@@ -40,6 +41,7 @@ type ToolDetails = {
     runtime: string;
     status: string;
     name?: string;
+    location?: { kind: string; workspaceRoot?: string; cwd?: string };
   }>;
   interrupted?: Array<{
     taskId: string;
@@ -76,12 +78,29 @@ type ToolDetails = {
 const fixturesDir = fileURLToPath(new URL("./fixtures/", import.meta.url));
 
 async function withTempWorkspace<T>(fn: (workspaceRoot: string) => Promise<T>): Promise<T> {
-  const workspaceRoot = await mkdtemp(join(tmpdir(), "orchestrator-agent-tools-"));
+  const workspaceRoot = await realpath(await mkdtemp(join(tmpdir(), "orchestrator-agent-tools-")));
+  const previousHome = process.env.HOME;
+  const previousXdgConfigHome = process.env.XDG_CONFIG_HOME;
+  const previousOrchestratorHome = process.env.ORCHESTRATOR_HOME;
+  process.env.HOME = workspaceRoot;
+  process.env.XDG_CONFIG_HOME = join(workspaceRoot, ".config");
+  process.env.ORCHESTRATOR_HOME = join(workspaceRoot, ".orchestrator");
   try {
     return await fn(workspaceRoot);
   } finally {
+    restoreEnv("HOME", previousHome);
+    restoreEnv("XDG_CONFIG_HOME", previousXdgConfigHome);
+    restoreEnv("ORCHESTRATOR_HOME", previousOrchestratorHome);
     await rm(workspaceRoot, { recursive: true, force: true });
   }
+}
+
+function restoreEnv(name: string, value: string | undefined): void {
+  if (value === undefined) {
+    delete process.env[name];
+    return;
+  }
+  process.env[name] = value;
 }
 
 function codexFixturePlan(fixturePath: string, cwd: string): AgentLaunchPlan {
@@ -100,7 +119,6 @@ function codexFixturePlan(fixturePath: string, cwd: string): AgentLaunchPlan {
     handlesOwnAuth: false,
     enabled: true,
     safety: {
-      requiresAllowlist: false,
       acceptsShellCommand: false,
     },
   };
@@ -122,7 +140,6 @@ function shellPlan(command: string, cwd: string): AgentLaunchPlan {
     handlesOwnAuth: false,
     enabled: true,
     safety: {
-      requiresAllowlist: false,
       acceptsShellCommand: false,
     },
   };
@@ -201,7 +218,6 @@ test("parent agent tools manage a background Orchestrator task", async () => {
       parentRunId: "run-agent-tools",
       parentSessionId: () => "session-agent-tools",
       allowDisabledRuntime: true,
-      allowedShellCommands: [command],
       configEnv: {
         HOME: workspaceRoot,
         XDG_CONFIG_HOME: join(workspaceRoot, ".config"),
@@ -291,6 +307,80 @@ test("parent agent tools manage a background Orchestrator task", async () => {
   });
 });
 
+test("parent agent tools can launch children across workspaces", async () => {
+  await withTempWorkspace(async (workspaceRoot) => {
+    const repoA = `${workspaceRoot}/repo-a`;
+    const repoB = `${workspaceRoot}/repo-b`;
+    const repoASubdir = `${repoA}/packages/api`;
+    await mkdir(repoASubdir, { recursive: true });
+    await mkdir(repoB, { recursive: true });
+
+    const command = "pwd";
+    const tools = createOrchestratorAgentTools({
+      workspaceRoot: repoB,
+      allowDisabledRuntime: true,
+      configEnv: {
+        HOME: workspaceRoot,
+        XDG_CONFIG_HOME: join(workspaceRoot, ".config"),
+        ORCHESTRATOR_HOME: join(workspaceRoot, ".orchestrator"),
+      },
+      backgroundLauncher: async (input) => {
+        const handle = await launchTask(input);
+        handle.completed.catch(() => {});
+        return handle.task;
+      },
+    });
+
+    const launch = await executeTool<ToolDetails>(getTool(tools, "launch_agent"), {
+      runtime: "shell",
+      instructions: command,
+      name: "repo a child",
+      workspace: repoA,
+      cwd: "packages/api",
+      labels: { suite: "parent-tool", component: "api" },
+    });
+    const taskId = launch.details.task?.taskId;
+    assert.ok(taskId);
+    assert.equal(launch.details.task?.location?.workspaceRoot, repoA);
+    assert.equal(launch.details.task?.location?.cwd, repoASubdir);
+
+    const read = await executeTool<ToolDetails>(getTool(tools, "read_agent"), {
+      taskId: taskId.slice(0, 8),
+      wait: true,
+      timeoutMs: 5_000,
+    });
+    assert.equal(read.details.output, `${repoASubdir}\n`);
+
+    const currentWorkspaceList = await executeTool<ToolDetails>(getTool(tools, "list_agents"), {});
+    assert.equal(
+      currentWorkspaceList.details.tasks?.some((task) => task.taskId === taskId),
+      false,
+    );
+
+    const repoAList = await executeTool<ToolDetails>(getTool(tools, "list_agents"), {
+      workspace: repoA,
+    });
+    assert.equal(
+      repoAList.details.tasks?.some((task) => task.taskId === taskId),
+      true,
+    );
+
+    const allWorkspaceList = await executeTool<ToolDetails>(getTool(tools, "list_agents"), {
+      allWorkspaces: true,
+    });
+    assert.equal(
+      allWorkspaceList.details.tasks?.some((task) => task.taskId === taskId),
+      true,
+    );
+
+    const persisted = (await listTasks({ workspaceRoot })).find((task) => task.taskId === taskId);
+    assert.equal(persisted?.location?.kind, "local");
+    assert.equal(persisted?.location?.workspaceRoot, repoA);
+    assert.equal(persisted?.location?.cwd, repoASubdir);
+    assert.deepEqual(persisted?.labels, { suite: "parent-tool", component: "api" });
+  });
+});
+
 test("interrupt_agent accepts short task ids", async () => {
   await withTempWorkspace(async (workspaceRoot) => {
     const command = 'node -e "setTimeout(() => {}, 5000)"';
@@ -298,7 +388,6 @@ test("interrupt_agent accepts short task ids", async () => {
     const tools = createOrchestratorAgentTools({
       workspaceRoot,
       allowDisabledRuntime: true,
-      allowedShellCommands: [command],
       configEnv: {
         HOME: workspaceRoot,
         XDG_CONFIG_HOME: join(workspaceRoot, ".config"),
@@ -458,7 +547,6 @@ test("read_agent wait returns timeout without claiming completion", async () => 
     const tools = createOrchestratorAgentTools({
       workspaceRoot,
       allowDisabledRuntime: true,
-      allowedShellCommands: [command],
       configEnv: {
         HOME: workspaceRoot,
         XDG_CONFIG_HOME: join(workspaceRoot, ".config"),
@@ -561,7 +649,6 @@ test("read_agent event fallback keeps final task usage over later session usage"
         handlesOwnAuth: false,
         enabled: true,
         safety: {
-          requiresAllowlist: false,
           acceptsShellCommand: false,
         },
       },
@@ -594,7 +681,6 @@ test("parent agent tools emit passive trace events", async () => {
     const tools = createOrchestratorAgentTools({
       workspaceRoot,
       allowDisabledRuntime: true,
-      allowedShellCommands: [command],
       configEnv: {
         HOME: workspaceRoot,
         XDG_CONFIG_HOME: join(workspaceRoot, ".config"),
@@ -668,7 +754,6 @@ test("read_agent wait emits progress trace events while waiting", async () => {
     const tools = createOrchestratorAgentTools({
       workspaceRoot,
       allowDisabledRuntime: true,
-      allowedShellCommands: [command],
       configEnv: {
         HOME: workspaceRoot,
         XDG_CONFIG_HOME: join(workspaceRoot, ".config"),

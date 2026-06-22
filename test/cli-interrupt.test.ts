@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { mkdir } from "node:fs/promises";
 import test from "node:test";
 import type { AgentTaskRecord } from "@backnotprop/orchestrator-core";
 import { launchTask } from "@backnotprop/orchestrator-core/tasks";
@@ -20,9 +21,6 @@ test("CLI interrupt cancels a task launched by a detached supervisor", async () 
       "shell",
       "--workspace",
       workspaceRoot,
-      "--allow-disabled-runtime",
-      "--allow-shell-command",
-      command,
       "--json",
       command,
     ]);
@@ -114,9 +112,6 @@ test("CLI interrupt succeeds when the task is already terminal", async () => {
       workspaceRoot,
       "--name",
       "already done",
-      "--allow-disabled-runtime",
-      "--allow-shell-command",
-      command,
       "--json",
       "--compact",
       command,
@@ -163,7 +158,6 @@ test("CLI interrupt protects parent tasks and supports task-only", async () => {
       taskId: "cli-parent-task-only-00000001",
       plan: orchestratorPlan(command, workspaceRoot),
       name: "cli parent",
-      allowedShellCommands: [command],
     });
     const child = await launchTask({
       workspaceRoot,
@@ -174,7 +168,6 @@ test("CLI interrupt protects parent tasks and supports task-only", async () => {
         parentRunId: parent.task.taskId,
         parentTaskId: parent.task.taskId,
       },
-      allowedShellCommands: [command],
     });
 
     await Promise.all([
@@ -236,7 +229,6 @@ test("CLI interrupt can stop parent children and ps groups", async () => {
       taskId: "cli-parent-children-00000001",
       plan: orchestratorPlan(command, workspaceRoot),
       name: "parent children",
-      allowedShellCommands: [command],
     });
     const child = await launchTask({
       workspaceRoot,
@@ -247,7 +239,6 @@ test("CLI interrupt can stop parent children and ps groups", async () => {
         parentRunId: parent.task.taskId,
         parentTaskId: parent.task.taskId,
       },
-      allowedShellCommands: [command],
     });
 
     await Promise.all([
@@ -280,7 +271,6 @@ test("CLI interrupt can stop parent children and ps groups", async () => {
       taskId: "cli-group-parent-00000001",
       plan: orchestratorPlan(command, workspaceRoot),
       name: "group parent",
-      allowedShellCommands: [command],
     });
     const groupChild = await launchTask({
       workspaceRoot,
@@ -291,7 +281,6 @@ test("CLI interrupt can stop parent children and ps groups", async () => {
         parentRunId: groupParent.task.taskId,
         parentTaskId: groupParent.task.taskId,
       },
-      allowedShellCommands: [command],
     });
     await Promise.all([
       waitUntilRunning(workspaceRoot, groupParent.task.taskId),
@@ -327,7 +316,6 @@ test("CLI interrupt can stop parent children and ps groups", async () => {
       taskId: "cli-ungrouped-00000001",
       plan: shellPlan(ungroupedCommand, workspaceRoot),
       name: "ungrouped",
-      allowedShellCommands: [ungroupedCommand],
     });
     await ungrouped.completed;
 
@@ -369,21 +357,18 @@ test("CLI interrupt can stop a selected subset of task ids", async () => {
       taskId: "cli-selective-keep-00000001",
       plan: shellPlan(command, workspaceRoot),
       name: "keep running",
-      allowedShellCommands: [command],
     });
     const first = await launchTask({
       workspaceRoot,
       taskId: "cli-selective-first-00000001",
       plan: shellPlan(command, workspaceRoot),
       name: "stop first",
-      allowedShellCommands: [command],
     });
     const second = await launchTask({
       workspaceRoot,
       taskId: "cli-selective-second-00000001",
       plan: shellPlan(command, workspaceRoot),
       name: "stop second",
-      allowedShellCommands: [command],
     });
 
     await Promise.all([
@@ -465,7 +450,6 @@ test("CLI interrupt --active stops all active tasks in the selected workspace", 
       taskId: "cli-active-parent-00000001",
       plan: orchestratorPlan(runningCommand, workspaceRoot),
       name: "active parent",
-      allowedShellCommands: [runningCommand],
     });
     const child = await launchTask({
       workspaceRoot,
@@ -476,21 +460,18 @@ test("CLI interrupt --active stops all active tasks in the selected workspace", 
         parentRunId: parent.task.taskId,
         parentTaskId: parent.task.taskId,
       },
-      allowedShellCommands: [runningCommand],
     });
     const manual = await launchTask({
       workspaceRoot,
       taskId: "cli-active-manual-00000001",
       plan: shellPlan(runningCommand, workspaceRoot),
       name: "active manual",
-      allowedShellCommands: [runningCommand],
     });
     const done = await launchTask({
       workspaceRoot,
       taskId: "cli-active-done-00000001",
       plan: shellPlan(doneCommand, workspaceRoot),
       name: "already done",
-      allowedShellCommands: [doneCommand],
     });
 
     await done.completed;
@@ -578,6 +559,72 @@ test("CLI interrupt --active stops all active tasks in the selected workspace", 
   }, "orchestrator-cli-interrupt-active-");
 });
 
+test("CLI interrupt -A --active requires --yes and stops active tasks across workspaces", async () => {
+  await withTempWorkspace(async (workspaceRoot) => {
+    const repoA = `${workspaceRoot}/repo-a`;
+    const repoB = `${workspaceRoot}/repo-b`;
+    await mkdir(repoA, { recursive: true });
+    await mkdir(repoB, { recursive: true });
+
+    const command = 'node -e "setTimeout(() => {}, 5000)"';
+    const first = await launchTask({
+      workspaceRoot: repoA,
+      taskId: "cli-active-all-a-00000001",
+      plan: shellPlan(command, repoA),
+      name: "active all a",
+    });
+    const second = await launchTask({
+      workspaceRoot: repoB,
+      taskId: "cli-active-all-b-00000001",
+      plan: shellPlan(command, repoB),
+      name: "active all b",
+    });
+
+    try {
+      await Promise.all([
+        waitUntilRunning(workspaceRoot, first.task.taskId),
+        waitUntilRunning(workspaceRoot, second.task.taskId),
+      ]);
+
+      try {
+        await runCli(workspaceRoot, ["interrupt", "-A", "--active", "--json"]);
+        assert.fail("Expected all-workspace active interrupt without --yes to fail.");
+      } catch (error) {
+        const stderr = error instanceof Error && "stderr" in error ? String(error.stderr) : "";
+        const parsed = JSON.parse(stderr) as {
+          error: { reason?: string; input?: string; hint?: string };
+        };
+        assert.equal(parsed.error.reason, "confirmation_required");
+        assert.equal(parsed.error.input, "-A --active");
+        assert.match(parsed.error.hint ?? "", /--yes/);
+      }
+
+      const result = await runCli(workspaceRoot, [
+        "interrupt",
+        "-A",
+        "--active",
+        "--yes",
+        "--reason",
+        "all cleanup",
+        "--json",
+      ]);
+      const parsed = JSON.parse(result.stdout) as {
+        summary: { interrupted: number; skipped: number; failed: number };
+        interrupted: Array<{ taskId: string; status: string; error?: string }>;
+      };
+      assert.deepEqual(parsed.summary, { interrupted: 2, skipped: 0, failed: 0 });
+      assert.deepEqual(
+        parsed.interrupted.map((task) => task.taskId).sort(),
+        [first.task.taskId, second.task.taskId].sort(),
+      );
+      assert.ok(parsed.interrupted.every((task) => task.status === "cancelled"));
+      assert.ok(parsed.interrupted.every((task) => task.error === "all cleanup"));
+    } finally {
+      await Promise.allSettled([first.completed, second.completed]);
+    }
+  }, "orchestrator-cli-interrupt-active-all-workspaces-");
+});
+
 test("CLI interrupt --compact without --json returns a machine-readable error", async () => {
   await withTempWorkspace(async (workspaceRoot) => {
     try {
@@ -630,14 +677,12 @@ test("CLI interrupt --json --compact returns concise cleanup summary", async () 
       taskId: "cli-compact-interrupt-first-00000001",
       plan: shellPlan(runningCommand, workspaceRoot),
       name: "compact interrupt first",
-      allowedShellCommands: [runningCommand],
     });
     const second = await launchTask({
       workspaceRoot,
       taskId: "cli-compact-interrupt-second-00000001",
       plan: shellPlan(runningCommand, workspaceRoot),
       name: "compact interrupt second",
-      allowedShellCommands: [runningCommand],
     });
 
     await Promise.all([

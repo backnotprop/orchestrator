@@ -77,9 +77,6 @@ test("CLI accepts common options before commands and portable args can override 
       "--compact",
       "--name",
       "leading options",
-      "--allow-disabled-runtime",
-      "--allow-shell-command",
-      command,
       command,
       "--workspace",
       workspaceRoot,
@@ -120,6 +117,10 @@ test("CLI help teaches agents the job-control contract", async () => {
       result.stdout.toString(),
       /orchestrator doctor \[--agent-dir <path>\] \[--session-dir <path>\] \[--json \[--compact\]\]/,
     );
+    assert.match(
+      result.stdout.toString(),
+      /orchestrator launch -f <manifest\.json\|-> --json \[--compact \[--brief\]\]/,
+    );
     assert.match(result.stdout.toString(), /doctor --json --compact/);
     assert.match(result.stdout.toString(), /orchestrator ps/);
     assert.match(
@@ -145,10 +146,14 @@ test("CLI help teaches agents the job-control contract", async () => {
       result.stdout.toString(),
       /Prefer launch --json --compact and ps --json --compact/,
     );
+    assert.match(result.stdout.toString(), /launch -f <manifest\.json\|->/);
     assert.match(result.stdout.toString(), /Common options like --workspace/);
     assert.match(result.stdout.toString(), /commands\.\*\.args/);
     assert.match(result.stdout.toString(), /orchestrator ps --all --json --compact/);
-    assert.match(result.stdout.toString(), /orchestrator list \[--status <status>\] \[--json\]/);
+    assert.match(
+      result.stdout.toString(),
+      /orchestrator list \[--status <status>\] \[-A\|--all-workspaces\] \[--json\]/,
+    );
     assert.match(
       result.stdout.toString(),
       /orchestrator logs <task-id\|prefix> .* \[--json \[--compact\]\]/,
@@ -266,6 +271,12 @@ test("CLI JSON help exposes a machine-readable agent contract", async () => {
     assert.ok(
       help.agentInstructions.some(
         (instruction) =>
+          instruction.includes("launch -f <manifest.json|->") && instruction.includes("one call"),
+      ),
+    );
+    assert.ok(
+      help.agentInstructions.some(
+        (instruction) =>
           instruction.includes("Common options") && instruction.includes("--workspace"),
       ),
     );
@@ -339,7 +350,14 @@ test("CLI JSON help exposes a machine-readable agent contract", async () => {
       help.agentInstructions.some(
         (instruction) =>
           instruction.includes("interrupt --active") &&
-          instruction.includes("deliberate workspace-wide cleanup"),
+          instruction.includes("deliberate workspace cleanup"),
+      ),
+    );
+    assert.ok(
+      help.agentInstructions.some(
+        (instruction) =>
+          instruction.includes("interrupt -A --active --yes") &&
+          instruction.includes("all-workspace cleanup"),
       ),
     );
     assert.ok(help.agentInstructions.some((instruction) => instruction.includes("JSON on stderr")));
@@ -361,9 +379,27 @@ test("CLI JSON help exposes a machine-readable agent contract", async () => {
         (command) => command.name === "launch" && command.usage.includes("--brief"),
       ),
     );
+    assert.ok(
+      help.commands.some(
+        (command) =>
+          command.name === "launch" &&
+          command.usage.includes("launch -f <manifest.json|->") &&
+          command.options.includes("--file <manifest.json|->"),
+      ),
+    );
     assert.ok(help.commands.some((command) => command.name === "ps"));
     assert.ok(
       help.commands.some((command) => command.name === "ps" && command.usage.includes("--brief")),
+    );
+    assert.ok(
+      help.commands.some(
+        (command) =>
+          command.name === "ps" &&
+          command.usage.includes("-A|--all-workspaces") &&
+          command.usage.includes("--cwd <path>") &&
+          command.options.includes("-A") &&
+          command.options.includes("--all-workspaces"),
+      ),
     );
     assert.ok(
       help.commands.some(
@@ -406,9 +442,21 @@ test("CLI JSON help exposes a machine-readable agent contract", async () => {
     assert.ok(help.examples.some((example) => example === "orchestrator doctor"));
     assert.ok(help.examples.some((example) => example === "orchestrator doctor --json --compact"));
     assert.ok(help.examples.some((example) => example === "orchestrator help --json --compact"));
+    assert.ok(
+      help.examples.some(
+        (example) => example === "orchestrator launch -f agents.json --json --compact --brief",
+      ),
+    );
     assert.ok(help.examples.some((example) => example === "orchestrator ps"));
     assert.ok(
       help.examples.some((example) => example === "orchestrator ps --all --json --compact"),
+    );
+    assert.ok(help.examples.some((example) => example === "orchestrator ps -A"));
+    assert.ok(help.examples.some((example) => example === "orchestrator ps -A --all"));
+    assert.ok(
+      help.examples.some(
+        (example) => example === "orchestrator ps -A --json --compact --active --brief",
+      ),
     );
     assert.ok(help.examples.some((example) => example === "orchestrator ps --watch"));
     assert.ok(
@@ -422,7 +470,15 @@ test("CLI JSON help exposes a machine-readable agent contract", async () => {
     assert.ok(
       help.examples.some(
         (example) =>
-          example === 'orchestrator interrupt --active --json --compact --reason "cleanup"',
+          example ===
+          'orchestrator interrupt --active --json --compact --reason "workspace cleanup"',
+      ),
+    );
+    assert.ok(
+      help.examples.some(
+        (example) =>
+          example ===
+          'orchestrator interrupt -A --active --yes --json --compact --reason "all-workspace cleanup"',
       ),
     );
     assert.ok(!help.examples.some((example) => example === "orchestrator list --json"));
@@ -457,6 +513,13 @@ test("CLI JSON help exposes a machine-readable agent contract", async () => {
         (workflow) =>
           workflow.name === "start-and-watch" &&
           workflow.steps.some((step) => step.includes("Add --brief to compact launch")),
+      ),
+    );
+    assert.ok(
+      help.workflows.some(
+        (workflow) =>
+          workflow.name === "start-and-watch" &&
+          workflow.steps.some((step) => step.includes("launch -f <manifest.json|->")),
       ),
     );
     assert.ok(
@@ -532,6 +595,7 @@ test("CLI compact JSON help exposes a small agent command contract", async () =>
     assert.ok(help.commands.some((command) => command.name === "launch"));
     assert.ok(help.commands.some((command) => command.name === "help"));
     assert.ok(help.commands.every((command) => command.options === undefined));
+    assert.ok(help.agentQuickStart.some((step) => step.includes("launch -f <manifest.json|->")));
     assert.ok(help.agentQuickStart.some((step) => step.includes("commands.waitPreview.args")));
     assert.ok(
       help.agentQuickStart.some(
@@ -912,7 +976,7 @@ test("CLI compact config discovery preserves explicit config and portable follow
       fullHelp: { args: string[] };
     };
     assert.equal(compactHelp.canLaunchChildAgents, true);
-    assert.deepEqual(compactHelp.runtimeIds, ["external-agent"]);
+    assert.deepEqual([...compactHelp.runtimeIds].sort(), ["external-agent", "shell"]);
     assert.deepEqual(compactHelp.fullHelp.args, [
       "help",
       "--json",
@@ -946,7 +1010,10 @@ test("CLI compact config discovery preserves explicit config and portable follow
     };
     assert.equal(compactDoctor.canRunParentAgent, true);
     assert.equal(compactDoctor.canLaunchChildAgents, true);
-    assert.deepEqual(compactDoctor.runtimeSummary.availableIds, ["external-agent"]);
+    assert.deepEqual([...compactDoctor.runtimeSummary.availableIds].sort(), [
+      "external-agent",
+      "shell",
+    ]);
     assert.equal(compactDoctor.parent.canRun, true);
     assert.deepEqual(compactDoctor.parent.run?.argsPrefix, [
       "run",
@@ -1014,8 +1081,6 @@ test("CLI compact config discovery preserves explicit config and portable follow
       String(AGENT_CONTROL_PREVIEW_MAX_BYTES),
       "--json",
       "--compact",
-      "--workspace",
-      workspaceRoot,
     ]);
 
     const read = await execFileAsync(

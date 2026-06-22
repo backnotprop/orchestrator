@@ -28,9 +28,6 @@ test("CLI ps shows grouped operations view and exposes JSON rows", async () => {
       workspaceRoot,
       "--name",
       "check email",
-      "--allow-disabled-runtime",
-      "--allow-shell-command",
-      command,
       "--json",
       command,
     ]);
@@ -93,14 +90,12 @@ test("CLI ps displays actionable unique task id prefixes", async () => {
       taskId: "shared-prefix-alpha-00000001",
       plan: shellPlan(command, workspaceRoot),
       name: "shared alpha",
-      allowedShellCommands: [command],
     });
     const second = await launchTask({
       workspaceRoot,
       taskId: "shared-prefix-beta-00000001",
       plan: shellPlan(command, workspaceRoot),
       name: "shared beta",
-      allowedShellCommands: [command],
     });
     await Promise.all([first.completed, second.completed]);
 
@@ -130,12 +125,13 @@ test("CLI ps exposes compact machine-control JSON", async () => {
   await withTempWorkspace(async (workspaceRoot) => {
     const runningCommand = 'node -e "setTimeout(() => {}, 5000)"';
     const doneCommand = "printf done";
+    const configPath = `${workspaceRoot}/orchestrator.config.json`;
+    await writeFile(configPath, `${JSON.stringify({ agents: {} }, null, 2)}\n`);
     const parent = await launchTask({
       workspaceRoot,
       taskId: "compact-parent-00000001",
       plan: orchestratorPlan(runningCommand, workspaceRoot),
       name: "repo plan",
-      allowedShellCommands: [runningCommand],
     });
     const child = await launchTask({
       workspaceRoot,
@@ -146,7 +142,6 @@ test("CLI ps exposes compact machine-control JSON", async () => {
         parentRunId: parent.task.taskId,
         parentTaskId: parent.task.taskId,
       },
-      allowedShellCommands: [runningCommand],
     });
     const doneChild = await launchTask({
       workspaceRoot,
@@ -157,7 +152,6 @@ test("CLI ps exposes compact machine-control JSON", async () => {
         parentRunId: parent.task.taskId,
         parentTaskId: parent.task.taskId,
       },
-      allowedShellCommands: [doneCommand],
     });
 
     await doneChild.completed;
@@ -200,7 +194,6 @@ test("CLI ps exposes compact machine-control JSON", async () => {
       assertOneJsonLine(compactOutput.stdout);
       assert.doesNotMatch(compactOutput.stdout, /"rows"/);
       assert.doesNotMatch(compactOutput.stdout, /"taskDir"/);
-      assert.doesNotMatch(compactOutput.stdout, /"cwd"/);
 
       const compact = JSON.parse(compactOutput.stdout) as {
         schemaVersion: number;
@@ -243,6 +236,7 @@ test("CLI ps exposes compact machine-control JSON", async () => {
           runtime: string;
           status: string;
           active: boolean;
+          location?: { kind: string; workspaceRoot?: string; cwd?: string };
           commands: {
             read: { args: string[] };
             readPreview: { args: string[] };
@@ -275,15 +269,7 @@ test("CLI ps exposes compact machine-control JSON", async () => {
         kind: "group",
         id: parentGroupId,
         groupId: parent.task.taskId,
-        args: [
-          "interrupt",
-          "--group",
-          parentGroupId,
-          "--json",
-          "--compact",
-          "--workspace",
-          workspaceRoot,
-        ],
+        args: ["interrupt", "--group", parentGroupId, "--json", "--compact"],
       });
       assert.equal(parentGroupId, parent.task.taskId.slice(0, 8));
       assert.equal(compact.groups[0]?.groupId, parent.task.taskId);
@@ -315,8 +301,6 @@ test("CLI ps exposes compact machine-control JSON", async () => {
         String(AGENT_CONTROL_PREVIEW_MAX_BYTES),
         "--json",
         "--compact",
-        "--workspace",
-        workspaceRoot,
       ]);
       assert.deepEqual(compact.groups[0]?.commands.waitPreview.args, [
         "read",
@@ -328,35 +312,19 @@ test("CLI ps exposes compact machine-control JSON", async () => {
         String(AGENT_CONTROL_PREVIEW_MAX_BYTES),
         "--json",
         "--compact",
-        "--workspace",
-        workspaceRoot,
       ]);
       assert.deepEqual(compact.groups[0]?.stop, {
         kind: "group",
         id: parentGroupId,
         groupId: parent.task.taskId,
-        args: [
-          "interrupt",
-          "--group",
-          parentGroupId,
-          "--json",
-          "--compact",
-          "--workspace",
-          workspaceRoot,
-        ],
+        args: ["interrupt", "--group", parentGroupId, "--json", "--compact"],
       });
       assert.deepEqual(
         compact.tasks.map((task) => task.name),
         ["repo plan", "inspect api"],
       );
       assert.ok(compact.tasks.every((task) => task.active));
-      assert.deepEqual(compact.commands.read.args, [
-        "read",
-        ...compactTaskIds,
-        "--json",
-        "--workspace",
-        workspaceRoot,
-      ]);
+      assert.deepEqual(compact.commands.read.args, ["read", ...compactTaskIds, "--json"]);
       assert.deepEqual(compact.commands.readPreview.args, [
         "read",
         ...compactTaskIds,
@@ -364,8 +332,6 @@ test("CLI ps exposes compact machine-control JSON", async () => {
         String(AGENT_CONTROL_PREVIEW_MAX_BYTES),
         "--json",
         "--compact",
-        "--workspace",
-        workspaceRoot,
       ]);
       assert.deepEqual(compact.commands.wait.args, [
         "read",
@@ -374,8 +340,6 @@ test("CLI ps exposes compact machine-control JSON", async () => {
         "--timeout-ms",
         "300000",
         "--json",
-        "--workspace",
-        workspaceRoot,
       ]);
       assert.deepEqual(compact.commands.waitPreview.args, [
         "read",
@@ -387,15 +351,11 @@ test("CLI ps exposes compact machine-control JSON", async () => {
         String(AGENT_CONTROL_PREVIEW_MAX_BYTES),
         "--json",
         "--compact",
-        "--workspace",
-        workspaceRoot,
       ]);
       assert.deepEqual(compact.tasks[0]?.commands.read.args, [
         "read",
         compact.tasks[0]?.id,
         "--json",
-        "--workspace",
-        workspaceRoot,
       ]);
       assert.deepEqual(compact.tasks[0]?.commands.readPreview.args, [
         "read",
@@ -404,8 +364,6 @@ test("CLI ps exposes compact machine-control JSON", async () => {
         String(AGENT_CONTROL_PREVIEW_MAX_BYTES),
         "--json",
         "--compact",
-        "--workspace",
-        workspaceRoot,
       ]);
       assert.deepEqual(compact.tasks[0]?.commands.wait.args, [
         "read",
@@ -414,8 +372,6 @@ test("CLI ps exposes compact machine-control JSON", async () => {
         "--timeout-ms",
         "300000",
         "--json",
-        "--workspace",
-        workspaceRoot,
       ]);
       assert.deepEqual(compact.tasks[0]?.commands.waitPreview.args, [
         "read",
@@ -427,15 +383,11 @@ test("CLI ps exposes compact machine-control JSON", async () => {
         String(AGENT_CONTROL_PREVIEW_MAX_BYTES),
         "--json",
         "--compact",
-        "--workspace",
-        workspaceRoot,
       ]);
       assert.deepEqual(compact.tasks[0]?.commands.watch.args, [
         "watch",
         compact.tasks[0]?.id,
         "--json",
-        "--workspace",
-        workspaceRoot,
       ]);
       assert.deepEqual(compact.tasks[0]?.commands.logsPreview.args, [
         "logs",
@@ -444,32 +396,24 @@ test("CLI ps exposes compact machine-control JSON", async () => {
         String(AGENT_CONTROL_PREVIEW_MAX_BYTES),
         "--json",
         "--compact",
-        "--workspace",
-        workspaceRoot,
       ]);
       assert.deepEqual(compact.tasks[0]?.commands.agentWatch.args, [
         "watch",
         compact.tasks[0]?.id,
         "--agent-only",
         "--json",
-        "--workspace",
-        workspaceRoot,
       ]);
       assert.deepEqual(compact.tasks[0]?.commands.logs.args, [
         "logs",
         compact.tasks[0]?.id,
         "--json",
         "--compact",
-        "--workspace",
-        workspaceRoot,
       ]);
       assert.deepEqual(compact.tasks[0]?.commands.events.args, [
         "events",
         compact.tasks[0]?.id,
         "--json",
         "--compact",
-        "--workspace",
-        workspaceRoot,
       ]);
       assert.deepEqual(compact.tasks[0]?.commands.agentEvents.args, [
         "events",
@@ -477,9 +421,10 @@ test("CLI ps exposes compact machine-control JSON", async () => {
         "--agent-only",
         "--json",
         "--compact",
-        "--workspace",
-        workspaceRoot,
       ]);
+      assert.equal(compact.tasks[0]?.location?.kind, "local");
+      assert.equal(compact.tasks[0]?.location?.workspaceRoot, workspaceRoot);
+      assert.equal(compact.tasks[0]?.location?.cwd, workspaceRoot);
       assert.equal(compact.tasks[0]?.stop?.kind, "parent");
       assert.equal(compact.tasks[0]?.stop?.taskId, parent.task.taskId);
       assert.deepEqual(compact.tasks[0]?.stop?.args, [
@@ -488,8 +433,48 @@ test("CLI ps exposes compact machine-control JSON", async () => {
         "--children",
         "--json",
         "--compact",
+      ]);
+
+      const configScopedOutput = await runCli(workspaceRoot, [
+        "ps",
         "--workspace",
         workspaceRoot,
+        "--config",
+        configPath,
+        "--json",
+        "--compact",
+        "--active",
+      ]);
+      const configScoped = JSON.parse(configScopedOutput.stdout) as {
+        groups: Array<{
+          commands: {
+            ps: { args: string[] };
+            activePs: { args: string[] };
+          };
+        }>;
+      };
+      assert.deepEqual(configScoped.groups[0]?.commands.ps.args, [
+        "ps",
+        "--parent",
+        parentGroupId,
+        "--json",
+        "--compact",
+        "--workspace",
+        workspaceRoot,
+        "--config",
+        configPath,
+      ]);
+      assert.deepEqual(configScoped.groups[0]?.commands.activePs.args, [
+        "ps",
+        "--parent",
+        parentGroupId,
+        "--json",
+        "--compact",
+        "--active",
+        "--workspace",
+        workspaceRoot,
+        "--config",
+        configPath,
       ]);
 
       const runtimeFiltered = await runCli(workspaceRoot, [
@@ -529,14 +514,7 @@ test("CLI ps exposes compact machine-control JSON", async () => {
         kind: "task",
         id: runtimeCompact.tasks[0]?.id,
         taskId: child.task.taskId,
-        args: [
-          "interrupt",
-          runtimeCompact.tasks[0]?.id,
-          "--json",
-          "--compact",
-          "--workspace",
-          workspaceRoot,
-        ],
+        args: ["interrupt", runtimeCompact.tasks[0]?.id, "--json", "--compact"],
       });
 
       const briefFiltered = await runCli(workspaceRoot, [
@@ -571,15 +549,7 @@ test("CLI ps exposes compact machine-control JSON", async () => {
         kind: "group",
         id: parentGroupId,
         groupId: parent.task.taskId,
-        args: [
-          "interrupt",
-          "--group",
-          parentGroupId,
-          "--json",
-          "--compact",
-          "--workspace",
-          workspaceRoot,
-        ],
+        args: ["interrupt", "--group", parentGroupId, "--json", "--compact"],
       });
       assert.deepEqual(briefCompact.commands.waitPreview.args, [
         "read",
@@ -591,8 +561,6 @@ test("CLI ps exposes compact machine-control JSON", async () => {
         String(AGENT_CONTROL_PREVIEW_MAX_BYTES),
         "--json",
         "--compact",
-        "--workspace",
-        workspaceRoot,
       ]);
       assert.deepEqual(briefCompact.tasks[0]?.stop?.args, [
         "interrupt",
@@ -600,8 +568,6 @@ test("CLI ps exposes compact machine-control JSON", async () => {
         "--children",
         "--json",
         "--compact",
-        "--workspace",
-        workspaceRoot,
       ]);
 
       const parentFiltered = await runCli(workspaceRoot, [
@@ -641,15 +607,7 @@ test("CLI ps exposes compact machine-control JSON", async () => {
         kind: "group",
         id: parentGroupId,
         groupId: parent.task.taskId,
-        args: [
-          "interrupt",
-          "--group",
-          parentGroupId,
-          "--json",
-          "--compact",
-          "--workspace",
-          workspaceRoot,
-        ],
+        args: ["interrupt", "--group", parentGroupId, "--json", "--compact"],
       });
     } finally {
       await runCli(workspaceRoot, [
@@ -674,14 +632,12 @@ test("CLI ps --parent ambiguous prefixes are machine-readable", async () => {
       taskId: "ps-parent-ambiguous-00000001",
       plan: orchestratorPlan(command, workspaceRoot),
       name: "ambiguous parent one",
-      allowedShellCommands: [command],
     });
     const second = await launchTask({
       workspaceRoot,
       taskId: "ps-parent-ambiguous-00000002",
       plan: orchestratorPlan(command, workspaceRoot),
       name: "ambiguous parent two",
-      allowedShellCommands: [command],
     });
 
     await Promise.all([
@@ -789,7 +745,6 @@ test("CLI compact ps ids remain usable when old hidden tasks share prefixes", as
       taskId: "collision-old-00000001",
       plan: shellPlan(doneCommand, workspaceRoot),
       name: "old hidden collision",
-      allowedShellCommands: [doneCommand],
     });
     const oldDone = await old.completed;
     const oldRecord = JSON.parse(await readFile(oldDone.paths.taskJson, "utf8")) as AgentTaskRecord;
@@ -812,7 +767,6 @@ test("CLI compact ps ids remain usable when old hidden tasks share prefixes", as
       taskId: "collision-active-00000001",
       plan: shellPlan(runningCommand, workspaceRoot),
       name: "active collision",
-      allowedShellCommands: [runningCommand],
     });
 
     await waitUntilRunning(workspaceRoot, active.task.taskId);
@@ -876,9 +830,6 @@ test("CLI ps --watch refreshes the grouped operations view while a task runs", a
       workspaceRoot,
       "--name",
       "watch group",
-      "--allow-disabled-runtime",
-      "--allow-shell-command",
-      command,
       "--json",
       command,
     ]);
@@ -943,9 +894,6 @@ test("CLI ps --watch streams compact JSON frames", async () => {
       workspaceRoot,
       "--name",
       "watch compact",
-      "--allow-disabled-runtime",
-      "--allow-shell-command",
-      command,
       "--json",
       command,
     ]);

@@ -51,7 +51,7 @@ packages/cli/src/cli.ts
       -> commandRunBackground()
         -> taskId = randomUUID()
         -> writeParentRunRequest()
-           .orchestrator/parent-run-requests/<task-id>.json
+           ~/.orchestrator/parent-run-requests/<task-id>.json
         -> parentRunLaunchPlan({
              runtime: "orchestrator",
              executable: process.execPath,
@@ -59,7 +59,7 @@ packages/cli/src/cli.ts
            })
         -> launchInBackground(launchInput)
           -> writeRunRequest()
-             .orchestrator/run-requests/<task-id>.json
+             ~/.orchestrator/run-requests/<task-id>.json
           -> spawn node cli.ts __run-task <run-request>
           -> waitForTaskRecord()
         -> print parent task id
@@ -69,7 +69,7 @@ detached supervisor process
     -> commandRunTask()
       -> launchTask(launchInput)
         -> initializeTaskFiles()
-           .orchestrator/tasks/<task-id>/
+           ~/.orchestrator/tasks/<task-id>/
         -> spawn node cli.ts __run-parent-task <parent-run-request>
         -> capture stdout/stderr/events/result through normal task machinery
 

@@ -138,16 +138,12 @@ test("CLI compact launch exposes bounded failure follow-up", async () => {
       String(AGENT_CONTROL_PREVIEW_MAX_BYTES),
       "--json",
       "--compact",
-      "--workspace",
-      workspaceRoot,
     ]);
     assert.deepEqual(launched.commands?.events?.args, [
       "events",
       launched.id,
       "--json",
       "--compact",
-      "--workspace",
-      workspaceRoot,
     ]);
     assert.deepEqual(launched.commands?.agentEvents?.args, [
       "events",
@@ -155,8 +151,6 @@ test("CLI compact launch exposes bounded failure follow-up", async () => {
       "--agent-only",
       "--json",
       "--compact",
-      "--workspace",
-      workspaceRoot,
     ]);
     assert.match(launched.error ?? "", /ENOENT/);
     assert.equal(launched.maxBytes, AGENT_CONTROL_PREVIEW_MAX_BYTES);

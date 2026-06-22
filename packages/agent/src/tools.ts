@@ -44,7 +44,6 @@ export type ParentAgentToolContext = {
   parentSessionId?: string | (() => string | undefined);
   configEnv?: Readonly<Record<string, string | undefined>>;
   launchEnv?: Readonly<Record<string, string | undefined>>;
-  allowedShellCommands?: readonly string[];
   allowDisabledRuntime?: boolean;
   parentTaskId?: string;
   backgroundLauncher?: (input: LaunchTaskInput) => Promise<AgentTaskRecord>;
@@ -97,6 +96,7 @@ type TaskSummary = {
   runtime: string;
   status: TaskStatus;
   cwd: string;
+  location?: AgentTaskRecord["location"];
   createdAt: string;
   startedAt?: string;
   finishedAt?: string;
@@ -237,7 +237,9 @@ function createLaunchAgentTool(context: ToolContext): OrchestratorParentTool {
       runtime: Type.String(),
       instructions: Type.String(),
       name: Type.Optional(Type.String()),
+      workspace: Type.Optional(Type.String()),
       cwd: Type.Optional(Type.String()),
+      labels: Type.Optional(Type.Record(Type.String(), Type.String())),
       model: Type.Optional(Type.String()),
       outputMode: Type.Optional(Type.String()),
       timeoutMs: Type.Optional(Type.Number()),
@@ -246,7 +248,8 @@ function createLaunchAgentTool(context: ToolContext): OrchestratorParentTool {
     executionMode: "parallel",
     async execute(toolCallId, params) {
       const loaded = await loadRegistry(context);
-      const cwd = resolve(params.cwd ?? context.cwd ?? context.workspaceRoot);
+      const workspaceRoot = resolve(params.workspace ?? context.workspaceRoot);
+      const cwd = resolveCwd(params.cwd ?? context.cwd, workspaceRoot);
       const runtime = loaded.registry[params.runtime];
       const plan = buildAgentLaunchPlan(
         {
@@ -268,6 +271,13 @@ function createLaunchAgentTool(context: ToolContext): OrchestratorParentTool {
         plan,
         ...(params.name ? { name: params.name } : {}),
         ...(params.model ? { model: params.model } : {}),
+        location: {
+          kind: "local",
+          workspaceRoot,
+          workspaceName: workspaceName(workspaceRoot),
+          cwd,
+        },
+        ...(params.labels ? { labels: params.labels } : {}),
         ...(context.parentRunId
           ? {
               parent: {
@@ -280,9 +290,6 @@ function createLaunchAgentTool(context: ToolContext): OrchestratorParentTool {
           : {}),
         timeoutMs: params.timeoutMs ?? runtime?.defaults.timeoutMs,
         maxOutputBytes: params.maxOutputBytes ?? runtime?.defaults.maxOutputBytes,
-        ...(context.allowedShellCommands
-          ? { allowedShellCommands: context.allowedShellCommands }
-          : {}),
       };
       const task = context.backgroundLauncher
         ? await context.backgroundLauncher(launchInput)
@@ -318,6 +325,8 @@ function createListAgentsTool(context: ToolContext): OrchestratorParentTool {
     parameters: Type.Object({
       status: Type.Optional(StatusSchema),
       runtime: Type.Optional(Type.String()),
+      workspace: Type.Optional(Type.String()),
+      allWorkspaces: Type.Optional(Type.Boolean()),
       limit: Type.Optional(Type.Number()),
     }),
     executionMode: "parallel",
@@ -330,8 +339,15 @@ function createListAgentsTool(context: ToolContext): OrchestratorParentTool {
       const filtered = params.runtime
         ? tasks.filter((task) => task.runtime === params.runtime)
         : tasks;
-      const limit = Math.max(0, Math.trunc(params.limit ?? filtered.length));
-      const selected = limit > 0 ? filtered.slice(-limit) : [];
+      const workspaceRoot = resolve(params.workspace ?? context.workspaceRoot);
+      const workspaceFiltered = params.allWorkspaces
+        ? filtered
+        : filtered.filter(
+            (task) =>
+              task.location?.kind !== "local" || task.location.workspaceRoot === workspaceRoot,
+          );
+      const limit = Math.max(0, Math.trunc(params.limit ?? workspaceFiltered.length));
+      const selected = limit > 0 ? workspaceFiltered.slice(-limit) : [];
 
       return jsonResult<ListAgentsDetails>({
         tasks: selected.map(summarizeTask),
@@ -571,6 +587,18 @@ function normalizeToolContext(context: ParentAgentToolContext): ToolContext {
   };
 }
 
+function resolveCwd(cwd: string | undefined, workspaceRoot: string): string {
+  if (!cwd) {
+    return workspaceRoot;
+  }
+  return resolve(workspaceRoot, cwd);
+}
+
+function workspaceName(workspaceRoot: string): string {
+  const parts = workspaceRoot.split("/").filter(Boolean);
+  return parts[parts.length - 1] ?? workspaceRoot;
+}
+
 function storeOptions(context: ToolContext) {
   return {
     workspaceRoot: context.workspaceRoot,
@@ -585,6 +613,7 @@ function summarizeTask(task: AgentTaskRecord): TaskSummary {
     runtime: task.runtime,
     status: task.status,
     cwd: task.cwd,
+    ...(task.location ? { location: task.location } : {}),
     createdAt: task.createdAt,
     ...(task.startedAt ? { startedAt: task.startedAt } : {}),
     ...(task.finishedAt ? { finishedAt: task.finishedAt } : {}),

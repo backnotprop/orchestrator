@@ -24,9 +24,6 @@ test("CLI list falls back to the task prompt when no name is provided", async ()
       "shell",
       "--workspace",
       workspaceRoot,
-      "--allow-disabled-runtime",
-      "--allow-shell-command",
-      command,
       "--json",
       command,
     ]);
@@ -51,9 +48,6 @@ test("CLI launches a background task, lists it, and reads the result", async () 
       workspaceRoot,
       "--name",
       "plain failure",
-      "--allow-disabled-runtime",
-      "--allow-shell-command",
-      command,
       "--json",
       command,
     ]);
@@ -161,8 +155,6 @@ test("CLI launches a background task, lists it, and reads the result", async () 
       "--agent-only",
       "--json",
       "--compact",
-      "--workspace",
-      workspaceRoot,
     ]);
 
     const watch = await runCli(workspaceRoot, [
@@ -188,9 +180,6 @@ test("CLI read --wait --json waits for a final result without polling", async ()
       workspaceRoot,
       "--name",
       "wait read",
-      "--allow-disabled-runtime",
-      "--allow-shell-command",
-      command,
       "--json",
       "--compact",
       command,
@@ -244,9 +233,6 @@ test("CLI compact read gives active task follow-up commands", async () => {
       workspaceRoot,
       "--name",
       "active read",
-      "--allow-disabled-runtime",
-      "--allow-shell-command",
-      command,
       "--json",
       "--compact",
       "--brief",
@@ -286,8 +272,6 @@ test("CLI compact read gives active task follow-up commands", async () => {
       String(AGENT_CONTROL_PREVIEW_MAX_BYTES),
       "--json",
       "--compact",
-      "--workspace",
-      workspaceRoot,
     ]);
     assert.deepEqual(parsed.commands?.waitPreview?.args, [
       "read",
@@ -299,8 +283,6 @@ test("CLI compact read gives active task follow-up commands", async () => {
       String(AGENT_CONTROL_PREVIEW_MAX_BYTES),
       "--json",
       "--compact",
-      "--workspace",
-      workspaceRoot,
     ]);
     assert.equal(parsed.commands?.read, undefined);
     assert.equal(parsed.commands?.wait, undefined);
@@ -327,9 +309,6 @@ test("CLI read --wait --json can collect multiple task results", async () => {
       workspaceRoot,
       "--name",
       "batch first",
-      "--allow-disabled-runtime",
-      "--allow-shell-command",
-      firstCommand,
       "--json",
       "--compact",
       "--brief",
@@ -342,9 +321,6 @@ test("CLI read --wait --json can collect multiple task results", async () => {
       workspaceRoot,
       "--name",
       "batch second",
-      "--allow-disabled-runtime",
-      "--allow-shell-command",
-      secondCommand,
       "--json",
       "--compact",
       "--brief",
@@ -441,9 +417,6 @@ test("CLI batch read timeout returns follow-up commands for active tasks", async
       workspaceRoot,
       "--name",
       "batch done",
-      "--allow-disabled-runtime",
-      "--allow-shell-command",
-      doneCommand,
       "--json",
       "--compact",
       "--brief",
@@ -456,9 +429,6 @@ test("CLI batch read timeout returns follow-up commands for active tasks", async
       workspaceRoot,
       "--name",
       "batch slow",
-      "--allow-disabled-runtime",
-      "--allow-shell-command",
-      slowCommand,
       "--json",
       "--compact",
       "--brief",
@@ -525,8 +495,6 @@ test("CLI batch read timeout returns follow-up commands for active tasks", async
       String(AGENT_CONTROL_PREVIEW_MAX_BYTES),
       "--json",
       "--compact",
-      "--workspace",
-      workspaceRoot,
     ]);
     assert.deepEqual(parsed.commands.waitPreview.args, [
       "read",
@@ -538,14 +506,12 @@ test("CLI batch read timeout returns follow-up commands for active tasks", async
       String(AGENT_CONTROL_PREVIEW_MAX_BYTES),
       "--json",
       "--compact",
-      "--workspace",
-      workspaceRoot,
     ]);
     assert.deepEqual(parsed.stop, {
       kind: "task",
       id: slow.id,
       taskId: slow.taskId,
-      args: ["interrupt", slow.id, "--json", "--compact", "--workspace", workspaceRoot],
+      args: ["interrupt", slow.id, "--json", "--compact"],
     });
 
     await runCli(workspaceRoot, [
@@ -569,7 +535,6 @@ test("CLI batch read timeout returns parent-safe stop for parent children", asyn
       taskId: "batch-read-parent-00000001",
       plan: orchestratorPlan(command, workspaceRoot),
       name: "batch read parent",
-      allowedShellCommands: [command],
     });
     const child = await launchTask({
       workspaceRoot,
@@ -580,7 +545,6 @@ test("CLI batch read timeout returns parent-safe stop for parent children", asyn
         parentRunId: parent.task.taskId,
         parentTaskId: parent.task.taskId,
       },
-      allowedShellCommands: [command],
     });
 
     await Promise.all([
@@ -620,15 +584,7 @@ test("CLI batch read timeout returns parent-safe stop for parent children", asyn
         kind: "parent",
         id: parentTask?.id,
         taskId: parent.task.taskId,
-        args: [
-          "interrupt",
-          parentTask?.id,
-          "--children",
-          "--json",
-          "--compact",
-          "--workspace",
-          workspaceRoot,
-        ],
+        args: ["interrupt", parentTask?.id, "--children", "--json", "--compact"],
       });
     } finally {
       await runCli(workspaceRoot, [
@@ -655,9 +611,6 @@ test("CLI read --wait --json returns timeout status without claiming completion"
       workspaceRoot,
       "--name",
       "wait timeout",
-      "--allow-disabled-runtime",
-      "--allow-shell-command",
-      command,
       "--json",
       "--compact",
       command,
@@ -692,7 +645,7 @@ test("CLI read --wait --json returns timeout status without claiming completion"
       kind: "task",
       id: parsedRead.id,
       taskId: parsedRead.taskId,
-      args: ["interrupt", parsedRead.id, "--json", "--compact", "--workspace", workspaceRoot],
+      args: ["interrupt", parsedRead.id, "--json", "--compact"],
     });
     assert.equal(parsedRead.outputAvailable, false);
 
@@ -976,9 +929,6 @@ test("CLI read and logs JSON mark truncated output", async () => {
       workspaceRoot,
       "--name",
       "truncate output",
-      "--allow-disabled-runtime",
-      "--allow-shell-command",
-      command,
       "--json",
       command,
     ]);
@@ -1021,16 +971,8 @@ test("CLI read and logs JSON mark truncated output", async () => {
       String(AGENT_CONTROL_PREVIEW_MAX_BYTES),
       "--json",
       "--compact",
-      "--workspace",
-      workspaceRoot,
     ]);
-    assert.deepEqual(parsedRead.commands.read.args, [
-      "read",
-      parsedRead.id,
-      "--json",
-      "--workspace",
-      workspaceRoot,
-    ]);
+    assert.deepEqual(parsedRead.commands.read.args, ["read", parsedRead.id, "--json"]);
     assert.deepEqual(parsedRead.commands.logsPreview.args, [
       "logs",
       parsedRead.id,
@@ -1038,16 +980,12 @@ test("CLI read and logs JSON mark truncated output", async () => {
       String(AGENT_CONTROL_PREVIEW_MAX_BYTES),
       "--json",
       "--compact",
-      "--workspace",
-      workspaceRoot,
     ]);
     assert.deepEqual(parsedRead.commands.events.args, [
       "events",
       parsedRead.id,
       "--json",
       "--compact",
-      "--workspace",
-      workspaceRoot,
     ]);
     assert.deepEqual(parsedRead.commands.agentEvents.args, [
       "events",
@@ -1055,8 +993,6 @@ test("CLI read and logs JSON mark truncated output", async () => {
       "--agent-only",
       "--json",
       "--compact",
-      "--workspace",
-      workspaceRoot,
     ]);
     assert.equal(parsedRead.commands.wait, undefined);
 
@@ -1097,9 +1033,6 @@ test("CLI read and logs JSON distinguish capture truncation", async () => {
       workspaceRoot,
       "--name",
       "capture truncated output",
-      "--allow-disabled-runtime",
-      "--allow-shell-command",
-      command,
       "--max-output-bytes",
       "24",
       "--json",
@@ -1169,9 +1102,6 @@ test("CLI read --json surfaces stderr for plain failed tasks", async () => {
       workspaceRoot,
       "--name",
       "plain failure",
-      "--allow-disabled-runtime",
-      "--allow-shell-command",
-      command,
       "--json",
       command,
     ]);
@@ -1229,16 +1159,12 @@ test("CLI read --json surfaces stderr for plain failed tasks", async () => {
       String(AGENT_CONTROL_PREVIEW_MAX_BYTES),
       "--json",
       "--compact",
-      "--workspace",
-      workspaceRoot,
     ]);
     assert.deepEqual(parsedCompactRead.commands?.events?.args, [
       "events",
       shortTaskId,
       "--json",
       "--compact",
-      "--workspace",
-      workspaceRoot,
     ]);
     assert.deepEqual(parsedCompactRead.commands?.agentEvents?.args, [
       "events",
@@ -1246,8 +1172,6 @@ test("CLI read --json surfaces stderr for plain failed tasks", async () => {
       "--agent-only",
       "--json",
       "--compact",
-      "--workspace",
-      workspaceRoot,
     ]);
     assert.equal(parsedCompactRead.commands?.waitPreview, undefined);
 

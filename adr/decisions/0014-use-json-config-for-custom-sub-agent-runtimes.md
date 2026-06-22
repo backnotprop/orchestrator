@@ -214,8 +214,8 @@ Do not expose the full internal `HeadlessAgentRuntimeConfig` as the public
 configuration contract.
 
 Do not accept raw shell command strings for custom sub-agents. If shell
-execution is needed, it must go through the explicitly disabled and allowlisted
-shell runtime, not through custom sub-agent config.
+execution is needed, use the explicit `shell` runtime. Custom sub-agent config
+should stay argv-based through `adapter: "process"`.
 
 Do not hard-code framework names into V1 custom config. A Flue-built agent,
 LangGraph agent, local script, or any other framework-built worker should first

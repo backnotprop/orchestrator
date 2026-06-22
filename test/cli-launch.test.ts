@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { writeFile } from "node:fs/promises";
+import { mkdir, writeFile } from "node:fs/promises";
 import test from "node:test";
 import { promisify } from "node:util";
 import { AGENT_CONTROL_PREVIEW_MAX_BYTES } from "@backnotprop/orchestrator-core";
@@ -28,9 +28,6 @@ test("CLI launch accepts task names and list shows names before ids", async () =
       workspaceRoot,
       "--name",
       "review tests",
-      "--allow-disabled-runtime",
-      "--allow-shell-command",
-      command,
       "--json",
       command,
     ]);
@@ -54,6 +51,93 @@ test("CLI launch accepts task names and list shows names before ids", async () =
   }, "orchestrator-cli-names-");
 });
 
+test("CLI uses one task store and filters ps by workspace", async () => {
+  await withTempWorkspace(async (workspaceRoot) => {
+    const repoA = `${workspaceRoot}/repo-a`;
+    const repoB = `${workspaceRoot}/repo-b`;
+    const repoASubdir = `${repoA}/packages/api`;
+    await mkdir(repoASubdir, { recursive: true });
+    await mkdir(repoB, { recursive: true });
+
+    const storeDir = `${workspaceRoot}/.orchestrator`;
+    const pwdCommand = "pwd";
+    const secondCommand = "printf repo-b";
+    const launchA = await runCli(workspaceRoot, [
+      "launch",
+      "shell",
+      "--workspace",
+      repoA,
+      "--cwd",
+      "packages/api",
+      "--name",
+      "repo a cwd",
+      "--json",
+      pwdCommand,
+    ]);
+    const launchedA = JSON.parse(launchA.stdout) as AgentTaskRecord;
+    const launchB = await runCli(workspaceRoot, [
+      "launch",
+      "shell",
+      "--workspace",
+      repoB,
+      "--name",
+      "repo b task",
+      "--json",
+      secondCommand,
+    ]);
+    const launchedB = JSON.parse(launchB.stdout) as AgentTaskRecord;
+
+    await Promise.all([
+      waitForTaskStatus(workspaceRoot, launchedA.taskId, "succeeded"),
+      waitForTaskStatus(workspaceRoot, launchedB.taskId, "succeeded"),
+    ]);
+
+    const taskA = await readTaskRecord({ workspaceRoot }, launchedA.taskId);
+    assert.equal(taskA.storeScope, "machine");
+    assert.equal(taskA.location?.kind, "local");
+    assert.equal(taskA.location?.workspaceRoot, repoA);
+    assert.equal(taskA.location?.cwd, repoASubdir);
+    assert.equal(taskA.cwd, repoASubdir);
+    assert.ok(taskA.paths.taskDir.startsWith(`${storeDir}/tasks/`));
+
+    const currentWorkspacePs = await runCli(repoA, ["ps", "--json"], PACKAGE_CLI_TIMEOUT_MS, {
+      ORCHESTRATOR_HOME: storeDir,
+    });
+    const currentView = JSON.parse(currentWorkspacePs.stdout) as {
+      scope: { workspaces: string; workspaceRoot?: string };
+      rows: Array<{ taskId: string; workspaceRoot: string; cwd: string }>;
+    };
+    assert.deepEqual(currentView.scope, { workspaces: "current", workspaceRoot: repoA });
+    assert.deepEqual(
+      currentView.rows.map((row) => row.taskId),
+      [launchedA.taskId],
+    );
+    assert.equal(currentView.rows[0]?.workspaceRoot, repoA);
+    assert.equal(currentView.rows[0]?.cwd, repoASubdir);
+
+    const allWorkspacePs = await runCli(repoA, ["ps", "-A", "--json"], PACKAGE_CLI_TIMEOUT_MS, {
+      ORCHESTRATOR_HOME: storeDir,
+    });
+    const allView = JSON.parse(allWorkspacePs.stdout) as {
+      scope: { workspaces: string };
+      rows: Array<{ taskId: string; workspaceRoot: string }>;
+    };
+    assert.deepEqual(allView.scope, { workspaces: "all" });
+    assert.deepEqual(
+      allView.rows.map((row) => row.taskId).sort(),
+      [launchedA.taskId, launchedB.taskId].sort(),
+    );
+
+    const crossWorkspaceRead = await runCli(
+      repoB,
+      ["read", launchedA.taskId.slice(0, 8)],
+      PACKAGE_CLI_TIMEOUT_MS,
+      { ORCHESTRATOR_HOME: storeDir },
+    );
+    assert.equal(crossWorkspaceRead.stdout.trim(), repoASubdir);
+  }, "orchestrator-cli-machine-store-");
+});
+
 test("CLI launch --json --compact returns a small agent control summary", async () => {
   await withTempWorkspace(async (workspaceRoot) => {
     const command = 'node -e "setTimeout(() => {}, 5000)"';
@@ -64,9 +148,6 @@ test("CLI launch --json --compact returns a small agent control summary", async 
         "shell",
         "--workspace",
         workspaceRoot,
-        "--allow-disabled-runtime",
-        "--allow-shell-command",
-        command,
         "--compact",
         command,
       ]);
@@ -82,9 +163,6 @@ test("CLI launch --json --compact returns a small agent control summary", async 
         "shell",
         "--workspace",
         workspaceRoot,
-        "--allow-disabled-runtime",
-        "--allow-shell-command",
-        command,
         "--brief",
         command,
       ]);
@@ -107,9 +185,6 @@ test("CLI launch --json --compact returns a small agent control summary", async 
       workspaceRoot,
       "--name",
       "compact launch",
-      "--allow-disabled-runtime",
-      "--allow-shell-command",
-      command,
       "--json",
       "--compact",
       command,
@@ -146,13 +221,7 @@ test("CLI launch --json --compact returns a small agent control summary", async 
     assert.equal(launched.runtime, "shell");
     assert.ok(["queued", "starting", "running"].includes(launched.status));
     assert.equal(launched.active, true);
-    assert.deepEqual(launched.commands.read.args, [
-      "read",
-      launched.id,
-      "--json",
-      "--workspace",
-      workspaceRoot,
-    ]);
+    assert.deepEqual(launched.commands.read.args, ["read", launched.id, "--json"]);
     assert.deepEqual(launched.commands.readPreview.args, [
       "read",
       launched.id,
@@ -160,8 +229,6 @@ test("CLI launch --json --compact returns a small agent control summary", async 
       String(AGENT_CONTROL_PREVIEW_MAX_BYTES),
       "--json",
       "--compact",
-      "--workspace",
-      workspaceRoot,
     ]);
     assert.deepEqual(launched.commands.wait.args, [
       "read",
@@ -170,8 +237,6 @@ test("CLI launch --json --compact returns a small agent control summary", async 
       "--timeout-ms",
       "300000",
       "--json",
-      "--workspace",
-      workspaceRoot,
     ]);
     assert.deepEqual(launched.commands.waitPreview.args, [
       "read",
@@ -183,16 +248,8 @@ test("CLI launch --json --compact returns a small agent control summary", async 
       String(AGENT_CONTROL_PREVIEW_MAX_BYTES),
       "--json",
       "--compact",
-      "--workspace",
-      workspaceRoot,
     ]);
-    assert.deepEqual(launched.commands.watch.args, [
-      "watch",
-      launched.id,
-      "--json",
-      "--workspace",
-      workspaceRoot,
-    ]);
+    assert.deepEqual(launched.commands.watch.args, ["watch", launched.id, "--json"]);
     assert.deepEqual(launched.commands.logsPreview.args, [
       "logs",
       launched.id,
@@ -200,47 +257,27 @@ test("CLI launch --json --compact returns a small agent control summary", async 
       String(AGENT_CONTROL_PREVIEW_MAX_BYTES),
       "--json",
       "--compact",
-      "--workspace",
-      workspaceRoot,
     ]);
     assert.deepEqual(launched.commands.agentWatch.args, [
       "watch",
       launched.id,
       "--agent-only",
       "--json",
-      "--workspace",
-      workspaceRoot,
     ]);
-    assert.deepEqual(launched.commands.logs.args, [
-      "logs",
-      launched.id,
-      "--json",
-      "--compact",
-      "--workspace",
-      workspaceRoot,
-    ]);
-    assert.deepEqual(launched.commands.events.args, [
-      "events",
-      launched.id,
-      "--json",
-      "--compact",
-      "--workspace",
-      workspaceRoot,
-    ]);
+    assert.deepEqual(launched.commands.logs.args, ["logs", launched.id, "--json", "--compact"]);
+    assert.deepEqual(launched.commands.events.args, ["events", launched.id, "--json", "--compact"]);
     assert.deepEqual(launched.commands.agentEvents.args, [
       "events",
       launched.id,
       "--agent-only",
       "--json",
       "--compact",
-      "--workspace",
-      workspaceRoot,
     ]);
     assert.deepEqual(launched.stop, {
       kind: "task",
       id: launched.id,
       taskId: launched.taskId,
-      args: ["interrupt", launched.id, "--json", "--compact", "--workspace", workspaceRoot],
+      args: ["interrupt", launched.id, "--json", "--compact"],
     });
     assert.equal(launched.launchPlan, undefined);
     assert.equal(launched.paths, undefined);
@@ -252,9 +289,6 @@ test("CLI launch --json --compact returns a small agent control summary", async 
       workspaceRoot,
       "--name",
       "compact brief launch",
-      "--allow-disabled-runtime",
-      "--allow-shell-command",
-      command,
       "--json",
       "--compact",
       "--brief",
@@ -279,7 +313,7 @@ test("CLI launch --json --compact returns a small agent control summary", async 
       kind: "task",
       id: briefLaunched.id,
       taskId: briefLaunched.taskId,
-      args: ["interrupt", briefLaunched.id, "--json", "--compact", "--workspace", workspaceRoot],
+      args: ["interrupt", briefLaunched.id, "--json", "--compact"],
     });
 
     await runCli(workspaceRoot, [
@@ -317,9 +351,6 @@ test("CLI JSON stop args are portable across cwd and custom task stores", async 
       orchestratorDir,
       "--name",
       "portable stop",
-      "--allow-disabled-runtime",
-      "--allow-shell-command",
-      command,
       "--json",
       "--compact",
       command,
@@ -335,8 +366,6 @@ test("CLI JSON stop args are portable across cwd and custom task stores", async 
       launched.id,
       "--json",
       "--compact",
-      "--workspace",
-      workspaceRoot,
       "--orchestrator-dir",
       orchestratorDir,
     ]);
@@ -389,9 +418,6 @@ test("CLI compact ps command args are portable across cwd", async () => {
       workspaceRoot,
       "--name",
       "portable one",
-      "--allow-disabled-runtime",
-      "--allow-shell-command",
-      firstCommand,
       "--json",
       "--compact",
       "--brief",
@@ -404,9 +430,6 @@ test("CLI compact ps command args are portable across cwd", async () => {
       workspaceRoot,
       "--name",
       "portable two",
-      "--allow-disabled-runtime",
-      "--allow-shell-command",
-      secondCommand,
       "--json",
       "--compact",
       "--brief",
@@ -599,9 +622,6 @@ test("CLI launch --wait --json --compact includes final output or error", async 
       workspaceRoot,
       "--name",
       "wait ok",
-      "--allow-disabled-runtime",
-      "--allow-shell-command",
-      okCommand,
       "--wait",
       "--json",
       "--compact",
@@ -631,9 +651,6 @@ test("CLI launch --wait --json --compact includes final output or error", async 
       workspaceRoot,
       "--name",
       "wait large",
-      "--allow-disabled-runtime",
-      "--allow-shell-command",
-      largeCommand,
       "--wait",
       "--json",
       "--compact",
@@ -657,13 +674,7 @@ test("CLI launch --wait --json --compact includes final output or error", async 
     assert.equal(large.outputTruncatedByCaptureLimit, false);
     assert.equal(large.maxBytes, 16_000);
     assert.equal(large.captureMaxBytes, undefined);
-    assert.deepEqual(large.commands.read.args, [
-      "read",
-      large.id,
-      "--json",
-      "--workspace",
-      workspaceRoot,
-    ]);
+    assert.deepEqual(large.commands.read.args, ["read", large.id, "--json"]);
     assert.equal(large.commands.wait, undefined);
 
     const failCommand = "node -e \"console.error('wait bad'); process.exit(2)\"";
@@ -674,9 +685,6 @@ test("CLI launch --wait --json --compact includes final output or error", async 
       workspaceRoot,
       "--name",
       "wait fail",
-      "--allow-disabled-runtime",
-      "--allow-shell-command",
-      failCommand,
       "--wait",
       "--json",
       "--compact",

@@ -1,6 +1,7 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { appendFile, readFile, stat, writeFile } from "node:fs/promises";
+import { resolve } from "node:path";
 import type { AgentLaunchPlan } from "../runtime/index.ts";
 import { isTerminalTaskStatus } from "./types.ts";
 import type {
@@ -18,9 +19,12 @@ import {
   appendSequencedTaskEvent,
   getTaskPaths,
   initializeTaskFiles,
+  localTaskLocation,
   listTasks,
   readTaskRecord,
   resolveTaskId,
+  taskCwd,
+  taskWorkspaceRoot,
   updateTaskStatus,
 } from "./store.ts";
 import {
@@ -68,7 +72,6 @@ export class TaskSupervisorSafetyError extends TaskSupervisorError {
 
 export function validateLaunchTaskInput(input: LaunchTaskInput): void {
   validateLaunchPlan(input.plan);
-  validateShellAllowlist(input.plan, input.allowedShellCommands);
   normalizeTaskName(input.name);
 }
 
@@ -79,6 +82,7 @@ export async function launchTask(input: LaunchTaskInput): Promise<LaunchTaskHand
   const taskId = input.taskId ?? randomUUID();
   const paths = getTaskPaths(input, taskId);
   const createdAt = now();
+  const location = input.location ?? localTaskLocation(input.workspaceRoot, input.plan.cwd);
   const initialTask: AgentTaskRecord = {
     taskId,
     ...(taskName ? { name: taskName } : {}),
@@ -89,6 +93,9 @@ export async function launchTask(input: LaunchTaskInput): Promise<LaunchTaskHand
     status: "queued",
     createdAt,
     ...(input.parent ? { parent: input.parent } : {}),
+    storeScope: input.orchestratorDir ? "custom" : "machine",
+    location,
+    ...(input.labels ? { labels: { ...input.labels } } : {}),
     paths,
   };
 
@@ -503,6 +510,7 @@ async function selectInterruptTasks(
     ...(input.orchestratorDir ? { orchestratorDir: input.orchestratorDir } : {}),
   };
   const tasks = await listTasks(store);
+  const scopedTasks = interruptScopeTasks(tasks, input);
 
   switch (input.target.kind) {
     case "task": {
@@ -562,11 +570,24 @@ async function selectInterruptTasks(
       return {
         target: input.target,
         tasks: orderInterruptTasks(
-          tasks.filter((task) => !isTerminalTaskStatus(task.status)),
+          scopedTasks.filter((task) => !isTerminalTaskStatus(task.status)),
           undefined,
         ),
       };
   }
+}
+
+function interruptScopeTasks(
+  tasks: readonly AgentTaskRecord[],
+  input: InterruptTasksInput,
+): AgentTaskRecord[] {
+  return tasks
+    .filter((task) =>
+      input.allWorkspaces
+        ? true
+        : taskWorkspaceRoot(task, input.workspaceRoot) === resolve(input.workspaceRoot),
+    )
+    .filter((task) => (input.cwd ? taskCwd(task) === resolve(input.cwd) : true));
 }
 
 async function selectSingleInterruptTask(
@@ -654,27 +675,6 @@ function validateLaunchPlan(plan: AgentLaunchPlan): void {
 
   if (!plan.cwd.trim()) {
     throw new TaskSupervisorError("Launch plan cwd must not be empty.");
-  }
-}
-
-function validateShellAllowlist(
-  plan: AgentLaunchPlan,
-  allowedShellCommands: readonly string[] | undefined,
-): void {
-  if (!plan.safety.requiresAllowlist) {
-    return;
-  }
-
-  const command = plan.args.at(-1);
-  if (!command || !allowedShellCommands?.includes(command)) {
-    throw new TaskSupervisorSafetyError(
-      `Runtime "${plan.runtime}" requires an allowlisted shell command.`,
-      {
-        reason: "shell_command_not_allowlisted",
-        ...(command ? { input: command } : {}),
-        hint: "Pass --allow-shell-command with the exact command, or use a configured process agent instead of the shell runtime.",
-      },
-    );
   }
 }
 

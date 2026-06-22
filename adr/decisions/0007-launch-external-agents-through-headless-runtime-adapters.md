@@ -22,8 +22,8 @@ Launch external agents through runtime adapters.
 
 Initial adapters:
 
-- `ShellAdapter`: allowlisted only, for exercising the lifecycle and custom
-  commands.
+- `ShellAdapter`: local command runtime for exercising the lifecycle, tests, and
+  utility commands.
 - `ClaudeCodeAdapter`: start with `claude -p "<prompt>"`; use
   `--output-format=json` or `--output-format=stream-json --verbose` only as
   adapter transport choices if useful.

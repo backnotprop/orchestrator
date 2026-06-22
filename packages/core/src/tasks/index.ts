@@ -44,10 +44,15 @@ export type { TaskGroupLookupErrorReason } from "./groups.ts";
 export { readTaskEvents, readTaskLogs } from "./readers.ts";
 export {
   TaskLookupError,
+  getDefaultOrchestratorDir,
+  getOrchestratorDir,
   getTaskPaths,
+  localTaskLocation,
   listTaskIds,
   readTaskRecord,
   resolveTaskId,
+  taskCwd,
+  taskWorkspaceRoot,
 } from "./store.ts";
 export type { TaskLookupErrorReason } from "./store.ts";
 export { isTerminalTaskStatus, TASK_STATUSES } from "./types.ts";
@@ -76,6 +81,8 @@ export type {
   ReadTaskLogsResult,
   ReadTaskOutputInput,
   TaskEvent,
+  TaskLocation,
+  TaskStoreScope,
   TaskParent,
   TaskPaths,
   TaskStatus,

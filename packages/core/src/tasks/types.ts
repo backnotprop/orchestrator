@@ -63,6 +63,26 @@ export type TaskOutputCapture = {
   updatedAt: string;
 };
 
+export type TaskStoreScope = "machine" | "custom";
+
+export type LocalTaskLocation = {
+  kind: "local";
+  workspaceRoot: string;
+  workspaceName?: string;
+  cwd: string;
+};
+
+export type RemoteTaskLocation = {
+  kind: "remote";
+  workspaceRoot?: string;
+  workspaceName?: string;
+  cwd?: string;
+  remote?: string;
+  remoteTaskId?: string;
+};
+
+export type TaskLocation = LocalTaskLocation | RemoteTaskLocation;
+
 export type AgentTaskRecord = {
   taskId: string;
   name?: string;
@@ -78,6 +98,9 @@ export type AgentTaskRecord = {
   pid?: number;
   error?: string;
   parent?: TaskParent;
+  storeScope?: TaskStoreScope;
+  location?: TaskLocation;
+  labels?: Record<string, string>;
   usage?: TaskUsage;
   outputCapture?: TaskOutputCapture;
   paths: TaskPaths;
@@ -114,9 +137,10 @@ export type LaunchTaskInput = TaskStoreOptions & {
   name?: string;
   model?: string;
   parent?: TaskParent;
+  location?: TaskLocation;
+  labels?: Record<string, string>;
   timeoutMs?: number;
   maxOutputBytes?: number;
-  allowedShellCommands?: readonly string[];
 };
 
 export type LaunchTaskHandle = {
@@ -206,6 +230,8 @@ export type InterruptTasksTarget =
 
 export type InterruptTasksInput = TaskStoreOptions & {
   target: InterruptTasksTarget;
+  allWorkspaces?: boolean;
+  cwd?: string;
   reason?: string;
   signal?: NodeJS.Signals;
 };

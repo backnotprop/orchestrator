@@ -9,6 +9,9 @@ agents.
 It is agent-CLI first. Agents call it through a skill or plugin. Humans can use
 the same CLI directly. The CLI now and the future TUI share the same task state.
 
+By default, tasks live in one machine-level store at `~/.orchestrator/tasks`.
+`workspace` is the project scope. `cwd` is where the agent process runs.
+
 ## How To Use It
 
 ### From An Agent
@@ -46,6 +49,34 @@ orchestrator launch codex --name "inspect store" --model gpt-5.4-mini "Inspect t
 orchestrator launch custom --name "check email" --model glm-5.2 "Clean my inbox."
 ```
 
+Start several agents from one manifest:
+
+```sh
+orchestrator launch -f agents.json --json --compact --brief
+```
+
+```json
+{
+  "schemaVersion": 1,
+  "defaults": {
+    "runtime": "codex",
+    "model": "gpt-5.4-mini"
+  },
+  "tasks": [
+    {
+      "name": "inspect store",
+      "task": "Inspect the task store."
+    },
+    {
+      "runtime": "claude-code",
+      "model": "sonnet",
+      "name": "review tests",
+      "task": "Find missing tests."
+    }
+  ]
+}
+```
+
 ```console
 $ orchestrator list
 review tests     running  claude-code  sonnet         2m ago  3f8d1f30-6c52-49dc-a7f7-3c3e04a98657
@@ -63,10 +94,14 @@ orchestrator doctor
 orchestrator run --trace-tools "Launch a Codex child and wait for it."
 orchestrator run --stream-json "Launch a Codex child and wait for it."
 orchestrator ps
+orchestrator ps -A
 orchestrator ps --all
+orchestrator ps -A --all
 orchestrator ps --watch
 orchestrator ps --json --compact --active --brief
+orchestrator ps -A --json --compact --active --brief
 orchestrator launch codex --name "inspect store" --model gpt-5.4-mini --json --compact --brief "Inspect the task store."
+orchestrator launch -f agents.json --json --compact --brief
 orchestrator watch <task-id|prefix>
 orchestrator read <task-id|prefix>... --wait --json --compact
 orchestrator logs <task-id|prefix> --follow
@@ -189,13 +224,16 @@ The CLI package is `@backnotprop/orchestrator-cli`. The reusable runtime package
 - If compact doctor returns `parent.canRun: true`, append the request to `parent.run.argsPrefix` or `parent.run.backgroundArgsPrefix`
 - `help --json --compact`: get the small command contract for agents/scripts; use `help --json` when you need the full contract
 - `run`: start the parent AI agent; add `--background` to manage it like a task, `--trace-tools` to see tool calls live, or `--stream-json` for a full JSONL stream
-- `launch`: start an agent in the background; add `--json --compact` for a small machine-readable result, or `--json --compact --brief` when starting many tasks
+- `launch`: start one agent in the background; add `--json --compact` for a small machine-readable result, or use `launch -f agents.json --json --compact --brief` to start several agents from one manifest
 - `list`: see known tasks in a simple task list
-- `ps`: see grouped agent work across parent runs
-- `ps --all`: include old finished tasks hidden by the default view
+- `ps`: see grouped agent work in the current workspace
+- `ps -A`: see grouped agent work across all workspaces
+- `ps --all`: include old finished tasks hidden by the default view in the current workspace
+- `ps -A --all`: include old finished tasks across all workspaces
 - Common options like `--workspace`, `--orchestrator-dir`, `--config`, and `--json` may appear before or after the command
 - `ps --json --compact --active`: get active tasks and stop targets for agents/scripts
 - `ps --json --compact --active --brief`: scan many active tasks with less JSON
+- `ps -A --json --compact --active --brief`: scan active tasks across all workspaces
 - `ps --parent <run-id|prefix> --json --compact --brief`: inspect one parent run and its children
 - If active compact `ps` is empty after short work, run `views.recent.args` from the compact response to recover recent finished tasks and batch read commands
 - After starting several tasks, use `ps --json --compact --brief` and top-level `commands.waitPreview.args` to collect the listed set
@@ -213,12 +251,13 @@ The CLI package is `@backnotprop/orchestrator-cli`. The reusable runtime package
 - Use `commands.watch.args` for the full live stream and `commands.agentWatch.args` for normalized live agent events only
 - JSON stop targets include portable `stop.args`; run those args to stop exactly the returned task, group, or selected active set
 - Compact `ps` `stop.args` is scoped to the current view; parent/group stops may include children of that selected run
-- `ps --all --json --compact`: get compact full task history for agents/scripts
+- `ps --all --json --compact`: get compact full task history for the current workspace
+- `ps -A --all --json --compact`: get compact full task history across all workspaces
 - `watch`: follow one task live; add `--agent-only --json` for normalized agent event JSONL
 - `read`: print the final answer; add `--json` for status, `exitCode`, output, usage, and errors
 - `logs`: show raw agent output
 - `events`: show what happened to the task
-- `interrupt`: stop running tasks; pass multiple ids for a selected subset, or add `--active --json` only for deliberate workspace-wide cleanup
+- `interrupt`: stop running tasks; pass multiple ids for a selected subset, add `--active --json` for workspace cleanup, or use `-A --active --yes --json` for deliberate all-workspace cleanup
 
 ## Runtimes
 
@@ -228,6 +267,8 @@ First-class targets:
 - Codex
 
 The runtime layer is generic, but the first release is focused on those two.
+`shell` is also enabled as a local-command runtime for research, tests, and
+operator utility tasks.
 Built-in runtimes can also be disabled in config. See
 [doc/disable-agents.md](doc/disable-agents.md).
 
@@ -236,10 +277,11 @@ Built-in runtimes can also be disabled in config. See
 Task state is stored under:
 
 ```text
-.orchestrator/tasks/<task-id>/
+~/.orchestrator/tasks/<task-id>/
 ```
 
 Each task keeps its record, stdout/stderr logs, events, transcript, and final result.
+Use `--orchestrator-dir <path>` only when you intentionally want a separate store.
 
 ## Example CLI Use
 
@@ -253,7 +295,7 @@ taskId: 3f8d1f30-6c52-49dc-a7f7-3c3e04a98657
 name: review tests
 status: running
 runtime: claude-code
-taskDir: /Users/me/project/.orchestrator/tasks/3f8d1f30-6c52-49dc-a7f7-3c3e04a98657
+taskDir: /Users/me/.orchestrator/tasks/3f8d1f30-6c52-49dc-a7f7-3c3e04a98657
 ```
 
 ### Start Codex
@@ -264,7 +306,7 @@ taskId: a6d00f1d-25b4-4dd3-ae22-d12a381b80d4
 name: inspect store
 status: running
 runtime: codex
-taskDir: /Users/me/project/.orchestrator/tasks/a6d00f1d-25b4-4dd3-ae22-d12a381b80d4
+taskDir: /Users/me/.orchestrator/tasks/a6d00f1d-25b4-4dd3-ae22-d12a381b80d4
 ```
 
 ### See What Is Running
@@ -279,12 +321,12 @@ inspect store	running	codex	gpt-5.4-mini	1s ago	a6d00f1d-25b4-4dd3-ae22-d12a381b
 
 ```console
 $ orchestrator ps --watch
-updated 2026-06-18T22:50:54.458Z
+updated 22:50:54  2 running  16k tok
 
-MANUAL  2 agents  2 running
-  name                   status     runtime      model            dur     tokens    started       last                         id
-  review tests           running    claude-code  sonnet           12s     -         22:50:42      agent.reasoning              3f8d1f30
-  inspect store          running    codex        gpt-5.4-mini     8s      16.5k     22:50:46      agent.message                a6d00f1d
+manual launches  running  2 agents  2 running  16k tok
+  agent        work                         status   model          started  dur   tok    last                     id
+  claude-code  review tests                 running  sonnet         22:50:42 12s   -      agent.reasoning          3f8d1f30
+  codex        inspect store                running  gpt-5.4-mini   22:50:46 8s    16k    agent.message            a6d00f1d
 ```
 
 ### Follow One Agent
@@ -343,7 +385,7 @@ taskId: a6d00f1d-25b4-4dd3-ae22-d12a381b80d4
 name: inspect store
 status: cancelled
 runtime: codex
-taskDir: /Users/me/project/.orchestrator/tasks/a6d00f1d-25b4-4dd3-ae22-d12a381b80d4
+taskDir: /Users/me/.orchestrator/tasks/a6d00f1d-25b4-4dd3-ae22-d12a381b80d4
 ```
 
 ### Use JSON
@@ -367,7 +409,7 @@ taskId: 17a3b031-b1c2-4aa8-b70e-6cfeeaaf0b88
 name: migration bug
 status: running
 runtime: claude-code
-taskDir: /Users/me/oss/api/.orchestrator/tasks/17a3b031-b1c2-4aa8-b70e-6cfeeaaf0b88
+taskDir: /Users/me/.orchestrator/tasks/17a3b031-b1c2-4aa8-b70e-6cfeeaaf0b88
 ```
 
 ## Development

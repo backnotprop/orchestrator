@@ -9,9 +9,11 @@ import {
   rm,
   writeFile,
 } from "node:fs/promises";
-import { join } from "node:path";
+import { homedir } from "node:os";
+import { basename, join, resolve } from "node:path";
 import type {
   AgentTaskRecord,
+  TaskLocation,
   TaskEvent,
   TaskPaths,
   TaskStatus,
@@ -36,8 +38,16 @@ export class TaskLookupError extends Error {
   }
 }
 
+export function getDefaultOrchestratorDir(): string {
+  return resolve(process.env.ORCHESTRATOR_HOME || join(homedir(), ".orchestrator"));
+}
+
+export function getOrchestratorDir(options: Pick<TaskStoreOptions, "orchestratorDir">): string {
+  return resolve(options.orchestratorDir ?? getDefaultOrchestratorDir());
+}
+
 export function getTaskRoot(options: TaskStoreOptions): string {
-  return join(options.orchestratorDir ?? join(options.workspaceRoot, ".orchestrator"), "tasks");
+  return join(getOrchestratorDir(options), "tasks");
 }
 
 export function getTaskPaths(options: TaskStoreOptions, taskId: string): TaskPaths {
@@ -128,12 +138,44 @@ async function readResolvedTaskRecord(
   const task = JSON.parse(raw) as AgentTaskRecord;
   return {
     ...task,
+    storeScope: task.storeScope ?? (options.orchestratorDir ? "custom" : "machine"),
+    location: task.location ?? inferTaskLocation(task, options),
     paths: {
       ...paths,
       ...task.paths,
       transcriptJsonl: task.paths.transcriptJsonl ?? paths.transcriptJsonl,
     },
   };
+}
+
+export function localTaskLocation(workspaceRoot: string, cwd: string): TaskLocation {
+  const resolvedWorkspace = resolve(workspaceRoot);
+  const resolvedCwd = resolve(cwd);
+  return {
+    kind: "local",
+    workspaceRoot: resolvedWorkspace,
+    workspaceName: basename(resolvedWorkspace),
+    cwd: resolvedCwd,
+  };
+}
+
+export function taskWorkspaceRoot(
+  task: Pick<AgentTaskRecord, "location" | "cwd">,
+  fallbackWorkspaceRoot: string,
+): string {
+  return task.location?.kind === "local" && task.location.workspaceRoot
+    ? resolve(task.location.workspaceRoot)
+    : resolve(fallbackWorkspaceRoot);
+}
+
+export function taskCwd(task: Pick<AgentTaskRecord, "location" | "cwd">): string {
+  return task.location?.kind === "local" && task.location.cwd
+    ? resolve(task.location.cwd)
+    : resolve(task.cwd);
+}
+
+function inferTaskLocation(task: AgentTaskRecord, options: TaskStoreOptions): TaskLocation {
+  return localTaskLocation(options.workspaceRoot, task.cwd);
 }
 
 export async function listTasks(

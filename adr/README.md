@@ -15,6 +15,14 @@ This is the canonical ADR workspace.
 - [Short ID resolution](specs/short-id-resolution-20260619-205022.md)
 - [Group and parent interruption](specs/group-and-parent-interruption-20260619-231405.md)
 - [Compact machine control view](specs/compact-machine-control-view-20260620-082105.md)
+- [Batch launch CLI](specs/batch-launch-cli-20260622-050535.md)
+- [Local returned command args](specs/local-returned-command-args-20260622-063117.md)
+- [Single control-plane task store](specs/single-control-plane-task-store-20260622-074105.md)
+
+## Intent Notes
+
+- [Batch launch manifests](intent/batch-launch-manifests-20260622-055107.md)
+- [Single control-plane task store](intent/single-control-plane-task-store-20260622-075137.md)
 
 ## Decisions
 
@@ -46,3 +54,5 @@ This is the canonical ADR workspace.
 - [26. Accept short task ID prefixes](decisions/0026-accept-short-task-id-prefixes-20260619-212812.md)
 - [27. Add group and safer parent interruption](decisions/0027-add-group-and-safer-parent-interruption-20260619-231629.md)
 - [28. Add compact machine control view](decisions/0028-add-compact-machine-control-view-20260620-082105.md)
+- [29. Add batch launch manifests](decisions/0029-add-batch-launch-manifests-20260622-054900.md)
+- [30. Use single control-plane task store](decisions/0030-use-single-control-plane-task-store-20260622-074546.md)

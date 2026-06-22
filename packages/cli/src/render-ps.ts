@@ -9,10 +9,12 @@ import {
 } from "./terminal-format.ts";
 
 type PsColumnWidths = {
+  workspace: number;
   runtime: number;
   work: number;
   status: number;
   model: number;
+  cwd: number;
   started: number;
   duration: number;
   tokens: number;
@@ -24,17 +26,21 @@ export function renderPsView(view: AgentTaskPsView, options: { columns?: number 
     return "No tasks.\n";
   }
 
-  const widths = psColumnWidths(options.columns);
+  const showWorkspace = view.scope.workspaces === "all";
+  const widths = psColumnWidths(options.columns, showWorkspace);
   const lines: string[] = [formatPsSummary(view)];
 
   for (const group of view.groups) {
     lines.push("");
     lines.push(formatPsGroupHeading(group));
     lines.push(
-      `  ${padCell("agent", widths.runtime)} ${padCell("work", widths.work)} ${padCell(
-        "status",
-        widths.status,
-      )} ${padCell("model", widths.model)} ${padCell(
+      `  ${showWorkspace ? `${padCell("workspace", widths.workspace)} ` : ""}${padCell(
+        "agent",
+        widths.runtime,
+      )} ${padCell("work", widths.work)} ${padCell("status", widths.status)} ${padCell(
+        "model",
+        widths.model,
+      )} ${showWorkspace ? `${padCell("cwd", widths.cwd)} ` : ""}${padCell(
         "started",
         widths.started,
       )} ${padCell("dur", widths.duration)} ${padCell("tok", widths.tokens)} ${padCell(
@@ -45,13 +51,16 @@ export function renderPsView(view: AgentTaskPsView, options: { columns?: number 
 
     for (const row of group.rows) {
       lines.push(
-        `  ${padCell(row.runtime, widths.runtime)} ${padCell(row.name, widths.work)} ${padCell(
-          formatPsStatus(row.status),
-          widths.status,
-        )} ${padCell(
+        `  ${showWorkspace ? `${padCell(formatWorkspace(row), widths.workspace)} ` : ""}${padCell(
+          row.runtime,
+          widths.runtime,
+        )} ${padCell(row.name, widths.work)} ${padCell(formatPsStatus(row.status), widths.status)} ${padCell(
           row.model ?? "-",
           widths.model,
-        )} ${padCell(formatStartedAt(row, view.generatedAt, widths.started), widths.started)} ${padCell(
+        )} ${showWorkspace ? `${padCell(formatCwd(row), widths.cwd)} ` : ""}${padCell(
+          formatStartedAt(row, view.generatedAt, widths.started),
+          widths.started,
+        )} ${padCell(
           formatRowDuration(row),
           widths.duration,
         )} ${padCell(formatTokenUsageCompact(row.usage), widths.tokens)} ${padCell(
@@ -65,40 +74,46 @@ export function renderPsView(view: AgentTaskPsView, options: { columns?: number 
   return `${lines.join("\n")}\n`;
 }
 
-function psColumnWidths(columns: number | undefined): PsColumnWidths {
+function psColumnWidths(columns: number | undefined, showWorkspace: boolean): PsColumnWidths {
   const wide = {
+    workspace: 14,
     runtime: 12,
     work: 28,
     status: 8,
     model: 14,
+    cwd: 18,
     started: 8,
     duration: 5,
     tokens: 6,
     last: 24,
   };
-  if (!columns || columns >= psTableWidth(wide)) {
+  if (!columns || columns >= psTableWidth(wide, showWorkspace)) {
     return wide;
   }
 
   const compact = {
+    workspace: 10,
     runtime: 8,
     work: 18,
     status: 7,
     model: 12,
+    cwd: 12,
     started: 8,
     duration: 4,
     tokens: 5,
     last: 14,
   };
-  if (columns >= psTableWidth(compact)) {
+  if (columns >= psTableWidth(compact, showWorkspace)) {
     return compact;
   }
 
   return {
+    workspace: 8,
     runtime: 6,
     work: 12,
     status: 7,
     model: 7,
+    cwd: 8,
     started: 5,
     duration: 3,
     tokens: 4,
@@ -106,9 +121,10 @@ function psColumnWidths(columns: number | undefined): PsColumnWidths {
   };
 }
 
-function psTableWidth(widths: PsColumnWidths): number {
+function psTableWidth(widths: PsColumnWidths, showWorkspace: boolean): number {
   return (
     2 +
+    (showWorkspace ? widths.workspace + widths.cwd : 0) +
     widths.runtime +
     widths.work +
     widths.status +
@@ -120,6 +136,19 @@ function psTableWidth(widths: PsColumnWidths): number {
     8 +
     8
   );
+}
+
+function formatWorkspace(row: AgentTaskPsView["rows"][number]): string {
+  return row.workspaceName ?? basenameFromPath(row.workspaceRoot);
+}
+
+function formatCwd(row: AgentTaskPsView["rows"][number]): string {
+  return row.relativeCwd ?? row.cwd;
+}
+
+function basenameFromPath(value: string): string {
+  const parts = value.split("/").filter(Boolean);
+  return parts[parts.length - 1] ?? value;
 }
 
 function formatPsSummary(view: AgentTaskPsView): string {
