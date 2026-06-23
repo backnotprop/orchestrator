@@ -3,7 +3,8 @@ import { randomUUID } from "node:crypto";
 import { appendFile, readFile, stat, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import type { AgentLaunchPlan } from "../runtime/index.ts";
-import { isTerminalTaskStatus } from "./types.ts";
+import { captureProcessIdentity, observeTaskState } from "./observation.ts";
+import { isTaskStopRequested, isTerminalTaskStatus } from "./types.ts";
 import type {
   AgentTaskRecord,
   InterruptTaskInput,
@@ -12,6 +13,7 @@ import type {
   LaunchTaskHandle,
   LaunchTaskInput,
   ReadTaskOutputInput,
+  TaskObservedState,
   TaskEvent,
   TaskStoreOptions,
 } from "./types.ts";
@@ -26,6 +28,7 @@ import {
   taskCwd,
   taskWorkspaceRoot,
   updateTaskStatus,
+  writeTaskHeartbeat,
 } from "./store.ts";
 import {
   UNGROUPED_GROUP_ID,
@@ -46,6 +49,8 @@ type RunningTask = {
 };
 
 const runningTasks = new Map<string, RunningTask>();
+const HEARTBEAT_INTERVAL_MS = 5_000;
+const HEARTBEAT_STALE_AFTER_MS = 20_000;
 
 export { listTasks } from "./store.ts";
 
@@ -106,6 +111,7 @@ export async function launchTask(input: LaunchTaskInput): Promise<LaunchTaskHand
   const maxOutputBytes = input.maxOutputBytes ?? 2_000_000;
   let stdoutBytes = 0;
   let stderrBytes = 0;
+  let combinedBytes = 0;
   let stdoutCaptureTruncated = false;
   let stderrCaptureTruncated = false;
   const appendEvent = async (
@@ -192,11 +198,13 @@ export async function launchTask(input: LaunchTaskInput): Promise<LaunchTaskHand
 
   let timedOut = false;
   let timeout: NodeJS.Timeout | undefined;
+  let heartbeat: NodeJS.Timeout | undefined;
   let settled = false;
   const timeoutMs = input.timeoutMs;
   const pendingWrites: Promise<unknown>[] = [];
   let stdoutQueue: Promise<unknown> = Promise.resolve();
   let stderrQueue: Promise<unknown> = Promise.resolve();
+  let combinedQueue: Promise<unknown> = Promise.resolve();
   const runningTask: RunningTask = {
     child,
     appendEvent,
@@ -205,7 +213,23 @@ export async function launchTask(input: LaunchTaskInput): Promise<LaunchTaskHand
   };
   runningTasks.set(taskId, runningTask);
 
+  const appendCombinedOutput = (chunk: Buffer): void => {
+    combinedBytes += chunk.byteLength;
+    const currentBytes = combinedBytes;
+    const write = combinedQueue.then(() =>
+      appendBoundedOutput({
+        path: paths.combinedLog,
+        chunk,
+        currentBytes,
+        maxBytes: maxOutputBytes,
+      }),
+    );
+    combinedQueue = write.catch(() => {});
+    pendingWrites.push(write);
+  };
+
   child.stdout.on("data", (chunk: Buffer) => {
+    appendCombinedOutput(chunk);
     stdoutBytes += chunk.byteLength;
     const currentBytes = stdoutBytes;
     const streamTruncated = currentBytes > maxOutputBytes;
@@ -240,6 +264,7 @@ export async function launchTask(input: LaunchTaskInput): Promise<LaunchTaskHand
   });
 
   child.stderr.on("data", (chunk: Buffer) => {
+    appendCombinedOutput(chunk);
     stderrBytes += chunk.byteLength;
     const currentBytes = stderrBytes;
     const streamTruncated = currentBytes > maxOutputBytes;
@@ -283,6 +308,9 @@ export async function launchTask(input: LaunchTaskInput): Promise<LaunchTaskHand
         if (timeout) {
           clearTimeout(timeout);
         }
+        if (heartbeat) {
+          clearInterval(heartbeat);
+        }
         await Promise.all(pendingWrites);
         await outputAdapter.finalize();
         await eventQueue;
@@ -307,6 +335,9 @@ export async function launchTask(input: LaunchTaskInput): Promise<LaunchTaskHand
         if (timeout) {
           clearTimeout(timeout);
         }
+        if (heartbeat) {
+          clearInterval(heartbeat);
+        }
         runningTasks.delete(taskId);
         await Promise.all(pendingWrites);
         const adapterResult = await outputAdapter.finalize();
@@ -325,22 +356,23 @@ export async function launchTask(input: LaunchTaskInput): Promise<LaunchTaskHand
         await appendEvent("result", { path: paths.resultMd, bytes: Buffer.byteLength(result) });
 
         const finalStatus =
-          current.status === "cancelled" || runningTask.cancelRequested
+          isTaskStopRequested(current) || runningTask.cancelRequested
             ? "cancelled"
             : timedOut
               ? "timed_out"
               : code === 0 && !adapterResult.failed
                 ? "succeeded"
                 : "failed";
-        const error = timedOut
-          ? `Timed out after ${timeoutMs}ms.`
-          : finalStatus === "cancelled"
-            ? (current.error ?? runningTask.cancelReason)
-            : signal
-              ? `Process exited from signal ${signal}.`
-              : finalStatus === "failed"
-                ? adapterResult.errorText
-                : undefined;
+        const error =
+          finalStatus === "cancelled"
+            ? (current.stopReason ?? runningTask.cancelReason ?? current.error)
+            : timedOut
+              ? `Timed out after ${timeoutMs}ms.`
+              : signal
+                ? `Process exited from signal ${signal}.`
+                : finalStatus === "failed"
+                  ? adapterResult.errorText
+                  : undefined;
 
         const finished = await updateTaskStatus(current, finalStatus, {
           finishedAt: now(),
@@ -375,8 +407,11 @@ export async function launchTask(input: LaunchTaskInput): Promise<LaunchTaskHand
       }
 
       const current = await readTaskRecord(input, taskId);
-      if (current.status === "cancelled" || runningTask.cancelRequested) {
-        killProcessGroup(child, runningTask.cancelSignal);
+      if (isTaskStopRequested(current) || runningTask.cancelRequested) {
+        if (child.pid && !current.pid) {
+          await updateTaskStatus(current, current.status, { pid: child.pid });
+        }
+        killProcessGroup(child, current.stopSignal ?? runningTask.cancelSignal);
         return;
       }
 
@@ -394,11 +429,6 @@ export async function launchTask(input: LaunchTaskInput): Promise<LaunchTaskHand
         startedAt,
         ...(child.pid ? { pid: child.pid } : {}),
       });
-      if (runningTask.cancelRequested) {
-        killProcessGroup(child, runningTask.cancelSignal);
-        return;
-      }
-
       await appendEvent("running", { pid: child.pid ?? null });
 
       timeout = timeoutMs
@@ -407,6 +437,58 @@ export async function launchTask(input: LaunchTaskInput): Promise<LaunchTaskHand
             killProcessGroup(child);
           }, timeoutMs)
         : undefined;
+
+      if (runningTask.cancelRequested) {
+        killProcessGroup(child, runningTask.cancelSignal);
+        return;
+      }
+
+      const supervisorIdentity = await captureProcessIdentity(process.pid);
+      const childIdentity = child.pid ? await captureProcessIdentity(child.pid) : undefined;
+      if (settled) {
+        return;
+      }
+      const supervision =
+        supervisorIdentity && childIdentity
+          ? {
+              supervisor: supervisorIdentity,
+              child: childIdentity,
+              ...(process.platform !== "win32" && child.pid ? { processGroupId: child.pid } : {}),
+              startedAt,
+              heartbeatIntervalMs: HEARTBEAT_INTERVAL_MS,
+              staleAfterMs: HEARTBEAT_STALE_AFTER_MS,
+            }
+          : undefined;
+      if (supervision) {
+        const currentForSupervision = await readTaskRecord(input, taskId);
+        if (settled) {
+          return;
+        }
+        await updateTaskStatus(currentForSupervision, currentForSupervision.status, {
+          supervision,
+        });
+        const writeHeartbeat = async (): Promise<void> => {
+          await writeTaskHeartbeat(paths, {
+            taskId,
+            supervisorPid: supervision.supervisor.pid,
+            ...(supervision.child ? { childPid: supervision.child.pid } : {}),
+            ...(supervision.processGroupId ? { processGroupId: supervision.processGroupId } : {}),
+            lastHeartbeatAt: now(),
+          });
+        };
+        await writeHeartbeat();
+        if (settled) {
+          return;
+        }
+        heartbeat = setInterval(() => {
+          void writeHeartbeat().catch(() => {});
+        }, HEARTBEAT_INTERVAL_MS);
+        heartbeat.unref();
+      }
+      if (runningTask.cancelRequested) {
+        killProcessGroup(child, runningTask.cancelSignal);
+        return;
+      }
     })();
   });
 
@@ -437,14 +519,28 @@ export async function interruptTask(input: InterruptTaskInput): Promise<AgentTas
     throw new TaskSupervisorError(`Task "${task.taskId}" is not running in this process.`);
   }
 
+  const observation = await observeTaskState(input, task);
+  if (!observation.actionable && !running) {
+    throw new TaskSupervisorSafetyError(
+      `Task "${shortId(task.taskId)}" is ${observation.state}; Orchestrator cannot interrupt it safely.`,
+      {
+        reason: observation.state,
+        input: task.taskId,
+        hint: "Use read, logs, and events to inspect the task. If this is stale history, leave it as-is.",
+      },
+    );
+  }
+
   if (running) {
     running.cancelRequested = true;
     running.cancelReason = reason;
     running.cancelSignal = signal;
   }
 
-  const updated = await updateTaskStatus(task, "cancelled", {
-    error: reason,
+  const updated = await updateTaskStatus(task, task.status, {
+    stopRequestedAt: task.stopRequestedAt ?? now(),
+    stopReason: reason,
+    stopSignal: signal,
   });
 
   if (running) {
@@ -474,6 +570,13 @@ export async function interruptTasks(input: InterruptTasksInput): Promise<Interr
       continue;
     }
 
+    const observation = await observeTaskState(input, task);
+    const skipReason = nonActionableInterruptReason(observation.state);
+    if (skipReason && !runningTasks.has(task.taskId)) {
+      skipped.push({ task, reason: skipReason });
+      continue;
+    }
+
     try {
       interrupted.push(
         await interruptTask({
@@ -489,6 +592,14 @@ export async function interruptTasks(input: InterruptTasksInput): Promise<Interr
       if (latest && isTerminalTaskStatus(latest.status)) {
         skipped.push({ task: latest, reason: "terminal" });
         continue;
+      }
+      if (latest) {
+        const latestObservation = await observeTaskState(input, latest);
+        const latestSkipReason = nonActionableInterruptReason(latestObservation.state);
+        if (latestSkipReason) {
+          skipped.push({ task: latest, reason: latestSkipReason });
+          continue;
+        }
       }
       failed.push({ taskId: task.taskId, error: formatError(error) });
     }
@@ -598,16 +709,25 @@ async function selectSingleInterruptTask(
   const taskId = await resolveTaskId(store, target.taskId);
   const task = await readTaskRecord(store, taskId);
   const children = childTasksForParent(allTasks, task.taskId);
-  const nonTerminalChildren = children.filter((child) => !isTerminalTaskStatus(child.status));
+  const activeChildren = (
+    await Promise.all(
+      children.map(async (child) => ({
+        child,
+        observation: await observeTaskState(store, child),
+      })),
+    )
+  )
+    .filter(({ observation }) => observation.active)
+    .map(({ child }) => child);
 
   if (
     task.runtime === "orchestrator" &&
-    nonTerminalChildren.length > 0 &&
+    activeChildren.length > 0 &&
     !target.children &&
     !target.taskOnly
   ) {
     throw new TaskSupervisorSafetyError(
-      `Task "${shortId(task.taskId)}" has ${nonTerminalChildren.length} running ${nonTerminalChildren.length === 1 ? "child" : "children"}. Use:\n  orchestrator interrupt ${shortId(task.taskId)} --children\nor:\n  orchestrator interrupt ${shortId(task.taskId)} --task-only`,
+      `Task "${shortId(task.taskId)}" has ${activeChildren.length} active ${activeChildren.length === 1 ? "child" : "children"}. Use:\n  orchestrator interrupt ${shortId(task.taskId)} --children\nor:\n  orchestrator interrupt ${shortId(task.taskId)} --task-only`,
       {
         reason: "parent_has_running_children",
         input: task.taskId,
@@ -620,6 +740,15 @@ async function selectSingleInterruptTask(
     task,
     tasks: target.children ? orderInterruptTasks([task, ...children], task.taskId) : [task],
   };
+}
+
+function nonActionableInterruptReason(
+  state: TaskObservedState,
+): InterruptTasksResult["skipped"][number]["reason"] | undefined {
+  if (state === "stale" || state === "orphaned" || state === "lost") {
+    return state;
+  }
+  return undefined;
 }
 
 function orderInterruptTasks(

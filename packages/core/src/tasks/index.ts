@@ -17,6 +17,7 @@ export {
   taskBatchControlCommands,
   taskControlCommands,
 } from "./operations.ts";
+export { captureProcessIdentity, observeTaskState } from "./observation.ts";
 export type {
   AgentTaskControlBatchCommands,
   AgentTaskControlCommand,
@@ -51,12 +52,19 @@ export {
   localTaskLocation,
   listTaskIds,
   readTaskRecord,
+  readTaskHeartbeat,
   resolveTaskId,
   taskCwd,
   taskWorkspaceRoot,
+  writeTaskHeartbeat,
 } from "./store.ts";
 export type { TaskLookupErrorReason } from "./store.ts";
-export { isTerminalTaskStatus, TASK_STATUSES } from "./types.ts";
+export {
+  isTaskStopRequested,
+  isTerminalTaskStatus,
+  taskDisplayState,
+  TASK_STATUSES,
+} from "./types.ts";
 export {
   normalizeTaskUsage,
   selectTaskUsage,
@@ -82,14 +90,21 @@ export type {
   ReadTaskLogsResult,
   ReadTaskOutputInput,
   TaskEvent,
+  TaskDisplayState,
+  TaskHeartbeat,
   TaskLocation,
+  TaskObservation,
+  TaskObservedState,
   TaskStoreScope,
   TaskParent,
   TaskPaths,
+  TaskProcessIdentity,
+  TaskSupervision,
   TaskStatus,
   TaskStoreOptions,
   TaskUsage,
   WaitForTaskInput,
   WaitForTaskProgress,
+  WaitForTaskRetrievalStatus,
   WaitForTaskResult,
 } from "./types.ts";

@@ -1,11 +1,15 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { access, mkdtemp, readFile, realpath, rm } from "node:fs/promises";
+import { access, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
-import { getOrchestratorDir, getTaskPaths } from "@backnotprop/orchestrator-core";
+import {
+  getOrchestratorDir,
+  getTaskPaths,
+  writeTaskHeartbeat,
+} from "@backnotprop/orchestrator-core";
 import type { AgentTaskRecord, TaskStatus } from "@backnotprop/orchestrator-core";
 
 const execFileAsync = promisify(execFile);
@@ -72,6 +76,72 @@ function restoreEnv(name: string, value: string | undefined): void {
 export async function readTask(workspaceRoot: string, taskId: string): Promise<AgentTaskRecord> {
   const raw = await readFile(getTaskPaths({ workspaceRoot }, taskId).taskJson, "utf8");
   return JSON.parse(raw) as AgentTaskRecord;
+}
+
+export async function markTaskLostForObservation(
+  task: AgentTaskRecord,
+  options: { startedAt?: string; heartbeatAt?: string } = {},
+): Promise<void> {
+  const raw = JSON.parse(await readFile(task.paths.taskJson, "utf8")) as AgentTaskRecord;
+  const startedAt = options.startedAt ?? new Date(Date.now() - 60_000).toISOString();
+  const heartbeatAt = options.heartbeatAt ?? new Date(Date.now() - 60_000).toISOString();
+  const deadSupervisorPid = findDeadPid();
+  const deadChildPid = findDeadPid([deadSupervisorPid]);
+
+  await writeFile(
+    task.paths.taskJson,
+    `${JSON.stringify(
+      {
+        ...raw,
+        status: "running",
+        startedAt,
+        finishedAt: undefined,
+        exitCode: undefined,
+        supervision: {
+          supervisor: {
+            pid: deadSupervisorPid,
+            capturedAt: startedAt,
+            startedAtMs: 1,
+          },
+          child: {
+            pid: deadChildPid,
+            capturedAt: startedAt,
+            startedAtMs: 1,
+          },
+          processGroupId: deadChildPid,
+          startedAt,
+          heartbeatIntervalMs: 5_000,
+          staleAfterMs: 20_000,
+        },
+      },
+      null,
+      2,
+    )}\n`,
+  );
+  await writeTaskHeartbeat(task.paths, {
+    taskId: task.taskId,
+    supervisorPid: deadSupervisorPid,
+    childPid: deadChildPid,
+    processGroupId: deadChildPid,
+    lastHeartbeatAt: heartbeatAt,
+  });
+}
+
+export function findDeadPid(excluded: readonly number[] = []): number {
+  const excludedSet = new Set(excluded);
+  for (let pid = 999_999; pid > 900_000; pid -= 1) {
+    if (excludedSet.has(pid)) {
+      continue;
+    }
+    try {
+      process.kill(pid, 0);
+    } catch (error) {
+      if (error instanceof Error && "code" in error && error.code === "ESRCH") {
+        return pid;
+      }
+    }
+  }
+  throw new Error("Could not find an unused pid for observation tests.");
 }
 
 export async function waitForTaskStatus(

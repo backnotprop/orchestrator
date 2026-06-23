@@ -237,3 +237,37 @@ test("CLI logs --follow streams raw output until the task exits", async () => {
     );
   }, "orchestrator-cli-follow-");
 });
+
+test("CLI logs --follow --stream all preserves combined stdout and stderr order", async () => {
+  await withTempWorkspace(async (workspaceRoot) => {
+    const script = [
+      "process.stdout.write('out-one\\n')",
+      "setTimeout(() => process.stderr.write('err-two\\n'), 50)",
+      "setTimeout(() => process.stdout.write('out-three\\n'), 100)",
+    ].join("; ");
+    const launch = await runCli(workspaceRoot, [
+      "launch",
+      "shell",
+      "--workspace",
+      workspaceRoot,
+      "--wait",
+      "--json",
+      `node -e ${quoteShellArg(script)}`,
+    ]);
+    const launched = JSON.parse(launch.stdout) as AgentTaskRecord;
+    const shortTaskId = launched.taskId.slice(0, 8);
+
+    const followed = await runCli(workspaceRoot, [
+      "logs",
+      shortTaskId,
+      "--workspace",
+      workspaceRoot,
+      "--stream",
+      "all",
+      "--follow",
+    ]);
+
+    assert.equal(followed.stdout, "out-one\nerr-two\nout-three\n");
+    assert.equal(followed.stderr, "");
+  }, "orchestrator-cli-follow-all-order-");
+});

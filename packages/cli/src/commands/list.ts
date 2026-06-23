@@ -3,8 +3,10 @@ import {
   listTasks,
   loadConfiguredRuntimeRegistry,
   matchesTaskWorkspace,
+  observeTaskState,
   type AgentTaskRecord,
   type RuntimeRegistry,
+  type TaskObservation,
   type TaskStatus,
 } from "@backnotprop/orchestrator-core";
 import { summarizeTaskPrompt } from "../task-labels.ts";
@@ -36,8 +38,21 @@ export async function commandList(options: ListOptions): Promise<void> {
     }),
   );
 
+  const observedTasks = await Promise.all(
+    tasks.map(async (task) => ({
+      task,
+      observation: await observeTaskState(options, task),
+    })),
+  );
+
   if (options.json) {
-    process.stdout.write(`${JSON.stringify(tasks, null, 2)}\n`);
+    process.stdout.write(
+      `${JSON.stringify(
+        observedTasks.map(({ task, observation }) => taskListJson(task, observation)),
+        null,
+        2,
+      )}\n`,
+    );
     return;
   }
 
@@ -47,26 +62,47 @@ export async function commandList(options: ListOptions): Promise<void> {
   }
 
   const nowMs = Date.now();
-  for (const task of tasks) {
-    process.stdout.write(formatTaskListLine(task, nowMs, registry));
+  for (const { task, observation } of observedTasks) {
+    process.stdout.write(formatTaskListLine(task, observation, nowMs, registry));
   }
 }
 
 function formatTaskListLine(
   task: AgentTaskRecord,
+  observation: TaskObservation,
   nowMs: number,
   registry: RuntimeRegistry,
 ): string {
   return (
     [
       displayTaskName(task),
-      task.status,
+      observation.state,
       task.runtime,
       taskModel(task, registry),
       formatTaskAge(task.createdAt, nowMs),
       task.taskId,
     ].join("\t") + "\n"
   );
+}
+
+function taskListJson(
+  task: AgentTaskRecord,
+  observation: TaskObservation,
+): AgentTaskRecord & {
+  state?: TaskObservation["state"];
+  active: boolean;
+  actionable: boolean;
+  observationReason?: string;
+} {
+  return {
+    ...task,
+    ...(observation.state === task.status ? {} : { state: observation.state }),
+    active: observation.active,
+    actionable: observation.actionable,
+    ...(observation.reason && observation.state !== task.status
+      ? { observationReason: observation.reason }
+      : {}),
+  };
 }
 
 function displayTaskName(task: AgentTaskRecord): string {

@@ -1,5 +1,4 @@
-import { isTerminalTaskStatus } from "@backnotprop/orchestrator-core";
-import type { AgentTaskPsView, TaskStatus } from "@backnotprop/orchestrator-core";
+import type { AgentTaskPsView, TaskDisplayState } from "@backnotprop/orchestrator-core";
 import {
   formatDuration,
   formatInline,
@@ -54,7 +53,7 @@ export function renderPsView(view: AgentTaskPsView, options: { columns?: number 
         `  ${showWorkspace ? `${padCell(formatWorkspace(row), widths.workspace)} ` : ""}${padCell(
           row.runtime,
           widths.runtime,
-        )} ${padCell(row.name, widths.work)} ${padCell(formatPsStatus(row.status), widths.status)} ${padCell(
+        )} ${padCell(row.name, widths.work)} ${padCell(formatPsStatus(row.state ?? row.status), widths.status)} ${padCell(
           row.model ?? "-",
           widths.model,
         )} ${showWorkspace ? `${padCell(formatCwd(row), widths.cwd)} ` : ""}${padCell(
@@ -152,7 +151,14 @@ function basenameFromPath(value: string): string {
 }
 
 function formatPsSummary(view: AgentTaskPsView): string {
-  const running = view.rows.filter((row) => !isTerminalTaskStatus(row.status)).length;
+  const stopping = view.rows.filter((row) => row.state === "stopping").length;
+  const stale = view.rows.filter((row) => row.state === "stale").length;
+  const orphaned = view.rows.filter((row) => row.state === "orphaned").length;
+  const lost = view.rows.filter((row) => row.state === "lost").length;
+  const running = view.rows.filter(
+    (row) =>
+      row.active && row.state !== "stopping" && row.state !== "stale" && row.state !== "orphaned",
+  ).length;
   const done = view.rows.filter((row) => row.status === "succeeded").length;
   const stopped = view.rows.filter((row) => row.status === "cancelled").length;
   const failed = view.rows.filter((row) => row.status === "failed").length;
@@ -161,6 +167,10 @@ function formatPsSummary(view: AgentTaskPsView): string {
   return [
     `updated ${formatGeneratedAt(view.generatedAt)}`,
     `${running} running`,
+    stopping > 0 ? `${stopping} stopping` : undefined,
+    stale > 0 ? `${stale} stale` : undefined,
+    orphaned > 0 ? `${orphaned} orphaned` : undefined,
+    lost > 0 ? `${lost} lost` : undefined,
     `${done} done`,
     stopped > 0 ? `${stopped} stopped` : undefined,
     failed > 0 ? `${failed} failed` : undefined,
@@ -173,11 +183,23 @@ function formatPsSummary(view: AgentTaskPsView): string {
 
 function formatPsGroupHeading(group: AgentTaskPsView["groups"][number]): string {
   const label = psGroupLabel(group);
+  const stopping = group.rows.filter((row) => row.state === "stopping").length;
+  const stale = group.rows.filter((row) => row.state === "stale").length;
+  const orphaned = group.rows.filter((row) => row.state === "orphaned").length;
+  const lost = group.rows.filter((row) => row.state === "lost").length;
+  const running = group.rows.filter(
+    (row) =>
+      row.active && row.state !== "stopping" && row.state !== "stale" && row.state !== "orphaned",
+  ).length;
   return [
     label,
     formatPsGroupStatus(group.status),
     `${group.total} ${group.total === 1 ? "agent" : "agents"}`,
-    group.running > 0 ? `${group.running} running` : undefined,
+    running > 0 ? `${running} running` : undefined,
+    stopping > 0 ? `${stopping} stopping` : undefined,
+    stale > 0 ? `${stale} stale` : undefined,
+    orphaned > 0 ? `${orphaned} orphaned` : undefined,
+    lost > 0 ? `${lost} lost` : undefined,
     group.succeeded > 0 ? `${group.succeeded} done` : undefined,
     group.stopped > 0 ? `${group.stopped} stopped` : undefined,
     group.failed > 0 ? `${group.failed} failed` : undefined,
@@ -210,7 +232,7 @@ function formatPsGroupStatus(status: AgentTaskPsView["groups"][number]["status"]
   }
 }
 
-function formatPsStatus(status: TaskStatus): string {
+function formatPsStatus(status: TaskDisplayState): string {
   switch (status) {
     case "succeeded":
       return "done";
@@ -218,6 +240,8 @@ function formatPsStatus(status: TaskStatus): string {
       return "stopped";
     case "timed_out":
       return "timeout";
+    case "stopping":
+      return "stopping";
     default:
       return status;
   }
@@ -228,7 +252,7 @@ function formatPsLast(row: AgentTaskPsView["rows"][number]): string {
   if (raw) {
     return summarizePsMessage(raw);
   }
-  return formatPsStatus(row.status);
+  return formatPsStatus(row.state ?? row.status);
 }
 
 function summarizePsMessage(value: string): string {

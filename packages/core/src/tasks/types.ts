@@ -12,6 +12,9 @@ export const TASK_STATUSES = [
 
 export type TaskStatus = (typeof TASK_STATUSES)[number];
 
+export type TaskObservedState = TaskStatus | "stopping" | "stale" | "orphaned" | "lost";
+export type TaskDisplayState = TaskObservedState;
+
 export function isTerminalTaskStatus(status: TaskStatus): boolean {
   return (
     status === "succeeded" ||
@@ -24,8 +27,10 @@ export function isTerminalTaskStatus(status: TaskStatus): boolean {
 export type TaskPaths = {
   taskDir: string;
   taskJson: string;
+  heartbeatJson: string;
   stdoutLog: string;
   stderrLog: string;
+  combinedLog: string;
   eventsJsonl: string;
   transcriptJsonl: string;
   resultMd: string;
@@ -83,6 +88,30 @@ export type RemoteTaskLocation = {
 
 export type TaskLocation = LocalTaskLocation | RemoteTaskLocation;
 
+export type TaskProcessIdentity = {
+  pid: number;
+  capturedAt: string;
+  startedAtMs?: number;
+  executable?: string;
+};
+
+export type TaskSupervision = {
+  supervisor: TaskProcessIdentity;
+  child?: TaskProcessIdentity;
+  processGroupId?: number;
+  startedAt: string;
+  heartbeatIntervalMs: number;
+  staleAfterMs: number;
+};
+
+export type TaskHeartbeat = {
+  taskId: string;
+  supervisorPid: number;
+  childPid?: number;
+  processGroupId?: number;
+  lastHeartbeatAt: string;
+};
+
 export type AgentTaskRecord = {
   taskId: string;
   name?: string;
@@ -97,6 +126,10 @@ export type AgentTaskRecord = {
   exitCode?: number | null;
   pid?: number;
   error?: string;
+  stopRequestedAt?: string;
+  stopReason?: string;
+  stopSignal?: NodeJS.Signals;
+  supervision?: TaskSupervision;
   parent?: TaskParent;
   storeScope?: TaskStoreScope;
   location?: TaskLocation;
@@ -104,6 +137,37 @@ export type AgentTaskRecord = {
   usage?: TaskUsage;
   outputCapture?: TaskOutputCapture;
   paths: TaskPaths;
+};
+
+export function isTaskStopRequested(
+  task: Pick<AgentTaskRecord, "status" | "stopRequestedAt">,
+): boolean {
+  return !isTerminalTaskStatus(task.status) && Boolean(task.stopRequestedAt);
+}
+
+export function taskDisplayState(
+  task: Pick<AgentTaskRecord, "status" | "stopRequestedAt">,
+): TaskObservedState {
+  return isTaskStopRequested(task) ? "stopping" : task.status;
+}
+
+export type TaskObservation = {
+  status: TaskStatus;
+  state: TaskObservedState;
+  active: boolean;
+  actionable: boolean;
+  checkedAt: string;
+  reason?: string;
+  heartbeat?: {
+    lastHeartbeatAt?: string;
+    staleAfterMs?: number;
+  };
+  liveness?: {
+    supervisorAlive?: boolean;
+    supervisorVerified?: boolean;
+    childAlive?: boolean;
+    childVerified?: boolean;
+  };
 };
 
 export type TaskEvent = {
@@ -167,15 +231,19 @@ export type WaitForTaskInput = TaskStoreOptions & {
 
 export type WaitForTaskProgress = {
   task: AgentTaskRecord;
+  observation: TaskObservation;
   elapsedMs: number;
   timeoutMs: number;
   remainingMs: number;
   attempt: number;
 };
 
+export type WaitForTaskRetrievalStatus = "completed" | "timeout" | "unavailable";
+
 export type WaitForTaskResult = {
-  retrievalStatus: "completed" | "timeout";
+  retrievalStatus: WaitForTaskRetrievalStatus;
   task: AgentTaskRecord;
+  observation: TaskObservation;
 };
 
 export type LogStream = "stdout" | "stderr" | "all";
@@ -238,7 +306,7 @@ export type InterruptTasksInput = TaskStoreOptions & {
 
 export type InterruptTasksSkipped = {
   task: AgentTaskRecord;
-  reason: "terminal";
+  reason: "terminal" | "stale" | "orphaned" | "lost";
 };
 
 export type InterruptTasksFailed = {

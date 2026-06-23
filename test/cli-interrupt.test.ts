@@ -5,6 +5,7 @@ import type { AgentTaskRecord } from "@backnotprop/orchestrator-core";
 import { launchTask } from "@backnotprop/orchestrator-core/tasks";
 import {
   assertOneJsonLine,
+  markTaskLostForObservation,
   orchestratorPlan,
   runCli,
   shellPlan,
@@ -76,7 +77,16 @@ test("CLI interrupt cancels a task launched by a detached supervisor", async () 
       ok: boolean;
       summary: { interrupted: number; skipped: number; failed: number };
       target: { kind: string; taskId: string };
-      interrupted: Array<{ taskId: string; id: string; status: string; error?: string }>;
+      interrupted: Array<{
+        taskId: string;
+        id: string;
+        status: string;
+        state?: string;
+        error?: string;
+        stopRequestedAt?: string;
+        stopReason?: string;
+        stopSignal?: string;
+      }>;
       skipped: unknown[];
       failed: unknown[];
     };
@@ -84,22 +94,99 @@ test("CLI interrupt cancels a task launched by a detached supervisor", async () 
     assert.equal(interrupted.ok, true);
     assert.deepEqual(interrupted.summary, { interrupted: 1, skipped: 0, failed: 0 });
     assert.deepEqual(interrupted.target, { kind: "task", taskId: launched.taskId });
-    assert.deepEqual(interrupted.interrupted, [
-      {
-        taskId: launched.taskId,
-        id: shortTaskId,
-        status: "cancelled",
-        error: "cli cancellation",
-        name: launched.taskId,
-        runtime: "shell",
-      },
-    ]);
+    assert.equal(interrupted.interrupted.length, 1);
+    assert.deepEqual(interrupted.interrupted[0], {
+      taskId: launched.taskId,
+      id: shortTaskId,
+      status: "running",
+      state: "stopping",
+      stopRequestedAt: interrupted.interrupted[0]?.stopRequestedAt,
+      stopReason: "cli cancellation",
+      stopSignal: "SIGTERM",
+      name: launched.taskId,
+      runtime: "shell",
+    });
+    assert.ok(interrupted.interrupted[0]?.stopRequestedAt);
     assert.deepEqual(interrupted.skipped, []);
     assert.deepEqual(interrupted.failed, []);
 
     const completed = await waitForTaskStatus(workspaceRoot, launched.taskId, "cancelled");
     assert.equal(completed.error, "cli cancellation");
   }, "orchestrator-cli-test-");
+});
+
+test("CLI interrupt shows delayed shutdown as stopping until final cancellation", async () => {
+  await withTempWorkspace(async (workspaceRoot) => {
+    const command = [
+      "printf 'ready\\n'",
+      "trap 'printf stopping\\\\n; sleep 2; exit 0' TERM",
+      "while true; do sleep 1; done",
+    ].join("; ");
+    const launch = await runCli(workspaceRoot, [
+      "launch",
+      "shell",
+      "--workspace",
+      workspaceRoot,
+      "--name",
+      "delayed stop",
+      "--json",
+      "--compact",
+      command,
+    ]);
+    const launched = JSON.parse(launch.stdout) as { id: string; taskId: string };
+    await waitUntilRunning(workspaceRoot, launched.taskId);
+
+    await runCli(workspaceRoot, [
+      "interrupt",
+      launched.id,
+      "--workspace",
+      workspaceRoot,
+      "--reason",
+      "delayed cli cancellation",
+      "--json",
+    ]);
+
+    const read = await runCli(workspaceRoot, [
+      "read",
+      launched.id,
+      "--workspace",
+      workspaceRoot,
+      "--json",
+      "--compact",
+    ]);
+    const readPayload = JSON.parse(read.stdout) as {
+      status: string;
+      state?: string;
+      active: boolean;
+      stopReason?: string;
+    };
+    assert.equal(readPayload.status, "running");
+    assert.equal(readPayload.state, "stopping");
+    assert.equal(readPayload.active, true);
+    assert.equal(readPayload.stopReason, "delayed cli cancellation");
+
+    const ps = await runCli(workspaceRoot, [
+      "ps",
+      "--workspace",
+      workspaceRoot,
+      "--json",
+      "--compact",
+      "--active",
+    ]);
+    const psPayload = JSON.parse(ps.stdout) as {
+      tasks: Array<{ taskId: string; status: string; state?: string; active: boolean }>;
+    };
+    const task = psPayload.tasks.find((candidate) => candidate.taskId === launched.taskId);
+    assert.equal(task?.status, "running");
+    assert.equal(task?.state, "stopping");
+    assert.equal(task?.active, true);
+
+    const psText = await runCli(workspaceRoot, ["ps", "--workspace", workspaceRoot]);
+    assert.match(psText.stdout, /stopping/);
+
+    const completed = await waitForTaskStatus(workspaceRoot, launched.taskId, "cancelled");
+    assert.equal(completed.error, "delayed cli cancellation");
+  }, "orchestrator-cli-interrupt-stopping-");
 });
 
 test("CLI interrupt succeeds when the task is already terminal", async () => {
@@ -148,6 +235,61 @@ test("CLI interrupt succeeds when the task is already terminal", async () => {
     ]);
     assert.deepEqual(parsed.failed, []);
   }, "orchestrator-cli-interrupt-terminal-");
+});
+
+test("CLI interrupt skips lost supervised tasks", async () => {
+  await withTempWorkspace(async (workspaceRoot) => {
+    const handle = await launchTask({
+      workspaceRoot,
+      plan: shellPlan("printf lost-interrupt-cli", workspaceRoot),
+      name: "lost interrupt cli",
+    });
+    const completed = await handle.completed;
+    await markTaskLostForObservation(completed);
+    const shortTaskId = completed.taskId.slice(0, 8);
+
+    const interrupt = await runCli(workspaceRoot, [
+      "interrupt",
+      shortTaskId,
+      "--workspace",
+      workspaceRoot,
+      "--json",
+      "--compact",
+    ]);
+    assertOneJsonLine(interrupt.stdout);
+    const parsed = JSON.parse(interrupt.stdout) as {
+      ok: boolean;
+      summary: { interrupted: number; skipped: number; failed: number };
+      failed?: unknown[];
+    };
+    assert.equal(parsed.ok, true);
+    assert.deepEqual(parsed.summary, { interrupted: 0, skipped: 1, failed: 0 });
+    assert.equal(parsed.failed, undefined);
+
+    const verbose = await runCli(workspaceRoot, [
+      "interrupt",
+      shortTaskId,
+      "--workspace",
+      workspaceRoot,
+      "--json",
+    ]);
+    const full = JSON.parse(verbose.stdout) as {
+      skipped: Array<{ task: { taskId: string; state?: string }; reason: string }>;
+    };
+    assert.deepEqual(full.skipped, [
+      {
+        task: {
+          taskId: completed.taskId,
+          id: shortTaskId,
+          name: "lost interrupt cli",
+          runtime: "shell",
+          status: "running",
+          state: "lost",
+        },
+        reason: "lost",
+      },
+    ]);
+  }, "orchestrator-cli-interrupt-lost-");
 });
 
 test("CLI interrupt protects parent tasks and supports task-only", async () => {
@@ -495,7 +637,7 @@ test("CLI interrupt --active stops all active tasks in the selected workspace", 
       ok: boolean;
       summary: { interrupted: number; skipped: number; failed: number };
       target: { kind: string };
-      interrupted: Array<{ taskId: string; status: string; error?: string }>;
+      interrupted: Array<{ taskId: string; status: string; state?: string; stopReason?: string }>;
       skipped: unknown[];
       failed: unknown[];
     };
@@ -507,8 +649,9 @@ test("CLI interrupt --active stops all active tasks in the selected workspace", 
       parsed.interrupted.map((task) => task.taskId),
       [parent.task.taskId, child.task.taskId, manual.task.taskId],
     );
-    assert.ok(parsed.interrupted.every((task) => task.status === "cancelled"));
-    assert.ok(parsed.interrupted.every((task) => task.error === "cleanup active"));
+    assert.ok(parsed.interrupted.every((task) => task.status === "running"));
+    assert.ok(parsed.interrupted.every((task) => task.state === "stopping"));
+    assert.ok(parsed.interrupted.every((task) => task.stopReason === "cleanup active"));
     assert.deepEqual(parsed.skipped, []);
     assert.deepEqual(parsed.failed, []);
 
@@ -610,15 +753,16 @@ test("CLI interrupt -A --active requires --yes and stops active tasks across wor
       ]);
       const parsed = JSON.parse(result.stdout) as {
         summary: { interrupted: number; skipped: number; failed: number };
-        interrupted: Array<{ taskId: string; status: string; error?: string }>;
+        interrupted: Array<{ taskId: string; status: string; state?: string; stopReason?: string }>;
       };
       assert.deepEqual(parsed.summary, { interrupted: 2, skipped: 0, failed: 0 });
       assert.deepEqual(
         parsed.interrupted.map((task) => task.taskId).sort(),
         [first.task.taskId, second.task.taskId].sort(),
       );
-      assert.ok(parsed.interrupted.every((task) => task.status === "cancelled"));
-      assert.ok(parsed.interrupted.every((task) => task.error === "all cleanup"));
+      assert.ok(parsed.interrupted.every((task) => task.status === "running"));
+      assert.ok(parsed.interrupted.every((task) => task.state === "stopping"));
+      assert.ok(parsed.interrupted.every((task) => task.stopReason === "all cleanup"));
     } finally {
       await Promise.allSettled([first.completed, second.completed]);
     }

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { readFile, stat, writeFile } from "node:fs/promises";
+import { readFile, rm, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
@@ -12,6 +12,7 @@ import {
   TaskSupervisorSafetyError,
   buildAgentTaskPsView,
   compactAgentTaskPsView,
+  captureProcessIdentity,
   interruptTask,
   interruptTasks,
   launchTask,
@@ -22,11 +23,13 @@ import {
   readTaskRecord,
   readTaskOutput,
   resolveTaskId,
+  taskDisplayState,
+  writeTaskHeartbeat,
   type AgentTaskRecord,
   type AgentTaskPsView,
   waitForTask,
 } from "@backnotprop/orchestrator-core/tasks";
-import { withTempWorkspace } from "./helpers.ts";
+import { markTaskLostForObservation, withTempWorkspace } from "./helpers.ts";
 
 type PersistedTaskEvent = {
   seq: number;
@@ -98,12 +101,27 @@ function quoteShellArg(value: string): string {
   return `'${value.replaceAll("'", "'\\''")}'`;
 }
 
+function findDeadPid(): number {
+  for (let pid = 999_999; pid > 900_000; pid -= 1) {
+    try {
+      process.kill(pid, 0);
+    } catch (error) {
+      if (error instanceof Error && "code" in error && error.code === "ESRCH") {
+        return pid;
+      }
+    }
+  }
+  throw new Error("Could not find an unused pid for observation tests.");
+}
+
 function controlViewRow(taskId: string, name: string): AgentTaskPsView["rows"][number] {
   return {
     taskId,
     shortTaskId: taskId.slice(0, 8),
     name,
     status: "running",
+    active: true,
+    actionable: true,
     runtime: "orchestrator",
     cwd: "/tmp",
     workspaceRoot: "/tmp",
@@ -533,6 +551,368 @@ test("ps hides old finished tasks by default and keeps them with all", async () 
       activeOnlyView.rows.map((row) => row.taskId),
       [],
     );
+  });
+});
+
+test("ps observes fresh and lost supervised tasks from heartbeat files", async () => {
+  await withTempWorkspace(async (workspaceRoot) => {
+    const freshHandle = await launchTask({
+      workspaceRoot,
+      plan: shellPlan("printf fresh", workspaceRoot),
+      name: "fresh supervised",
+    });
+    const lostHandle = await launchTask({
+      workspaceRoot,
+      plan: shellPlan("printf lost", workspaceRoot),
+      name: "lost supervised",
+    });
+    const freshCompleted = await freshHandle.completed;
+    const lostCompleted = await lostHandle.completed;
+    const freshTask = JSON.parse(await readFile(freshCompleted.paths.taskJson, "utf8"));
+    const lostTask = JSON.parse(await readFile(lostCompleted.paths.taskJson, "utf8"));
+    const now = new Date("2026-06-18T03:00:00.000Z");
+    const deadSupervisorPid = findDeadPid();
+    const deadChildPid = findDeadPid();
+
+    await writeFile(
+      freshCompleted.paths.taskJson,
+      `${JSON.stringify(
+        {
+          ...freshTask,
+          status: "running",
+          startedAt: "2026-06-18T02:59:00.000Z",
+          finishedAt: undefined,
+          exitCode: undefined,
+          supervision: {
+            supervisor: {
+              pid: deadSupervisorPid,
+              capturedAt: "2026-06-18T02:59:00.000Z",
+            },
+            startedAt: "2026-06-18T02:59:00.000Z",
+            heartbeatIntervalMs: 5_000,
+            staleAfterMs: 20_000,
+          },
+        },
+        null,
+        2,
+      )}\n`,
+    );
+    await writeTaskHeartbeat(freshCompleted.paths, {
+      taskId: freshCompleted.taskId,
+      supervisorPid: deadSupervisorPid,
+      lastHeartbeatAt: "2026-06-18T02:59:55.000Z",
+    });
+
+    await writeFile(
+      lostCompleted.paths.taskJson,
+      `${JSON.stringify(
+        {
+          ...lostTask,
+          status: "running",
+          startedAt: "2026-06-18T02:59:00.000Z",
+          finishedAt: undefined,
+          exitCode: undefined,
+          supervision: {
+            supervisor: {
+              pid: deadSupervisorPid,
+              capturedAt: "2026-06-18T02:59:00.000Z",
+              startedAtMs: 1,
+            },
+            child: {
+              pid: deadChildPid,
+              capturedAt: "2026-06-18T02:59:00.000Z",
+              startedAtMs: 1,
+            },
+            processGroupId: deadChildPid,
+            startedAt: "2026-06-18T02:59:00.000Z",
+            heartbeatIntervalMs: 5_000,
+            staleAfterMs: 20_000,
+          },
+        },
+        null,
+        2,
+      )}\n`,
+    );
+    await writeTaskHeartbeat(lostCompleted.paths, {
+      taskId: lostCompleted.taskId,
+      supervisorPid: deadSupervisorPid,
+      childPid: deadChildPid,
+      processGroupId: deadChildPid,
+      lastHeartbeatAt: "2026-06-18T02:59:00.000Z",
+    });
+
+    const view = await buildAgentTaskPsView({ workspaceRoot, now });
+    const fresh = view.rows.find((row) => row.taskId === freshCompleted.taskId);
+    const lost = view.rows.find((row) => row.taskId === lostCompleted.taskId);
+    assert.equal(fresh?.state, undefined);
+    assert.equal(fresh?.active, true);
+    assert.equal(lost?.state, "lost");
+    assert.equal(lost?.active, false);
+    assert.equal(lost?.lastMessage, "watcher gone, child gone, final outcome unknown");
+
+    const activeView = await buildAgentTaskPsView({ workspaceRoot, now, activeOnly: true });
+    assert.deepEqual(
+      activeView.rows.map((row) => row.taskId),
+      [freshCompleted.taskId],
+    );
+
+    const compact = compactAgentTaskPsView(view);
+    const compactFresh = compact.tasks.find((task) => task.taskId === freshCompleted.taskId);
+    const compactLost = compact.tasks.find((task) => task.taskId === lostCompleted.taskId);
+    assert.equal(compact.summary.active, 1);
+    assert.equal(compact.summary.lost, 1);
+    assert.equal(compactFresh?.active, true);
+    assert.equal(compactFresh?.stop?.kind, "task");
+    assert.equal(compactLost?.state, "lost");
+    assert.equal(compactLost?.active, false);
+    assert.equal(compactLost?.stop, undefined);
+  });
+});
+
+test("waitForTask returns unavailable for lost supervised tasks", async () => {
+  await withTempWorkspace(async (workspaceRoot) => {
+    const handle = await launchTask({
+      workspaceRoot,
+      plan: shellPlan("printf lost-wait", workspaceRoot),
+      name: "lost wait",
+    });
+    const completed = await handle.completed;
+    await markTaskLostForObservation(completed);
+
+    const startedAt = Date.now();
+    const result = await waitForTask({
+      workspaceRoot,
+      taskId: completed.taskId,
+      timeoutMs: 5_000,
+      intervalMs: 25,
+    });
+
+    assert.equal(result.retrievalStatus, "unavailable");
+    assert.equal(result.task.status, "running");
+    assert.equal(result.observation.state, "lost");
+    assert.equal(result.observation.active, false);
+    assert.ok(Date.now() - startedAt < 2_000);
+  });
+});
+
+test("waitForTask returns unavailable for stale and orphaned supervised tasks", async () => {
+  await withTempWorkspace(async (workspaceRoot) => {
+    const staleHandle = await launchTask({
+      workspaceRoot,
+      plan: shellPlan("printf stale-wait", workspaceRoot),
+      name: "stale wait",
+    });
+    const orphanedHandle = await launchTask({
+      workspaceRoot,
+      plan: shellPlan("printf orphaned-wait", workspaceRoot),
+      name: "orphaned wait",
+    });
+    const staleCompleted = await staleHandle.completed;
+    const orphanedCompleted = await orphanedHandle.completed;
+    const staleRaw = JSON.parse(await readFile(staleCompleted.paths.taskJson, "utf8"));
+    const orphanedRaw = JSON.parse(await readFile(orphanedCompleted.paths.taskJson, "utf8"));
+    const liveIdentity = await captureProcessIdentity(process.pid);
+    assert.ok(liveIdentity);
+    const deadSupervisorPid = findDeadPid();
+    const startedAt = new Date(Date.now() - 60_000).toISOString();
+    const heartbeatAt = new Date(Date.now() - 60_000).toISOString();
+
+    await writeFile(
+      staleCompleted.paths.taskJson,
+      `${JSON.stringify(
+        {
+          ...staleRaw,
+          status: "running",
+          startedAt,
+          finishedAt: undefined,
+          exitCode: undefined,
+          supervision: {
+            supervisor: liveIdentity,
+            startedAt,
+            heartbeatIntervalMs: 5_000,
+            staleAfterMs: 20_000,
+          },
+        },
+        null,
+        2,
+      )}\n`,
+    );
+    await writeTaskHeartbeat(staleCompleted.paths, {
+      taskId: staleCompleted.taskId,
+      supervisorPid: liveIdentity.pid,
+      lastHeartbeatAt: heartbeatAt,
+    });
+
+    await writeFile(
+      orphanedCompleted.paths.taskJson,
+      `${JSON.stringify(
+        {
+          ...orphanedRaw,
+          status: "running",
+          startedAt,
+          finishedAt: undefined,
+          exitCode: undefined,
+          supervision: {
+            supervisor: {
+              pid: deadSupervisorPid,
+              capturedAt: startedAt,
+              startedAtMs: 1,
+            },
+            child: liveIdentity,
+            startedAt,
+            heartbeatIntervalMs: 5_000,
+            staleAfterMs: 20_000,
+          },
+        },
+        null,
+        2,
+      )}\n`,
+    );
+    await writeTaskHeartbeat(orphanedCompleted.paths, {
+      taskId: orphanedCompleted.taskId,
+      supervisorPid: deadSupervisorPid,
+      childPid: liveIdentity.pid,
+      lastHeartbeatAt: heartbeatAt,
+    });
+
+    const stale = await waitForTask({
+      workspaceRoot,
+      taskId: staleCompleted.taskId,
+      timeoutMs: 5_000,
+      intervalMs: 25,
+    });
+    const orphaned = await waitForTask({
+      workspaceRoot,
+      taskId: orphanedCompleted.taskId,
+      timeoutMs: 5_000,
+      intervalMs: 25,
+    });
+
+    assert.equal(stale.retrievalStatus, "unavailable");
+    assert.equal(stale.observation.state, "stale");
+    assert.equal(stale.observation.active, true);
+    assert.equal(stale.observation.actionable, false);
+    assert.equal(orphaned.retrievalStatus, "unavailable");
+    assert.equal(orphaned.observation.state, "orphaned");
+    assert.equal(orphaned.observation.active, true);
+    assert.equal(orphaned.observation.actionable, false);
+
+    const interrupt = await interruptTasks({
+      workspaceRoot,
+      target: {
+        kind: "tasks",
+        taskIds: [staleCompleted.taskId, orphanedCompleted.taskId],
+      },
+    });
+    assert.deepEqual(interrupt.interrupted, []);
+    assert.deepEqual(
+      interrupt.skipped.map((skipped) => ({
+        taskId: skipped.task.taskId,
+        reason: skipped.reason,
+      })),
+      [
+        { taskId: staleCompleted.taskId, reason: "stale" },
+        { taskId: orphanedCompleted.taskId, reason: "orphaned" },
+      ],
+    );
+    assert.deepEqual(interrupt.failed, []);
+  });
+});
+
+test("waitForTask handles first heartbeat race and legacy running records conservatively", async () => {
+  await withTempWorkspace(async (workspaceRoot) => {
+    const supervisedHandle = await launchTask({
+      workspaceRoot,
+      plan: shellPlan("printf supervised-race", workspaceRoot),
+      name: "supervised race",
+    });
+    const legacyHandle = await launchTask({
+      workspaceRoot,
+      plan: shellPlan("printf legacy-running", workspaceRoot),
+      name: "legacy running",
+    });
+    const supervisedCompleted = await supervisedHandle.completed;
+    const legacyCompleted = await legacyHandle.completed;
+    const supervisedRaw = JSON.parse(await readFile(supervisedCompleted.paths.taskJson, "utf8"));
+    const legacyRaw = JSON.parse(await readFile(legacyCompleted.paths.taskJson, "utf8"));
+    const liveIdentity = await captureProcessIdentity(process.pid);
+    assert.ok(liveIdentity);
+    const startedAt = new Date().toISOString();
+    const legacyStartedAt = new Date(Date.now() - 60_000).toISOString();
+    await rm(supervisedCompleted.paths.heartbeatJson, { force: true });
+    await rm(legacyCompleted.paths.heartbeatJson, { force: true });
+
+    await writeFile(
+      supervisedCompleted.paths.taskJson,
+      `${JSON.stringify(
+        {
+          ...supervisedRaw,
+          status: "running",
+          startedAt,
+          finishedAt: undefined,
+          exitCode: undefined,
+          supervision: {
+            supervisor: liveIdentity,
+            startedAt,
+            heartbeatIntervalMs: 5_000,
+            staleAfterMs: 20_000,
+          },
+        },
+        null,
+        2,
+      )}\n`,
+    );
+    await writeFile(
+      legacyCompleted.paths.taskJson,
+      `${JSON.stringify(
+        {
+          ...legacyRaw,
+          status: "running",
+          startedAt: legacyStartedAt,
+          finishedAt: undefined,
+          exitCode: undefined,
+          supervision: undefined,
+        },
+        null,
+        2,
+      )}\n`,
+    );
+
+    const supervised = await waitForTask({
+      workspaceRoot,
+      taskId: supervisedCompleted.taskId,
+      timeoutMs: 0,
+      intervalMs: 1,
+    });
+    assert.equal(supervised.retrievalStatus, "timeout");
+    assert.equal(supervised.observation.state, "running");
+    assert.equal(supervised.observation.active, true);
+    assert.equal(supervised.observation.actionable, true);
+
+    const legacy = await waitForTask({
+      workspaceRoot,
+      taskId: legacyCompleted.taskId,
+      timeoutMs: 5_000,
+      intervalMs: 25,
+    });
+    assert.equal(legacy.retrievalStatus, "unavailable");
+    assert.equal(legacy.observation.state, "stale");
+    assert.equal(legacy.observation.active, true);
+    assert.equal(legacy.observation.actionable, false);
+
+    const interrupt = await interruptTasks({
+      workspaceRoot,
+      target: { kind: "task", taskId: legacyCompleted.taskId },
+    });
+    assert.deepEqual(interrupt.interrupted, []);
+    assert.deepEqual(
+      interrupt.skipped.map((skipped) => ({
+        taskId: skipped.task.taskId,
+        reason: skipped.reason,
+      })),
+      [{ taskId: legacyCompleted.taskId, reason: "stale" }],
+    );
+    assert.deepEqual(interrupt.failed, []);
   });
 });
 
@@ -1465,6 +1845,41 @@ test("interruptTasks stops a ps group and skips terminal children", async () => 
   });
 });
 
+test("interruptTasks skips lost supervised tasks instead of signaling stale pids", async () => {
+  await withTempWorkspace(async (workspaceRoot) => {
+    const handle = await launchTask({
+      workspaceRoot,
+      plan: shellPlan("printf lost-interrupt", workspaceRoot),
+      name: "lost interrupt",
+    });
+    const completed = await handle.completed;
+    await markTaskLostForObservation(completed);
+
+    const result = await interruptTasks({
+      workspaceRoot,
+      target: { kind: "task", taskId: completed.taskId.slice(0, 8) },
+    });
+
+    assert.deepEqual(result.interrupted, []);
+    assert.deepEqual(
+      result.skipped.map((skipped) => ({
+        taskId: skipped.task.taskId,
+        reason: skipped.reason,
+      })),
+      [{ taskId: completed.taskId, reason: "lost" }],
+    );
+    assert.deepEqual(result.failed, []);
+
+    await assert.rejects(
+      () => interruptTask({ workspaceRoot, taskId: completed.taskId }),
+      (error) =>
+        error instanceof TaskSupervisorSafetyError &&
+        error.reason === "lost" &&
+        error.input === completed.taskId,
+    );
+  });
+});
+
 test("interruptTasks rejects ambiguous group prefixes and broad ungrouped interruption", async () => {
   await withTempWorkspace(async (workspaceRoot) => {
     const command = "printf parent";
@@ -1534,8 +1949,12 @@ test("interruptTask cancels a running task", async () => {
       reason: "test cancellation",
     });
 
-    assert.equal(interrupted.status, "cancelled");
-    assert.equal(interrupted.error, "test cancellation");
+    assert.equal(interrupted.status, "running");
+    assert.equal(taskDisplayState(interrupted), "stopping");
+    assert.equal(interrupted.stopReason, "test cancellation");
+    assert.equal(interrupted.stopSignal, "SIGTERM");
+    assert.ok(interrupted.stopRequestedAt);
+    assert.equal(interrupted.error, undefined);
 
     const completed = await handle.completed;
     assert.equal(completed.status, "cancelled");
@@ -1548,5 +1967,96 @@ test("interruptTask cancels a running task", async () => {
     );
     assert.ok(events.some((event) => event.type === "interrupt_requested"));
     assert.ok(events.some((event) => event.type === "cancelled"));
+  });
+});
+
+test("interruptTask keeps delayed shutdown active until the process exits", async () => {
+  await withTempWorkspace(async (workspaceRoot) => {
+    const script = [
+      "printf 'ready\\n'",
+      "trap 'printf stopping\\\\n; sleep 1; exit 0' TERM",
+      "while true; do sleep 1; done",
+    ].join("; ");
+    const handle = await launchTask({
+      workspaceRoot,
+      plan: shellPlan(script, workspaceRoot),
+    });
+    await waitForTaskState(
+      workspaceRoot,
+      handle.task.taskId,
+      (task) => task.status === "running",
+      "running",
+    );
+
+    const interrupted = await interruptTask({
+      workspaceRoot,
+      taskId: handle.task.taskId,
+      reason: "delayed cancellation",
+    });
+
+    assert.equal(interrupted.status, "running");
+    assert.equal(taskDisplayState(interrupted), "stopping");
+
+    const waitResult = await waitForTask({
+      workspaceRoot,
+      taskId: handle.task.taskId,
+      timeoutMs: 50,
+      intervalMs: 10,
+    });
+    assert.equal(waitResult.retrievalStatus, "timeout");
+    assert.equal(waitResult.task.status, "running");
+    assert.equal(taskDisplayState(waitResult.task), "stopping");
+
+    const completed = await handle.completed;
+    assert.equal(completed.status, "cancelled");
+    assert.equal(taskDisplayState(completed), "cancelled");
+    assert.equal(completed.error, "delayed cancellation");
+  });
+});
+
+test("interruptTask keeps stop reason when timeout fires during shutdown", async () => {
+  await withTempWorkspace(async (workspaceRoot) => {
+    const script = `
+let stopping = false;
+process.on("SIGTERM", () => {
+  if (stopping) return;
+  stopping = true;
+  console.log("cleanup started");
+  setTimeout(() => {
+    console.log("cleanup finished");
+    process.exit(0);
+  }, 700);
+});
+console.log("ready");
+setInterval(() => console.log("alive"), 100);
+`;
+    const handle = await launchTask({
+      workspaceRoot,
+      plan: shellPlan(`node -e ${JSON.stringify(script)}`, workspaceRoot),
+      timeoutMs: 500,
+    });
+    await waitForTaskState(
+      workspaceRoot,
+      handle.task.taskId,
+      (task) => task.status === "running",
+      "running",
+    );
+
+    const interrupted = await interruptTask({
+      workspaceRoot,
+      taskId: handle.task.taskId,
+      reason: "operator stop",
+    });
+
+    assert.equal(taskDisplayState(interrupted), "stopping");
+
+    const completed = await handle.completed;
+    assert.equal(completed.status, "cancelled");
+    assert.equal(completed.error, "operator stop");
+    assert.doesNotMatch(completed.error ?? "", /Timed out/);
+
+    const events = await readTaskEvents(completed.paths.eventsJsonl);
+    const cancelled = events.find((event) => event.type === "cancelled");
+    assert.equal(cancelled?.data?.error, "operator stop");
   });
 });

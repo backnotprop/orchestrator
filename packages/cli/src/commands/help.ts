@@ -143,21 +143,22 @@ Agent instructions:
   24. When compact JSON returns stop.args, run those portable args to stop exactly the returned task, group, or selected active set.
   25. Compact ps stop.args are scoped to the current view; parent/group stops may include children of that selected run.
   26. When JSON output returns commands.*.args, pass those portable args to orchestrator for read/watch/logs/events follow-up.
-  27. Use compact ps top-level commands.waitPreview.args to wait for every listed task with bounded output.
-  28. Use compact ps group commands.waitPreview.args to wait for one listed group with bounded output.
-  29. Use commands.readPreview, commands.waitPreview, or commands.logsPreview when another agent needs bounded output before deciding whether to fetch more.
-  30. Use watch to follow one task live. Use watch --agent-only --json for normalized agent event JSONL.
-  31. Use read for final agent answers. Use read <id> <id> --wait --json --compact to build your own multi-task wait call.
-  32. If compact read returns active: true, use commands.waitPreview.args to wait with bounded output or commands.readPreview.args to poll again.
-  33. If compact batch read times out, use its top-level commands.waitPreview.args to wait again or stop.args to stop still-active work safely.
-  34. If compact read returns failed status, use commands.logsPreview.args for bounded raw logs or commands.events.args for the task timeline.
-  35. Check outputTruncated/stdoutTruncated/stderrTruncated in JSON output; ByReadLimit means re-read with more bytes can help, ByCaptureLimit means the task was launched with too small a capture cap.
-  36. If compact read is truncated by read limit, use commands.read.args to fetch more output.
-  37. Use logs --json --compact for a one-line raw stdout/stderr snapshot and events --json --compact for a one-line task timeline.
-  38. Use interrupt to cancel running agents. Use interrupt <id> <id> --json --compact to stop a selected subset.
-  39. Use --children for parent runs with children.
-  40. Use interrupt --active only for deliberate workspace cleanup; use interrupt -A --active --yes only for deliberate all-workspace cleanup.
-  41. Model values are passed through to the provider CLI; aliases are not normalized yet.
+  27. Treat returned args as an argument vector. Do not join them into one shell string.
+  28. Use compact ps top-level commands.waitPreview.args to wait for every listed task with bounded output.
+  29. Use compact ps group commands.waitPreview.args to wait for one listed group with bounded output.
+  30. Use commands.readPreview, commands.waitPreview, or commands.logsPreview when another agent needs bounded output before deciding whether to fetch more.
+  31. Use watch to follow one task live. Use watch --agent-only --json for normalized agent event JSONL.
+  32. Use read for final agent answers. Use read <id> <id> --wait --json --compact to build your own multi-task wait call.
+  33. If compact read returns active: true, use commands.waitPreview.args to wait with bounded output or commands.readPreview.args to poll again.
+  34. If compact batch read times out, use its top-level commands.waitPreview.args to wait again or stop.args to stop still-active work safely.
+  35. If compact read returns failed status, use commands.logsPreview.args for bounded raw logs or commands.events.args for the task timeline.
+  36. Check outputTruncated/stdoutTruncated/stderrTruncated in JSON output; ByReadLimit means re-read with more bytes can help, ByCaptureLimit means the task was launched with too small a capture cap.
+  37. If compact read is truncated by read limit, use commands.read.args to fetch more output.
+  38. Use logs --json --compact for a one-line raw stdout/stderr snapshot and events --json --compact for a one-line task timeline.
+  39. Use interrupt to cancel running agents. Use interrupt <id> <id> --json --compact to stop a selected subset.
+  40. Use --children for parent runs with children.
+  41. Use interrupt --active only for deliberate workspace cleanup; use interrupt -A --active --yes only for deliberate all-workspace cleanup.
+  42. Model values are passed through to the provider CLI; aliases are not normalized yet.
 
 Common options:
   --workspace <path>          Workspace scope. Defaults to the nearest git repo, then current directory.
@@ -271,6 +272,7 @@ function buildCliHelpDocument(
       "When JSON output returns stop.args, pass those portable args to orchestrator to stop exactly the returned task, group, or selected active set.",
       "Compact ps stop.args are scoped to the current view; parent/group stops may include children of that selected run.",
       "When JSON output returns commands.*.args, pass those portable args to orchestrator for read/watch/logs/events follow-up.",
+      "Treat returned args as an argument vector. Do not join them into one shell string.",
       "Use compact ps top-level commands.waitPreview.args to wait for every listed task with bounded output.",
       "Use compact ps group commands.waitPreview.args to wait for one listed group with bounded output.",
       "Use commands.readPreview, commands.waitPreview, or commands.logsPreview when another agent needs bounded output before deciding whether to fetch more.",
@@ -607,6 +609,7 @@ function compactCliHelpDocument(
       "Narrow one parent run with ps --parent <run-id|prefix> --json --compact --brief.",
       "If active ps is empty after short work, run views.recent.args from compact ps to recover recent tasks.",
       "Collect listed tasks with top-level commands.waitPreview.args from compact ps.",
+      "Treat returned args arrays as argument vectors; do not join them into one shell string.",
       "Read selected tasks with read <id> <id> --wait --json --compact.",
       "Debug failed reads with commands.logsPreview.args or commands.events.args.",
       "Stop scoped work with stop.args from compact ps or read output.",

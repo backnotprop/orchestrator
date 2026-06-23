@@ -3,9 +3,13 @@ import {
   AGENT_CONTROL_PREVIEW_MAX_BYTES,
   isTerminalTaskStatus as isTerminalStatus,
   listTaskIds,
+  observeTaskState,
+  taskDisplayState,
   type AgentTaskRecord,
+  type TaskObservation,
   type TaskStatus,
   type TaskUsage,
+  type WaitForTaskRetrievalStatus,
 } from "@backnotprop/orchestrator-core";
 import { jsonLine } from "./json-output.ts";
 import { taskCommandSummary, type TaskCommandSummary, type TailRead } from "./task-json.ts";
@@ -28,7 +32,7 @@ export function printTask(task: AgentTaskRecord, json: boolean): void {
   if (task.name) {
     process.stdout.write(`name: ${task.name}\n`);
   }
-  process.stdout.write(`status: ${task.status}\n`);
+  process.stdout.write(`status: ${taskDisplayState(task)}\n`);
   process.stdout.write(`runtime: ${task.runtime}\n`);
   process.stdout.write(`taskDir: ${task.paths.taskDir}\n`);
 }
@@ -42,14 +46,20 @@ export async function printTaskSummaryJson(
     ...(options.orchestratorDir ? { orchestratorDir: options.orchestratorDir } : {}),
   };
   const taskIds = await listTaskIds(storeOptions);
+  const observation = await observeTaskState(storeOptions, task);
   if (options.wait || isTerminalStatus(task.status)) {
-    const payload = await taskReadJsonPayload(task, compactReadOptions(options), taskIds);
+    const payload = await taskReadJsonPayload(task, compactReadOptions(options), taskIds, {
+      observation,
+    });
     const summary = compactTaskReadJsonPayload(payload);
     process.stdout.write(jsonLine(summary, { compact: true }));
     return;
   }
 
-  const summary = taskCommandSummary(task, taskIds, { stopArgsSuffix: stopArgsSuffix(options) });
+  const summary = taskCommandSummary(task, taskIds, {
+    stopArgsSuffix: stopArgsSuffix(options),
+    observation,
+  });
   process.stdout.write(
     jsonLine(briefTaskSummaryJsonPayload(summary, options.brief ?? false), {
       compact: true,
@@ -76,10 +86,10 @@ export async function taskReadJsonPayload(
   task: AgentTaskRecord,
   options: CommonTaskOutputOptions & { maxBytes?: number },
   taskIds?: readonly string[],
-  metadata: { retrievalStatus?: "completed" | "timeout" } = {},
+  metadata: { retrievalStatus?: WaitForTaskRetrievalStatus; observation?: TaskObservation } = {},
 ): Promise<
   TaskCommandSummary & {
-    retrievalStatus?: "completed" | "timeout";
+    retrievalStatus?: WaitForTaskRetrievalStatus;
     output: string;
     outputAvailable: boolean;
     outputKind: "result" | "stdout" | "none";
@@ -95,6 +105,11 @@ export async function taskReadJsonPayload(
     errorTruncatedByCaptureLimit?: boolean;
   }
 > {
+  const storeOptions = {
+    workspaceRoot: options.workspaceRoot,
+    ...(options.orchestratorDir ? { orchestratorDir: options.orchestratorDir } : {}),
+  };
+  const observation = metadata.observation ?? (await observeTaskState(storeOptions, task));
   const maxBytes = options.maxBytes ?? DEFAULT_READ_MAX_BYTES;
   const output = await readTailMetadataIfExists(task.paths.resultMd, maxBytes);
   const fallback =
@@ -110,8 +125,7 @@ export async function taskReadJsonPayload(
   const aliases =
     taskIds ??
     (await listTaskIds({
-      workspaceRoot: options.workspaceRoot,
-      ...(options.orchestratorDir ? { orchestratorDir: options.orchestratorDir } : {}),
+      ...storeOptions,
     }));
   const renderedOutput = output.text.length > 0 ? output : fallback;
   const outputKind =
@@ -126,7 +140,10 @@ export async function taskReadJsonPayload(
     Boolean(error && !task.error) && (task.outputCapture?.stderrTruncated ?? false);
 
   return {
-    ...taskCommandSummary(task, aliases, { stopArgsSuffix: stopArgsSuffix(options) }),
+    ...taskCommandSummary(task, aliases, {
+      stopArgsSuffix: stopArgsSuffix(options),
+      observation,
+    }),
     ...(metadata.retrievalStatus ? { retrievalStatus: metadata.retrievalStatus } : {}),
     output: renderedOutput.text,
     outputAvailable: renderedOutput.text.length > 0,

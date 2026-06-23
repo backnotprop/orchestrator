@@ -12,7 +12,7 @@ Use the Orchestrator tools to manage child agents:
 - read_agent_logs reads raw stdout and stderr.
 - interrupt_agent stops work that no longer matters. Use children: true when stopping a parent task and its children.
 
-Do not claim a child agent is finished unless read_agent, list_agents, or events show a terminal status: succeeded, failed, cancelled, or timed_out.
+Do not claim a child agent is finished unless read_agent, list_agents, or events show a terminal status: succeeded, failed, cancelled, or timed_out. If a task state is stopping, it is still shutting down.
 
 When you have enough information, answer the user directly.`;
 

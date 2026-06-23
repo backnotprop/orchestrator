@@ -1,0 +1,144 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="820" viewBox="0 0 1280 820" role="img" aria-labelledby="title desc">
+  <title id="title">Orchestrator Task Supervision Model</title>
+  <desc id="desc">Diagram showing how Orchestrator starts a supervisor process, records task state, runs a child agent process, and how a future reconciliation layer can detect stale task records.</desc>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#293241" />
+    </marker>
+    <marker id="arrow-blue" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#2f6fed" />
+    </marker>
+    <marker id="arrow-orange" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#b35c00" />
+    </marker>
+    <style>
+      .bg { fill: #f8fafc; }
+      .title { font: 700 30px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #111827; }
+      .subtitle { font: 16px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #4b5563; }
+      .box { fill: #ffffff; stroke: #c7d2fe; stroke-width: 2; rx: 10; }
+      .box-core { fill: #eef6ff; stroke: #2f6fed; stroke-width: 2.5; rx: 10; }
+      .box-store { fill: #f0fdf4; stroke: #16a34a; stroke-width: 2.5; rx: 10; }
+      .box-agent { fill: #fff7ed; stroke: #f97316; stroke-width: 2.5; rx: 10; }
+      .box-risk { fill: #fff1f2; stroke: #e11d48; stroke-width: 2.5; rx: 10; }
+      .box-future { fill: #fffbeb; stroke: #b35c00; stroke-width: 2.5; stroke-dasharray: 8 6; rx: 10; }
+      .label { font: 700 18px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #111827; }
+      .text { font: 15px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #374151; }
+      .small { font: 13px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #4b5563; }
+      .code { font: 14px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fill: #1f2937; }
+      .arrow { stroke: #293241; stroke-width: 2.4; fill: none; marker-end: url(#arrow); }
+      .arrow-blue { stroke: #2f6fed; stroke-width: 2.8; fill: none; marker-end: url(#arrow-blue); }
+      .arrow-orange { stroke: #b35c00; stroke-width: 2.8; stroke-dasharray: 8 6; fill: none; marker-end: url(#arrow-orange); }
+      .arrow-gray { stroke: #6b7280; stroke-width: 2; fill: none; marker-end: url(#arrow); }
+      .divider { stroke: #d1d5db; stroke-width: 1.5; stroke-dasharray: 4 6; }
+      .badge { fill: #111827; rx: 14; }
+      .badge-text { font: 700 12px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #ffffff; letter-spacing: .3px; }
+    </style>
+  </defs>
+
+  <rect class="bg" x="0" y="0" width="1280" height="820" />
+
+  <text class="title" x="56" y="58">Orchestrator Task Supervision Model</text>
+  <text class="subtitle" x="56" y="86">The CLI starts agents, a watcher records what happens, and the task store is what humans, agents, and future UIs read.</text>
+
+  <rect class="badge" x="56" y="114" width="158" height="28" />
+  <text class="badge-text" x="72" y="133">SOLID = BUILT NOW</text>
+  <rect class="box-future" x="236" y="114" width="184" height="28" />
+  <text class="small" x="252" y="133">Dashed = future hardening</text>
+
+  <!-- Entry point -->
+  <rect class="box" x="58" y="178" width="250" height="110" />
+  <text class="label" x="82" y="211">Human, TUI, or agent</text>
+  <text class="code" x="82" y="239">orchestrator launch</text>
+  <text class="code" x="82" y="262">orchestrator run</text>
+
+  <rect class="box-core" x="392" y="178" width="270" height="110" />
+  <text class="label" x="416" y="211">Orchestrator CLI</text>
+  <text class="text" x="416" y="239">Builds launch input</text>
+  <text class="text" x="416" y="263">Starts detached watcher</text>
+
+  <path class="arrow-blue" d="M 308 233 L 392 233" />
+
+  <!-- Store -->
+  <rect class="box-store" x="808" y="160" width="366" height="154" />
+  <text class="label" x="832" y="193">Machine task store</text>
+  <text class="code" x="832" y="222">~/.orchestrator/tasks/&lt;task-id&gt;/</text>
+  <text class="text" x="832" y="251">task.json, events.jsonl</text>
+  <text class="text" x="832" y="275">stdout.log, stderr.log, result.md</text>
+
+  <path class="arrow-blue" d="M 662 206 C 714 176, 750 176, 808 205" />
+  <text class="small" x="690" y="172">create task record</text>
+
+  <!-- Supervisor and child -->
+  <rect class="box-core" x="390" y="405" width="278" height="142" />
+  <text class="label" x="414" y="438">Watcher process</text>
+  <text class="text" x="414" y="466">Internal to Orchestrator</text>
+  <text class="text" x="414" y="490">Captures output and events</text>
+  <text class="text" x="414" y="514">Writes final task status</text>
+
+  <path class="arrow-blue" d="M 527 288 L 527 405" />
+  <text class="small" x="540" y="346">spawn</text>
+
+  <rect class="box-agent" x="808" y="405" width="366" height="142" />
+  <text class="label" x="832" y="438">Child agent process</text>
+  <text class="code" x="832" y="466">claude -p</text>
+  <text class="code" x="832" y="490">codex exec</text>
+  <text class="code" x="832" y="514">custom process agent</text>
+
+  <path class="arrow-blue" d="M 668 476 L 808 476" />
+  <text class="small" x="706" y="458">start provider CLI</text>
+
+  <path class="arrow-gray" d="M 808 512 C 754 580, 706 580, 668 520" />
+  <text class="small" x="706" y="594">stdout / stderr / exit</text>
+
+  <path class="arrow-blue" d="M 668 432 C 728 344, 778 304, 808 266" />
+  <text class="small" x="694" y="350">write logs, events, result</text>
+
+  <!-- Readers -->
+  <rect class="box" x="58" y="426" width="250" height="116" />
+  <text class="label" x="82" y="459">Readers</text>
+  <text class="code" x="82" y="487">ps / list / read</text>
+  <text class="code" x="82" y="510">logs / events / watch</text>
+
+  <path class="arrow-gray" d="M 808 238 C 592 325, 448 380, 308 455" />
+  <text class="small" x="420" y="349">read task files</text>
+
+  <!-- Normal outcome -->
+  <rect class="box-store" x="808" y="610" width="366" height="112" />
+  <text class="label" x="832" y="643">Normal terminal state</text>
+  <text class="code" x="832" y="672">succeeded / failed</text>
+  <text class="code" x="832" y="696">cancelled / timed_out</text>
+
+  <path class="arrow-blue" d="M 991 547 L 991 610" />
+  <text class="small" x="1006" y="585">child exits</text>
+
+  <!-- Failure and future recovery -->
+  <line class="divider" x1="56" y1="592" x2="735" y2="592" />
+
+  <rect class="box-risk" x="58" y="638" width="250" height="104" />
+  <text class="label" x="82" y="671">Watcher dies</text>
+  <text class="text" x="82" y="699">Task record may still say</text>
+  <text class="code" x="82" y="722">running / stopping</text>
+
+  <path class="arrow" d="M 390 515 C 302 566, 250 604, 216 638" />
+  <text class="small" x="242" y="592">crash or kill -9</text>
+
+  <rect class="box-future" x="390" y="638" width="278" height="104" />
+  <text class="label" x="414" y="671">Future reconciliation</text>
+  <text class="text" x="414" y="699">Check heartbeat and PIDs</text>
+  <text class="text" x="414" y="722">Repair stale task view</text>
+
+  <path class="arrow-orange" d="M 308 690 L 390 690" />
+
+  <rect class="box-future" x="808" y="638" width="366" height="104" />
+  <text class="label" x="832" y="671">More honest display</text>
+  <text class="code" x="832" y="699">state: stale / orphaned / lost</text>
+  <text class="text" x="832" y="722">Do not pretend the task is known</text>
+
+  <path class="arrow-orange" d="M 668 690 L 808 690" />
+
+  <path class="arrow-orange" d="M 529 638 C 548 565, 610 496, 808 490" />
+  <text class="small" x="604" y="555">optional OS PID check</text>
+
+  <path class="arrow-orange" d="M 529 638 C 592 578, 698 344, 808 252" />
+  <text class="small" x="626" y="406">last heartbeat</text>
+</svg>

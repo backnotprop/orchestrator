@@ -8,6 +8,7 @@ import {
   isTerminalTaskStatus as isTerminalStatus,
   launchTask,
   listTaskIds,
+  observeTaskState,
   taskBatchControlCommands,
   validateLaunchTaskInput,
   type AgentRuntimeId,
@@ -227,17 +228,20 @@ async function printBatchLaunchTasks(
   };
   const taskIds = await listTaskIds(storeOptions);
   const suffix = stopArgsSuffix(options);
-  const summaries = tasks.map((task, index) => {
-    const summary = taskCommandSummary(task, taskIds, { stopArgsSuffix: suffix });
-    const rendered = options.compact
-      ? briefTaskSummaryJsonPayload(summary, options.brief)
-      : summary;
-    const { schemaVersion: _schemaVersion, ...withoutSchemaVersion } = rendered;
-    return {
-      index,
-      ...withoutSchemaVersion,
-    };
-  });
+  const summaries = await Promise.all(
+    tasks.map(async (task, index) => {
+      const observation = await observeTaskState(storeOptions, task);
+      const summary = taskCommandSummary(task, taskIds, { stopArgsSuffix: suffix, observation });
+      const rendered = options.compact
+        ? briefTaskSummaryJsonPayload(summary, options.brief)
+        : summary;
+      const { schemaVersion: _schemaVersion, ...withoutSchemaVersion } = rendered;
+      return {
+        index,
+        ...withoutSchemaVersion,
+      };
+    }),
+  );
   const ids = summaries.map((task) => task.id);
   const activeIds = summaries.filter((task) => task.active).map((task) => task.id);
   const stop = batchLaunchStopTarget(summaries, activeIds, suffix);

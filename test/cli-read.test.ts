@@ -7,6 +7,7 @@ import { launchTask } from "@backnotprop/orchestrator-core/tasks";
 import {
   assertOneJsonLine,
   customJsonlPlan,
+  markTaskLostForObservation,
   orchestratorPlan,
   quoteShellArg,
   runCli,
@@ -221,6 +222,111 @@ test("CLI read --wait --json waits for a final result without polling", async ()
     assert.equal(parsedRead.output, "waited ok\n");
     assert.equal(parsedRead.outputAvailable, true);
   }, "orchestrator-cli-read-wait-");
+});
+
+test("CLI list and read expose lost observed state", async () => {
+  await withTempWorkspace(async (workspaceRoot) => {
+    const handle = await launchTask({
+      workspaceRoot,
+      plan: shellPlan("printf lost-cli", workspaceRoot),
+      name: "lost cli",
+    });
+    const completed = await handle.completed;
+    await markTaskLostForObservation(completed);
+    const shortTaskId = completed.taskId.slice(0, 8);
+
+    const list = await runCli(workspaceRoot, ["list", "--workspace", workspaceRoot, "--json"]);
+    const listed = JSON.parse(list.stdout) as Array<{
+      taskId: string;
+      status: string;
+      state?: string;
+      active: boolean;
+      actionable: boolean;
+      observationReason?: string;
+    }>;
+    const listedTask = listed.find((task) => task.taskId === completed.taskId);
+    assert.equal(listedTask?.status, "running");
+    assert.equal(listedTask?.state, "lost");
+    assert.equal(listedTask?.active, false);
+    assert.equal(listedTask?.actionable, false);
+    assert.equal(listedTask?.observationReason, "watcher gone, child gone, final outcome unknown");
+
+    const startedAt = Date.now();
+    const read = await runCli(workspaceRoot, [
+      "read",
+      shortTaskId,
+      "--workspace",
+      workspaceRoot,
+      "--wait",
+      "--timeout-ms",
+      "5000",
+      "--interval-ms",
+      "25",
+      "--json",
+      "--compact",
+    ]);
+    const parsed = JSON.parse(read.stdout) as {
+      taskId: string;
+      status: string;
+      state?: string;
+      active: boolean;
+      actionable: boolean;
+      retrievalStatus: string;
+      output: string;
+      stop?: unknown;
+    };
+    assert.equal(parsed.taskId, completed.taskId);
+    assert.equal(parsed.status, "running");
+    assert.equal(parsed.state, "lost");
+    assert.equal(parsed.active, false);
+    assert.equal(parsed.actionable, false);
+    assert.equal(parsed.retrievalStatus, "unavailable");
+    assert.equal(parsed.output, "lost-cli");
+    assert.equal(parsed.stop, undefined);
+    assert.ok(Date.now() - startedAt < 2_000);
+
+    const logs = await runCli(workspaceRoot, [
+      "logs",
+      shortTaskId,
+      "--workspace",
+      workspaceRoot,
+      "--json",
+      "--compact",
+    ]);
+    const parsedLogs = JSON.parse(logs.stdout) as {
+      status: string;
+      state?: string;
+      active: boolean;
+      actionable: boolean;
+      stop?: unknown;
+    };
+    assert.equal(parsedLogs.status, "running");
+    assert.equal(parsedLogs.state, "lost");
+    assert.equal(parsedLogs.active, false);
+    assert.equal(parsedLogs.actionable, false);
+    assert.equal(parsedLogs.stop, undefined);
+
+    const events = await runCli(workspaceRoot, [
+      "events",
+      shortTaskId,
+      "--workspace",
+      workspaceRoot,
+      "--json",
+      "--compact",
+    ]);
+    const parsedEvents = JSON.parse(events.stdout) as {
+      status: string;
+      state?: string;
+      active: boolean;
+      actionable: boolean;
+      stop?: unknown;
+    };
+    assert.equal(parsedEvents.status, "running");
+    assert.equal(parsedEvents.state, "lost");
+    assert.equal(parsedEvents.active, false);
+    assert.equal(parsedEvents.actionable, false);
+    assert.equal(parsedEvents.stop, undefined);
+  }, "orchestrator-cli-read-lost-");
 });
 
 test("CLI compact read gives active task follow-up commands", async () => {

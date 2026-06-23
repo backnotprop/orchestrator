@@ -794,18 +794,21 @@ test("CLI compact ps ids remain usable when old hidden tasks share prefixes", as
         "--json",
       ]);
       const parsed = JSON.parse(interrupted.stdout) as {
-        interrupted: Array<{ taskId: string; id: string }>;
+        interrupted: Array<{ taskId: string; id: string; stopRequestedAt?: string }>;
       };
-      assert.deepEqual(parsed.interrupted, [
-        {
-          taskId: active.task.taskId,
-          id: "collision-a",
-          name: "active collision",
-          runtime: "shell",
-          status: "cancelled",
-          error: "Interrupted.",
-        },
-      ]);
+      assert.equal(parsed.interrupted.length, 1);
+      assert.deepEqual(parsed.interrupted[0], {
+        taskId: active.task.taskId,
+        id: "collision-a",
+        name: "active collision",
+        runtime: "shell",
+        status: "running",
+        state: "stopping",
+        stopRequestedAt: parsed.interrupted[0]?.stopRequestedAt,
+        stopReason: "Interrupted.",
+        stopSignal: "SIGTERM",
+      });
+      assert.ok(parsed.interrupted[0]?.stopRequestedAt);
     } finally {
       await runCli(workspaceRoot, [
         "interrupt",

@@ -68,8 +68,9 @@ orchestrator run --background --name "repo plan" --json --compact "Launch child 
 ```
 
 Capture `taskId` or `id` from stdout. If JSON output includes `commands.*.args`,
-run `orchestrator` with those portable args for follow-up. Compact `ps` output
-can include top-level commands for every listed task; use
+run `orchestrator` with those portable args for follow-up. Treat returned args
+as an argument vector; do not join them into one shell string. Compact `ps`
+output can include top-level commands for every listed task; use
 `commands.waitPreview.args` to wait for that listed set with bounded output. If
 JSON output includes `stop.args`, run `orchestrator` with those portable args to
 stop exactly the returned task, group, or selected active set. If a JSON lookup
@@ -152,6 +153,8 @@ instead of guessing.
   `commands.waitPreview.args` to collect the listed set.
 - Prefer portable `commands.*.args` from JSON output when reading, watching,
   logging, or inspecting events.
+- Treat returned args arrays as argument vectors. Do not collapse several task
+  ids into one quoted string.
 - If JSON lookup errors include `recovery.views.*.args`, run those args to
   recover from missing or ambiguous task/group ids.
 - Use compact `ps` top-level `commands.waitPreview.args` when you need to wait

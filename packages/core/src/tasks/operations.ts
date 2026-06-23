@@ -3,13 +3,16 @@ import { relative, resolve } from "node:path";
 import { listTasks, taskCwd, taskWorkspaceRoot } from "./store.ts";
 import { readTaskEvents } from "./readers.ts";
 import { UNGROUPED_GROUP_ID, taskGroupId, uniqueIdPrefix } from "./groups.ts";
+import { observeTaskState } from "./observation.ts";
 import { isTerminalTaskStatus } from "./types.ts";
 import { normalizeTaskUsage, selectTaskUsage, sumTaskUsage, usageWithUpdatedAt } from "./usage.ts";
 import { DEFAULT_WAIT_TIMEOUT_MS } from "./wait.ts";
 import type {
   AgentTaskRecord,
   TaskEvent,
+  TaskDisplayState,
   TaskLocation,
+  TaskObservation,
   TaskStatus,
   TaskStoreOptions,
   TaskUsage,
@@ -33,6 +36,10 @@ export type AgentTaskRow = {
   shortTaskId: string;
   name: string;
   status: TaskStatus;
+  state?: TaskDisplayState;
+  active: boolean;
+  actionable: boolean;
+  observationReason?: string;
   runtime: string;
   model?: string;
   exitCode?: number | null;
@@ -59,6 +66,10 @@ export type AgentTaskRow = {
 
 export type AgentTaskGroupStatus =
   | "running"
+  | "stopping"
+  | "stale"
+  | "orphaned"
+  | "lost"
   | "succeeded"
   | "failed"
   | "stopped"
@@ -162,6 +173,9 @@ export type AgentTaskControlGroup = {
   failed: number;
   stopped: number;
   timedOut: number;
+  stale?: number;
+  orphaned?: number;
+  lost?: number;
   tokens?: number;
   commands?: AgentTaskControlGroupCommands;
   stop?: AgentTaskControlStopTarget;
@@ -176,7 +190,10 @@ export type AgentTaskControlTask = {
   runtime: string;
   model?: string;
   status: TaskStatus;
+  state?: TaskDisplayState;
   active: boolean;
+  actionable: boolean;
+  observationReason?: string;
   exitCode?: number | null;
   tokens?: number;
   last?: string;
@@ -197,6 +214,9 @@ export type AgentTaskControlView = {
     failed: number;
     stopped: number;
     timedOut: number;
+    stale?: number;
+    orphaned?: number;
+    lost?: number;
   };
   commands?: AgentTaskControlBatchCommands;
   stop?: AgentTaskControlStopTarget;
@@ -218,14 +238,21 @@ export async function buildAgentTaskPsView(input: AgentTaskPsInput): Promise<Age
   });
   const groupLabels = groupLabelsFromTasks(tasks);
 
-  const filtered = tasks
+  const scoped = tasks
     .filter((task) => (input.status ? task.status === input.status : true))
     .filter((task) => (input.runtime ? task.runtime === input.runtime : true))
     .filter((task) => matchesParentFilter(task, input.parentRunId))
     .filter((task) => matchesWorkspaceFilter(task, input))
-    .filter((task) => matchesCwdFilter(task, input.cwd))
-    .filter((task) => (input.activeOnly ? !isTerminalTaskStatus(task.status) : true))
-    .filter((task) =>
+    .filter((task) => matchesCwdFilter(task, input.cwd));
+  const observedTasks = await Promise.all(
+    scoped.map(async (task) => ({
+      task,
+      observation: await observeTaskState(input, task, { now }),
+    })),
+  );
+  const filtered = observedTasks
+    .filter(({ observation }) => (input.activeOnly ? observation.active : true))
+    .filter(({ task }) =>
       input.all
         ? true
         : shouldShowByDefault(
@@ -237,12 +264,13 @@ export async function buildAgentTaskPsView(input: AgentTaskPsInput): Promise<Age
 
   const rows = (
     await Promise.all(
-      filtered.map((task) =>
+      filtered.map(({ task, observation }) =>
         buildAgentTaskRow(task, {
           workspaceRoot: input.workspaceRoot,
           ...(input.orchestratorDir ? { orchestratorDir: input.orchestratorDir } : {}),
           maxEventBytes: input.maxEventBytes,
           now,
+          observation,
         }),
       ),
     )
@@ -317,6 +345,9 @@ export function compactAgentTaskPsView(
   const failed = tasks.filter((task) => task.status === "failed").length;
   const stopped = tasks.filter((task) => task.status === "cancelled").length;
   const timedOut = tasks.filter((task) => task.status === "timed_out").length;
+  const stale = tasks.filter((task) => task.state === "stale").length;
+  const orphaned = tasks.filter((task) => task.state === "orphaned").length;
+  const lost = tasks.filter((task) => task.state === "lost").length;
 
   return {
     schemaVersion: 1,
@@ -329,6 +360,9 @@ export function compactAgentTaskPsView(
       failed,
       stopped,
       timedOut,
+      ...(stale > 0 ? { stale } : {}),
+      ...(orphaned > 0 ? { orphaned } : {}),
+      ...(lost > 0 ? { lost } : {}),
     },
     ...(tasks.length > 0
       ? { commands: taskBatchControlCommands(tasks.map((task) => task.id)) }
@@ -343,17 +377,17 @@ function compactViewStopTarget(
   tasks: readonly AgentTaskControlTask[],
   groups: readonly AgentTaskControlGroup[],
 ): Pick<AgentTaskControlView, "stop"> | Record<string, never> {
-  const activeTasks = tasks.filter((task) => task.active);
-  if (activeTasks.length === 0) {
+  const stoppableTasks = tasks.filter((task) => task.stop);
+  if (stoppableTasks.length === 0) {
     return {};
   }
 
-  if (activeTasks.length === 1 && activeTasks[0]?.stop) {
-    return { stop: activeTasks[0].stop };
+  if (stoppableTasks.length === 1 && stoppableTasks[0]?.stop) {
+    return { stop: stoppableTasks[0].stop };
   }
 
-  if (activeTasks.some((task) => task.runtime === "orchestrator")) {
-    const activeGroupIds = [...new Set(activeTasks.map((task) => task.groupId))];
+  if (stoppableTasks.some((task) => task.runtime === "orchestrator")) {
+    const activeGroupIds = [...new Set(stoppableTasks.map((task) => task.groupId))];
     const groupStop =
       activeGroupIds.length === 1
         ? groups.find((group) => group.groupId === activeGroupIds[0])?.stop
@@ -361,7 +395,7 @@ function compactViewStopTarget(
     return groupStop ? { stop: groupStop } : {};
   }
 
-  const activeIds = activeTasks.map((task) => task.id);
+  const activeIds = stoppableTasks.map((task) => task.id);
   return {
     stop: {
       kind: "tasks",
@@ -373,7 +407,7 @@ function compactViewStopTarget(
 
 async function buildAgentTaskRow(
   task: AgentTaskRecord,
-  input: TaskStoreOptions & { maxEventBytes?: number; now: Date },
+  input: TaskStoreOptions & { maxEventBytes?: number; now: Date; observation: TaskObservation },
 ): Promise<AgentTaskRow> {
   const events = await readTaskEvents({
     workspaceRoot: input.workspaceRoot,
@@ -390,7 +424,8 @@ async function buildAgentTaskRow(
     error || eventSummary.lastMessage ? undefined : await succeededTaskOutputDetail(task);
   const lastEvent =
     eventSummary.error && task.status === "failed" ? "runtime.error" : eventSummary.lastEvent;
-  const lastMessage = error ?? eventSummary.lastMessage ?? succeededOutputDetail;
+  const lastMessage =
+    error ?? eventSummary.lastMessage ?? succeededOutputDetail ?? input.observation.reason;
   const taskDurationMs = durationMs(task, input.now);
   const model = taskModel(task);
   const workspaceRoot = taskWorkspaceRoot(task, input.workspaceRoot);
@@ -402,6 +437,10 @@ async function buildAgentTaskRow(
     shortTaskId: shortId(task.taskId),
     name: displayTaskName(task),
     status: task.status,
+    ...optionalDisplayState(input.observation.state, task.status),
+    active: input.observation.active,
+    actionable: input.observation.actionable,
+    ...(input.observation.reason ? { observationReason: input.observation.reason } : {}),
     runtime: task.runtime,
     ...(model ? { model } : {}),
     ...(task.exitCode !== undefined ? { exitCode: task.exitCode } : {}),
@@ -436,7 +475,11 @@ function compactGroup(
   taskIds: readonly string[],
   options: { brief?: boolean },
 ): AgentTaskControlGroup {
-  const active = rows.filter((row) => !isTerminalTaskStatus(row.status)).length;
+  const active = rows.filter((row) => row.active).length;
+  const stoppableRows = rows.filter(isStoppableRow);
+  const stale = rows.filter((row) => row.state === "stale").length;
+  const orphaned = rows.filter((row) => row.state === "orphaned").length;
+  const lost = rows.filter((row) => row.state === "lost").length;
   const usage = sumTaskUsage(
     rows.map((row) => row.usage).filter((value): value is TaskUsage => Boolean(value)),
   );
@@ -451,9 +494,12 @@ function compactGroup(
     failed: rows.filter((row) => row.status === "failed").length,
     stopped: rows.filter((row) => row.status === "cancelled").length,
     timedOut: rows.filter((row) => row.status === "timed_out").length,
+    ...(stale > 0 ? { stale } : {}),
+    ...(orphaned > 0 ? { orphaned } : {}),
+    ...(lost > 0 ? { lost } : {}),
     ...(usage?.totalTokens !== undefined ? { tokens: usage.totalTokens } : {}),
     ...(options.brief ? {} : { commands: groupControlCommands(id, taskIds) }),
-    ...(group.groupId !== UNGROUPED_GROUP_ID && active > 0
+    ...(group.groupId !== UNGROUPED_GROUP_ID && stoppableRows.length > 0
       ? {
           stop: {
             kind: "group",
@@ -529,7 +575,7 @@ function compactRows(
   rows: readonly AgentTaskRow[],
   options: { activeOnly?: boolean },
 ): AgentTaskRow[] {
-  return options.activeOnly ? rows.filter((row) => !isTerminalTaskStatus(row.status)) : [...rows];
+  return options.activeOnly ? rows.filter((row) => row.active) : [...rows];
 }
 
 function compactTask(
@@ -540,7 +586,8 @@ function compactTask(
   id: string,
   options: { brief?: boolean },
 ): AgentTaskControlTask {
-  const active = !isTerminalTaskStatus(row.status);
+  const active = row.active;
+  const state = row.state ?? row.status;
 
   return {
     id,
@@ -551,14 +598,17 @@ function compactTask(
     runtime: row.runtime,
     ...(row.model ? { model: row.model } : {}),
     status: row.status,
+    ...optionalDisplayState(state, row.status),
     active,
+    actionable: row.actionable,
+    ...(row.observationReason ? { observationReason: row.observationReason } : {}),
     ...(row.exitCode !== undefined ? { exitCode: row.exitCode } : {}),
     ...(row.usage?.totalTokens !== undefined ? { tokens: row.usage.totalTokens } : {}),
     ...optionalLast(row),
     ...(row.durationMs !== undefined ? { durationMs: row.durationMs } : {}),
     ...(row.location ? { location: row.location } : {}),
     ...(options.brief ? {} : { commands: taskControlCommands(id) }),
-    ...(active ? { stop: compactTaskStopTarget(row, id) } : {}),
+    ...(isStoppableRow(row) ? { stop: compactTaskStopTarget(row, id) } : {}),
   };
 }
 
@@ -634,6 +684,14 @@ function compactTaskStopTarget(row: AgentTaskRow, id: string): AgentTaskControlS
   }
 
   return { kind: "task", id, taskId: row.taskId, args: ["interrupt", id, "--json", "--compact"] };
+}
+
+function isStoppableRow(row: Pick<AgentTaskRow, "active" | "state" | "status">): boolean {
+  const state = row.state ?? row.status;
+  return (
+    row.active &&
+    (state === "queued" || state === "starting" || state === "running" || state === "stopping")
+  );
 }
 
 function compactGroupId(groupId: string, groupIds: readonly string[]): string {
@@ -792,7 +850,7 @@ function groupRows(
       const stopped = rows.filter((row) => row.status === "cancelled").length;
       const timedOut = rows.filter((row) => row.status === "timed_out").length;
       const succeeded = rows.filter((row) => row.status === "succeeded").length;
-      const running = rows.filter((row) => !isTerminalTaskStatus(row.status)).length;
+      const running = rows.filter((row) => row.active).length;
       const parentRunId = rows.find((row) => row.parentRunId)?.parentRunId;
       const parentSessionId = rows.find((row) => row.parentSessionId)?.parentSessionId;
 
@@ -908,8 +966,27 @@ function shouldShowByDefault(
 }
 
 function groupStatus(rows: readonly AgentTaskRow[]): AgentTaskGroupStatus {
-  if (rows.some((row) => !isTerminalTaskStatus(row.status))) {
+  const activeRows = rows.filter((row) => row.active);
+  if (
+    activeRows.length > 0 &&
+    activeRows.every((row) => (row.state ?? row.status) === "stopping")
+  ) {
+    return "stopping";
+  }
+  if (activeRows.length > 0 && activeRows.every((row) => (row.state ?? row.status) === "stale")) {
+    return "stale";
+  }
+  if (
+    activeRows.length > 0 &&
+    activeRows.every((row) => (row.state ?? row.status) === "orphaned")
+  ) {
+    return "orphaned";
+  }
+  if (activeRows.length > 0) {
     return "running";
+  }
+  if (rows.length > 0 && rows.every((row) => (row.state ?? row.status) === "lost")) {
+    return "lost";
   }
   if (rows.length > 0 && rows.every((row) => row.status === "succeeded")) {
     return "succeeded";
@@ -924,6 +1001,13 @@ function groupStatus(rows: readonly AgentTaskRow[]): AgentTaskGroupStatus {
     return "failed";
   }
   return "mixed";
+}
+
+function optionalDisplayState(
+  state: TaskDisplayState,
+  status: TaskStatus,
+): { state?: TaskDisplayState } {
+  return state === status ? {} : { state };
 }
 
 function displayTaskName(task: AgentTaskRecord): string {
@@ -955,7 +1039,7 @@ function compareRows(a: AgentTaskRow, b: AgentTaskRow, parentTaskId?: string): n
     return priority;
   }
 
-  if (!isTerminalTaskStatus(a.status) && !isTerminalTaskStatus(b.status)) {
+  if (a.active && b.active) {
     return a.createdAt.localeCompare(b.createdAt);
   }
 
@@ -963,8 +1047,11 @@ function compareRows(a: AgentTaskRow, b: AgentTaskRow, parentTaskId?: string): n
 }
 
 function rowPriority(row: AgentTaskRow): number {
-  if (!isTerminalTaskStatus(row.status)) {
+  if (row.active) {
     return 0;
+  }
+  if ((row.state ?? row.status) === "lost") {
+    return 1;
   }
   if (row.status === "failed" || row.status === "cancelled" || row.status === "timed_out") {
     return 1;

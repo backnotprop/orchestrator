@@ -13,6 +13,9 @@ orchestrator run 'Launch a Claude Code child to review the API package, launch a
 The parent agent is a Pi session with only Orchestrator tools enabled. The CLI
 owns process supervision, task files, logs, events, and final result capture.
 
+See [supervision-model.svg](supervision-model.svg) for the process/task-store
+layer diagram.
+
 Foreground `orchestrator run`:
 
 ```text

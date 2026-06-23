@@ -1,6 +1,8 @@
+import { access } from "node:fs/promises";
 import {
   isTerminalTaskStatus as isTerminalStatus,
   listTaskIds,
+  observeTaskState,
   readTaskOutput,
   readTaskRecord,
   taskBatchControlCommands,
@@ -8,6 +10,8 @@ import {
   type AgentTaskControlStopTarget,
   type AgentTaskRecord,
   type TaskEvent,
+  type TaskObservation,
+  type WaitForTaskRetrievalStatus,
 } from "@backnotprop/orchestrator-core";
 import { CliError } from "../cli-errors.ts";
 import { jsonLine } from "../json-output.ts";
@@ -71,26 +75,30 @@ export async function commandRead(options: ReadOptions): Promise<void> {
     return;
   }
 
-  const { task, retrievalStatus } = await readTaskForOptions(
+  const { task, retrievalStatus, observation } = await readTaskForOptions(
     options,
     storeOptions,
     onlyTaskId(options),
   );
 
   if (options.json) {
-    const payload = await taskReadJsonPayload(
-      task,
-      options,
-      undefined,
-      retrievalStatus ? { retrievalStatus } : {},
-    );
+    const payload = await taskReadJsonPayload(task, options, undefined, {
+      ...(retrievalStatus ? { retrievalStatus } : {}),
+      observation,
+    });
     const rendered = options.compact ? compactTaskReadJsonPayload(payload) : payload;
     process.stdout.write(jsonLine(rendered, options));
     return;
   }
 
   if (retrievalStatus === "timeout") {
-    process.stderr.write(`Timed out waiting for task ${task.taskId}; status is ${task.status}.\n`);
+    process.stderr.write(
+      `Timed out waiting for task ${task.taskId}; state is ${observation.state}.\n`,
+    );
+  } else if (retrievalStatus === "unavailable") {
+    process.stderr.write(
+      `Task ${task.taskId} is ${observation.state}; final outcome is unavailable.${observation.reason ? ` ${observation.reason}.` : ""}\n`,
+    );
   }
 
   const output = await readTaskOutput({
@@ -111,8 +119,8 @@ export async function commandRead(options: ReadOptions): Promise<void> {
       return;
     }
 
-    if (retrievalStatus !== "timeout") {
-      process.stderr.write(`No output yet; task ${task.taskId} is ${task.status}.\n`);
+    if (retrievalStatus !== "timeout" && retrievalStatus !== "unavailable") {
+      process.stderr.write(`No output yet; task ${task.taskId} is ${observation.state}.\n`);
     }
     return;
   }
@@ -123,6 +131,7 @@ export async function commandRead(options: ReadOptions): Promise<void> {
 export async function commandLogs(options: LogsOptions): Promise<void> {
   const storeOptions = taskInspectionStoreOptions(options);
   const task = await readTaskRecord(storeOptions, options.taskId);
+  const observation = await observeTaskState(storeOptions, task);
   const maxBytes = options.maxBytes ?? 200_000;
 
   if (options.follow) {
@@ -158,6 +167,7 @@ export async function commandLogs(options: LogsOptions): Promise<void> {
           stdout,
           stderr,
           stopArgsSuffix: stopArgsSuffix(options),
+          observation,
         }),
         options,
       ),
@@ -176,6 +186,7 @@ export async function commandLogs(options: LogsOptions): Promise<void> {
 export async function commandEvents(options: EventsOptions): Promise<void> {
   const storeOptions = taskInspectionStoreOptions(options);
   const task = await readTaskRecord(storeOptions, options.taskId);
+  const observation = await observeTaskState(storeOptions, task);
   const maxBytes = options.maxBytes ?? 500_000;
   const raw = await readTailMetadataIfExists(task.paths.eventsJsonl, maxBytes);
   const lines = raw.text.trim() ? raw.text.trimEnd().split("\n") : [];
@@ -197,6 +208,7 @@ export async function commandEvents(options: EventsOptions): Promise<void> {
             maxBytes,
             eventsTruncated: raw.truncated,
             stopArgsSuffix: stopArgsSuffix(options),
+            observation,
           }),
           options,
         ),
@@ -220,12 +232,10 @@ async function commandReadBatch(options: ReadOptions, storeOptions: StoreOptions
   );
   const payloads = await Promise.all(
     results.map(async (result) => {
-      return await taskReadJsonPayload(
-        result.task,
-        options,
-        taskIds,
-        result.retrievalStatus ? { retrievalStatus: result.retrievalStatus } : {},
-      );
+      return await taskReadJsonPayload(result.task, options, taskIds, {
+        ...(result.retrievalStatus ? { retrievalStatus: result.retrievalStatus } : {}),
+        observation: result.observation,
+      });
     }),
   );
   const tasks = payloads.map((payload) => batchTaskReadJsonPayload(payload, options.compact));
@@ -256,7 +266,7 @@ function taskBatchStopTarget(
   const active = payloads
     .map((payload, index) => ({ payload, task: results[index]?.task }))
     .filter((item): item is { payload: TaskReadJsonPayload; task: AgentTaskRecord } =>
-      Boolean(item.task && item.payload.active),
+      Boolean(item.task && item.payload.stop),
     );
 
   if (active.length === 0) {
@@ -303,7 +313,11 @@ async function readTaskForOptions(
   options: ReadOptions,
   storeOptions: StoreOptions,
   taskId: string,
-): Promise<{ task: AgentTaskRecord; retrievalStatus?: "completed" | "timeout" }> {
+): Promise<{
+  task: AgentTaskRecord;
+  retrievalStatus?: WaitForTaskRetrievalStatus;
+  observation: TaskObservation;
+}> {
   const task = await readTaskRecord(storeOptions, taskId);
 
   if (options.wait && !isTerminalStatus(task.status)) {
@@ -316,12 +330,15 @@ async function readTaskForOptions(
     return {
       retrievalStatus: result.retrievalStatus,
       task: result.task,
+      observation: result.observation,
     };
   }
 
+  const observation = await observeTaskState(storeOptions, task);
   return {
     ...(options.wait ? { retrievalStatus: "completed" as const } : {}),
     task,
+    observation,
   };
 }
 
@@ -338,7 +355,11 @@ function onlyTaskId(options: ReadOptions): string {
 }
 
 function readBatchSummary(
-  results: readonly { task: AgentTaskRecord; retrievalStatus?: "completed" | "timeout" }[],
+  results: readonly {
+    task: AgentTaskRecord;
+    retrievalStatus?: WaitForTaskRetrievalStatus;
+    observation: TaskObservation;
+  }[],
 ): {
   tasks: number;
   active: number;
@@ -348,10 +369,11 @@ function readBatchSummary(
   timedOut: number;
   retrievalCompleted?: number;
   retrievalTimeout?: number;
+  retrievalUnavailable?: number;
 } {
   const summary = {
     tasks: results.length,
-    active: results.filter((result) => !isTerminalStatus(result.task.status)).length,
+    active: results.filter((result) => result.observation.active).length,
     done: results.filter((result) => result.task.status === "succeeded").length,
     failed: results.filter((result) => result.task.status === "failed").length,
     stopped: results.filter((result) => result.task.status === "cancelled").length,
@@ -361,10 +383,14 @@ function readBatchSummary(
     return summary;
   }
 
+  const retrievalUnavailable = results.filter(
+    (result) => result.retrievalStatus === "unavailable",
+  ).length;
   return {
     ...summary,
     retrievalCompleted: results.filter((result) => result.retrievalStatus === "completed").length,
     retrievalTimeout: results.filter((result) => result.retrievalStatus === "timeout").length,
+    ...(retrievalUnavailable > 0 ? { retrievalUnavailable } : {}),
   };
 }
 
@@ -385,6 +411,11 @@ async function followLogs(
   storeOptions: StoreOptions,
   maxBytes: number,
 ): Promise<void> {
+  if (options.stream === "all" && (await fileExists(task.paths.combinedLog))) {
+    await followCombinedLog(task, storeOptions, maxBytes);
+    return;
+  }
+
   let stdoutOffset = 0;
   let stderrOffset = 0;
 
@@ -431,6 +462,33 @@ async function followLogs(
   }
 }
 
+async function followCombinedLog(
+  task: AgentTaskRecord,
+  storeOptions: StoreOptions,
+  maxBytes: number,
+): Promise<void> {
+  const initial = await readTailWithOffsetIfExists(task.paths.combinedLog, maxBytes);
+  let offset = initial.offset;
+  if (initial.text) {
+    process.stdout.write(initial.text);
+  }
+
+  while (true) {
+    const current = await readTaskRecord(storeOptions, task.taskId);
+    const output = await readNewFileText(current.paths.combinedLog, offset);
+    offset = output.offset;
+    if (output.text) {
+      process.stdout.write(output.text);
+    }
+
+    if (isTerminalStatus(current.status)) {
+      return;
+    }
+
+    await delay(250);
+  }
+}
+
 function taskInspectionStoreOptions(options: CommonTaskInspectionOptions): StoreOptions {
   return {
     workspaceRoot: options.workspaceRoot,
@@ -440,4 +498,16 @@ function taskInspectionStoreOptions(options: CommonTaskInspectionOptions): Store
 
 async function delay(ms: number): Promise<void> {
   await new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function fileExists(path: string): Promise<boolean> {
+  try {
+    await access(path);
+    return true;
+  } catch (error) {
+    if (error instanceof Error && "code" in error && error.code === "ENOENT") {
+      return false;
+    }
+    throw error;
+  }
 }

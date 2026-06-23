@@ -13,12 +13,14 @@ import { homedir } from "node:os";
 import { basename, join, resolve } from "node:path";
 import type {
   AgentTaskRecord,
+  TaskHeartbeat,
   TaskLocation,
   TaskEvent,
   TaskPaths,
   TaskStatus,
   TaskStoreOptions,
 } from "./types.ts";
+import { isTerminalTaskStatus } from "./types.ts";
 
 export type TaskLookupErrorReason = "empty" | "invalid" | "not_found" | "ambiguous";
 
@@ -56,8 +58,10 @@ export function getTaskPaths(options: TaskStoreOptions, taskId: string): TaskPat
   return {
     taskDir,
     taskJson: join(taskDir, "task.json"),
+    heartbeatJson: join(taskDir, "heartbeat.json"),
     stdoutLog: join(taskDir, "stdout.log"),
     stderrLog: join(taskDir, "stderr.log"),
+    combinedLog: join(taskDir, "combined.log"),
     eventsJsonl: join(taskDir, "events.jsonl"),
     transcriptJsonl: join(taskDir, "transcript.jsonl"),
     resultMd: join(taskDir, "result.md"),
@@ -71,6 +75,7 @@ export async function initializeTaskFiles(task: AgentTaskRecord): Promise<void> 
     writeTaskRecord(task),
     writeFile(task.paths.stdoutLog, ""),
     writeFile(task.paths.stderrLog, ""),
+    writeFile(task.paths.combinedLog, ""),
     writeFile(task.paths.eventsJsonl, ""),
     writeFile(task.paths.transcriptJsonl, ""),
     writeFile(task.paths.resultMd, ""),
@@ -143,9 +148,34 @@ async function readResolvedTaskRecord(
     paths: {
       ...paths,
       ...task.paths,
+      heartbeatJson: task.paths.heartbeatJson ?? paths.heartbeatJson,
       transcriptJsonl: task.paths.transcriptJsonl ?? paths.transcriptJsonl,
     },
   };
+}
+
+export async function writeTaskHeartbeat(
+  paths: Pick<TaskPaths, "heartbeatJson">,
+  heartbeat: TaskHeartbeat,
+): Promise<void> {
+  const tempPath = `${paths.heartbeatJson}.${process.pid}.${randomUUID()}.tmp`;
+  await writeFile(tempPath, `${JSON.stringify(heartbeat, null, 2)}\n`);
+  await rename(tempPath, paths.heartbeatJson);
+}
+
+export async function readTaskHeartbeat(
+  paths: Pick<TaskPaths, "heartbeatJson">,
+): Promise<TaskHeartbeat | undefined> {
+  try {
+    const raw = await readFile(paths.heartbeatJson, "utf8");
+    const value = JSON.parse(raw) as unknown;
+    return isTaskHeartbeat(value) ? value : undefined;
+  } catch (error) {
+    if (isNodeError(error) && error.code === "ENOENT") {
+      return undefined;
+    }
+    throw error;
+  }
 }
 
 export function localTaskLocation(workspaceRoot: string, cwd: string): TaskLocation {
@@ -259,18 +289,70 @@ export async function updateTaskStatus(
   updates: Partial<
     Pick<
       AgentTaskRecord,
-      "startedAt" | "finishedAt" | "exitCode" | "pid" | "error" | "usage" | "outputCapture"
+      | "startedAt"
+      | "finishedAt"
+      | "exitCode"
+      | "pid"
+      | "error"
+      | "usage"
+      | "outputCapture"
+      | "stopRequestedAt"
+      | "stopReason"
+      | "stopSignal"
+      | "supervision"
     >
   > = {},
 ): Promise<AgentTaskRecord> {
+  const base = await readLatestTaskRecordForUpdate(task);
+  const nextStatus =
+    isTerminalTaskStatus(base.status) && !isTerminalTaskStatus(status) ? base.status : status;
   const updated = {
-    ...task,
+    ...base,
     ...updates,
-    status,
+    status: nextStatus,
   };
 
   await writeTaskRecord(updated);
   return updated;
+}
+
+async function readLatestTaskRecordForUpdate(task: AgentTaskRecord): Promise<AgentTaskRecord> {
+  try {
+    const raw = await readFile(task.paths.taskJson, "utf8");
+    const latest = JSON.parse(raw) as AgentTaskRecord;
+    if (latest.taskId !== task.taskId) {
+      return task;
+    }
+    return {
+      ...task,
+      ...latest,
+      paths: {
+        ...task.paths,
+        ...latest.paths,
+        heartbeatJson: latest.paths.heartbeatJson ?? task.paths.heartbeatJson,
+        transcriptJsonl: latest.paths.transcriptJsonl ?? task.paths.transcriptJsonl,
+      },
+    };
+  } catch (error) {
+    if (isNodeError(error) && error.code === "ENOENT") {
+      return task;
+    }
+    throw error;
+  }
+}
+
+function isTaskHeartbeat(value: unknown): value is TaskHeartbeat {
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+  const record = value as Record<string, unknown>;
+  return (
+    typeof record.taskId === "string" &&
+    typeof record.supervisorPid === "number" &&
+    typeof record.lastHeartbeatAt === "string" &&
+    (record.childPid === undefined || typeof record.childPid === "number") &&
+    (record.processGroupId === undefined || typeof record.processGroupId === "number")
+  );
 }
 
 function isNodeError(error: unknown): error is NodeJS.ErrnoException {

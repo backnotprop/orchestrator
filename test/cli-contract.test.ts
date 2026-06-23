@@ -306,6 +306,14 @@ test("CLI JSON help exposes a machine-readable agent contract", async () => {
       ),
     );
     assert.ok(
+      help.agentInstructions.some(
+        (instruction) =>
+          instruction.includes("returned args") &&
+          instruction.includes("argument vector") &&
+          instruction.includes("shell string"),
+      ),
+    );
+    assert.ok(
       help.agentInstructions.some((instruction) =>
         instruction.includes("compact ps group commands.waitPreview.args"),
       ),
@@ -597,6 +605,14 @@ test("CLI compact JSON help exposes a small agent command contract", async () =>
     assert.ok(help.commands.every((command) => command.options === undefined));
     assert.ok(help.agentQuickStart.some((step) => step.includes("launch -f <manifest.json|->")));
     assert.ok(help.agentQuickStart.some((step) => step.includes("commands.waitPreview.args")));
+    assert.ok(
+      help.agentQuickStart.some(
+        (step) =>
+          step.includes("returned args") &&
+          step.includes("argument vectors") &&
+          step.includes("shell string"),
+      ),
+    );
     assert.ok(
       help.agentQuickStart.some(
         (step) =>
@@ -897,7 +913,7 @@ test("CLI compact doctor exposes parent run prefixes for Pi fallback config", as
       };
     };
 
-    assert.equal(report.canRunParentAgent, false);
+    assert.equal(report.canRunParentAgent, true);
     assert.equal(report.parent.canRun, true);
     assert.equal(report.parent.piAgentDir, `${workspaceRoot}/.pi/agent`);
     assert.deepEqual(report.parent.run, {

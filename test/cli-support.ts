@@ -6,6 +6,7 @@ import { runCli } from "./helpers.ts";
 
 export {
   runCli,
+  markTaskLostForObservation,
   waitForTaskStatus,
   waitForTerminalTask,
   waitUntilRunning,

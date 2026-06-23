@@ -1,5 +1,11 @@
 import { readTaskRecord, resolveTaskId } from "./store.ts";
-import { isTerminalTaskStatus, type WaitForTaskInput, type WaitForTaskResult } from "./types.ts";
+import { observeTaskState } from "./observation.ts";
+import {
+  isTerminalTaskStatus,
+  type TaskObservedState,
+  type WaitForTaskInput,
+  type WaitForTaskResult,
+} from "./types.ts";
 
 export const DEFAULT_WAIT_TIMEOUT_MS = 300_000;
 const MAX_WAIT_TIMEOUT_MS = 600_000;
@@ -17,11 +23,21 @@ export async function waitForTask(input: WaitForTaskInput): Promise<WaitForTaskR
 
   while (true) {
     const task = await readTaskRecord(input, taskId);
+    const observation = await observeTaskState(input, task);
     const elapsedMs = Date.now() - startedAt;
     if (isTerminalTaskStatus(task.status)) {
       return {
         retrievalStatus: "completed",
         task,
+        observation,
+      };
+    }
+
+    if (isUnavailableTaskState(observation.state)) {
+      return {
+        retrievalStatus: "unavailable",
+        task,
+        observation,
       };
     }
 
@@ -29,6 +45,7 @@ export async function waitForTask(input: WaitForTaskInput): Promise<WaitForTaskR
       return {
         retrievalStatus: "timeout",
         task,
+        observation,
       };
     }
 
@@ -36,6 +53,7 @@ export async function waitForTask(input: WaitForTaskInput): Promise<WaitForTaskR
     if (input.onProgress && elapsedMs >= nextProgressAtMs) {
       input.onProgress({
         task,
+        observation,
         elapsedMs,
         timeoutMs,
         remainingMs,
@@ -47,6 +65,10 @@ export async function waitForTask(input: WaitForTaskInput): Promise<WaitForTaskR
 
     await delay(Math.min(intervalMs, remainingMs));
   }
+}
+
+function isUnavailableTaskState(state: TaskObservedState): boolean {
+  return state === "stale" || state === "orphaned" || state === "lost";
 }
 
 function normalizeTimeoutMs(timeoutMs: number | undefined): number {

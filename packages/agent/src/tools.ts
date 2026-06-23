@@ -7,15 +7,18 @@ import {
 } from "@backnotprop/orchestrator-core/runtime";
 import {
   interruptTasks,
+  isTerminalTaskStatus,
   launchTask,
   listTasks,
   matchesTaskWorkspace,
+  observeTaskState,
   readTaskEvents,
   readTaskLogs,
   readTaskOutput,
   readTaskRecord,
   resolveTaskId,
   selectTaskUsage,
+  taskDisplayState,
   waitForTask,
   usageWithUpdatedAt,
   type AgentTaskRecord,
@@ -24,9 +27,12 @@ import {
   type LaunchTaskInput,
   type LogStream,
   type TaskEvent,
+  type TaskDisplayState,
+  type TaskObservation,
   type TaskUsage,
   type TaskStatus,
   type WaitForTaskProgress,
+  type WaitForTaskRetrievalStatus,
 } from "@backnotprop/orchestrator-core/tasks";
 import {
   defineTool,
@@ -96,6 +102,10 @@ type TaskSummary = {
   name?: string;
   runtime: string;
   status: TaskStatus;
+  state?: TaskDisplayState;
+  active: boolean;
+  actionable: boolean;
+  observationReason?: string;
   cwd: string;
   location?: AgentTaskRecord["location"];
   createdAt: string;
@@ -103,6 +113,9 @@ type TaskSummary = {
   finishedAt?: string;
   exitCode?: number | null;
   error?: string;
+  stopRequestedAt?: string;
+  stopReason?: string;
+  stopSignal?: NodeJS.Signals;
   pid?: number;
   taskDir: string;
 };
@@ -119,7 +132,7 @@ type ListAgentsDetails = {
 };
 
 type ReadAgentDetails = {
-  retrievalStatus?: "completed" | "timeout";
+  retrievalStatus?: WaitForTaskRetrievalStatus;
   task: TaskSummary;
   output: string;
   usage?: TokenUsage;
@@ -348,7 +361,7 @@ function createListAgentsTool(context: ToolContext): OrchestratorParentTool {
       const selected = limit > 0 ? workspaceFiltered.slice(-limit) : [];
 
       return jsonResult<ListAgentsDetails>({
-        tasks: selected.map(summarizeTask),
+        tasks: await Promise.all(selected.map((task) => summarizeStoredTask(context, task))),
       });
     },
   });
@@ -400,7 +413,7 @@ function createReadAgentTool(context: ToolContext): OrchestratorParentTool {
 
       return jsonResult<ReadAgentDetails>({
         ...(waitResult ? { retrievalStatus: waitResult.retrievalStatus } : {}),
-        task: summarizeTask(task),
+        task: await summarizeStoredTask(context, task, waitResult?.observation),
         output,
         ...(usage ? { usage } : {}),
       });
@@ -474,6 +487,7 @@ function createInterruptAgentTool(context: ToolContext): OrchestratorParentTool 
       "interrupt_agent stops one task, a parent task with its children, or a ps group.",
     promptGuidelines: [
       "Use interrupt_agent when a task is no longer useful, is wasting time, or should be cancelled.",
+      "If a returned task has state: stopping, it is still shutting down. Use read_agent with wait: true when final confirmation matters.",
       "Use taskId with children: true to stop a parent task and its children.",
       "Use taskId with taskOnly: true only when a parent should stop but its children should continue.",
       "Use groupId to stop the running tasks in one ps group.",
@@ -556,13 +570,29 @@ function interruptAgentDetails(
   }
 
   return {
-    interrupted: result.interrupted.map(summarizeTask),
+    interrupted: result.interrupted.map((task) => summarizeTask(task)),
     skipped: result.skipped.map((skipped) => ({
-      task: summarizeTask(skipped.task),
+      task: summarizeSkippedInterruptTask(skipped),
       reason: skipped.reason,
     })),
     failed: result.failed,
   };
+}
+
+function summarizeSkippedInterruptTask(
+  skipped: InterruptTasksResult["skipped"][number],
+): TaskSummary {
+  if (skipped.reason === "terminal") {
+    return summarizeTask(skipped.task);
+  }
+  return summarizeTask(skipped.task, {
+    status: skipped.task.status,
+    state: skipped.reason,
+    active: skipped.reason !== "lost",
+    actionable: false,
+    checkedAt: new Date().toISOString(),
+    reason: `task is ${skipped.reason}`,
+  });
 }
 
 async function loadRegistry(context: ToolContext, workspaceRoot = context.workspaceRoot) {
@@ -603,12 +633,30 @@ function storeOptions(context: ToolContext) {
   };
 }
 
-function summarizeTask(task: AgentTaskRecord): TaskSummary {
+async function summarizeStoredTask(
+  context: ToolContext,
+  task: AgentTaskRecord,
+  observation?: TaskObservation,
+): Promise<TaskSummary> {
+  const store = storeOptions(context);
+  return summarizeTask(task, observation ?? (await observeTaskState(store, task)));
+}
+
+function summarizeTask(task: AgentTaskRecord, observation?: TaskObservation): TaskSummary {
+  const state = observation?.state ?? taskDisplayState(task);
+  const active = observation?.active ?? !isTerminalTaskStatus(task.status);
+  const actionable = observation?.actionable ?? active;
   return {
     taskId: task.taskId,
     ...(task.name ? { name: task.name } : {}),
     runtime: task.runtime,
     status: task.status,
+    ...(state === task.status ? {} : { state }),
+    active,
+    actionable,
+    ...(observation?.reason && state !== task.status
+      ? { observationReason: observation.reason }
+      : {}),
     cwd: task.cwd,
     ...(task.location ? { location: task.location } : {}),
     createdAt: task.createdAt,
@@ -616,6 +664,9 @@ function summarizeTask(task: AgentTaskRecord): TaskSummary {
     ...(task.finishedAt ? { finishedAt: task.finishedAt } : {}),
     ...(task.exitCode !== undefined ? { exitCode: task.exitCode } : {}),
     ...(task.error ? { error: task.error } : {}),
+    ...(task.stopRequestedAt ? { stopRequestedAt: task.stopRequestedAt } : {}),
+    ...(task.stopReason ? { stopReason: task.stopReason } : {}),
+    ...(task.stopSignal ? { stopSignal: task.stopSignal } : {}),
     ...(task.pid ? { pid: task.pid } : {}),
     taskDir: task.paths.taskDir,
   };
@@ -658,6 +709,14 @@ function emitReadAgentWaitProgress(
       ...(progress.task.name ? { name: progress.task.name } : {}),
       runtime: progress.task.runtime,
       status: progress.task.status,
+      ...(progress.observation.state === progress.task.status
+        ? {}
+        : { state: progress.observation.state }),
+      active: progress.observation.active,
+      actionable: progress.observation.actionable,
+      ...(progress.observation.reason && progress.observation.state !== progress.task.status
+        ? { observationReason: progress.observation.reason }
+        : {}),
       timeoutMs: progress.timeoutMs,
       remainingMs: progress.remainingMs,
       attempt: progress.attempt,

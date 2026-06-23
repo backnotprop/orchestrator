@@ -18,6 +18,7 @@ import {
   readTaskEvents,
   readTaskLogs,
 } from "@backnotprop/orchestrator-core/tasks";
+import { markTaskLostForObservation } from "./helpers.ts";
 
 type TestTool = ReturnType<typeof createOrchestratorAgentTools>[number];
 
@@ -32,29 +33,49 @@ type ToolDetails = {
     taskId: string;
     runtime: string;
     status: string;
+    state?: string;
+    active?: boolean;
+    actionable?: boolean;
+    observationReason?: string;
     name?: string;
+    stopReason?: string;
     location?: { kind: string; workspaceRoot?: string; cwd?: string };
   };
-  retrievalStatus?: "completed" | "timeout";
+  retrievalStatus?: "completed" | "timeout" | "unavailable";
   tasks?: Array<{
     taskId: string;
     runtime: string;
     status: string;
+    state?: string;
+    active?: boolean;
+    actionable?: boolean;
+    observationReason?: string;
     name?: string;
+    stopReason?: string;
     location?: { kind: string; workspaceRoot?: string; cwd?: string };
   }>;
   interrupted?: Array<{
     taskId: string;
     runtime: string;
     status: string;
+    state?: string;
+    active?: boolean;
+    actionable?: boolean;
+    observationReason?: string;
     name?: string;
+    stopReason?: string;
   }>;
   skipped?: Array<{
     task: {
       taskId: string;
       runtime: string;
       status: string;
+      state?: string;
+      active?: boolean;
+      actionable?: boolean;
+      observationReason?: string;
       name?: string;
+      stopReason?: string;
     };
     reason: string;
   }>;
@@ -478,7 +499,9 @@ test("interrupt_agent accepts short task ids", async () => {
       reason: "tool cancellation",
     });
     assert.equal(interrupted.details.task?.taskId, taskId);
-    assert.equal(interrupted.details.task?.status, "cancelled");
+    assert.equal(interrupted.details.task?.status, "running");
+    assert.equal(interrupted.details.task?.state, "stopping");
+    assert.equal(interrupted.details.task?.stopReason, "tool cancellation");
 
     assert.equal(await waitForTerminalTask(workspaceRoot, taskId), "cancelled");
     const persisted = await waitForTaskState(
@@ -639,6 +662,39 @@ test("read_agent wait returns timeout without claiming completion", async () => 
     assert.notEqual(read.details.task?.status, "succeeded");
 
     assert.equal(await waitForTerminalTask(workspaceRoot, taskId), "succeeded");
+  });
+});
+
+test("read_agent wait returns unavailable for lost supervised tasks", async () => {
+  await withTempWorkspace(async (workspaceRoot) => {
+    const handle = await launchTask({
+      workspaceRoot,
+      plan: shellPlan("printf lost-agent", workspaceRoot),
+      name: "lost agent",
+    });
+    const completed = await handle.completed;
+    await markTaskLostForObservation(completed);
+    const tools = createOrchestratorAgentTools({ workspaceRoot });
+
+    const startedAt = Date.now();
+    const read = await executeTool<ToolDetails>(getTool(tools, "read_agent"), {
+      taskId: completed.taskId.slice(0, 8),
+      wait: true,
+      timeoutMs: 5_000,
+    });
+
+    assert.equal(read.details.retrievalStatus, "unavailable");
+    assert.equal(read.details.task?.taskId, completed.taskId);
+    assert.equal(read.details.task?.status, "running");
+    assert.equal(read.details.task?.state, "lost");
+    assert.equal(read.details.task?.active, false);
+    assert.equal(read.details.task?.actionable, false);
+    assert.equal(
+      read.details.task?.observationReason,
+      "watcher gone, child gone, final outcome unknown",
+    );
+    assert.equal(read.details.output, "lost-agent");
+    assert.ok(Date.now() - startedAt < 2_000);
   });
 });
 

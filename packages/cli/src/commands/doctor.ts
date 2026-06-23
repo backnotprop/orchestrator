@@ -90,14 +90,15 @@ function compactDoctorReport(
   options: Pick<DoctorOptions, "workspaceRoot" | "configPath" | "agentDir" | "sessionDir">,
 ): CliCompactDoctorReport {
   const parentRun = compactParentRunCommand(report, options);
+  const canRunParentAgent = Boolean(parentRun);
 
   return {
     schemaVersion: 1,
     status: report.status,
-    canRunParentAgent: report.canRunParentAgent,
+    canRunParentAgent,
     canLaunchChildAgents: report.runtimeSummary.available > 0,
     parent: {
-      canRun: Boolean(parentRun),
+      canRun: canRunParentAgent,
       agentDir: report.agentDir,
       sessionDir: report.sessionDir,
       ...(report.piAgentDir ? { piAgentDir: report.piAgentDir } : {}),

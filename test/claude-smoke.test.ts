@@ -121,8 +121,12 @@ test(
         "claude smoke cancellation",
         "--json",
       ]);
-      const interrupted = JSON.parse(interrupt.stdout) as AgentTaskRecord;
-      assert.equal(interrupted.status, "cancelled");
+      const interrupted = JSON.parse(interrupt.stdout) as {
+        interrupted: Array<{ taskId: string; status: string; state?: string }>;
+      };
+      assert.equal(interrupted.interrupted[0]?.taskId, launched.taskId);
+      assert.equal(interrupted.interrupted[0]?.status, "running");
+      assert.equal(interrupted.interrupted[0]?.state, "stopping");
 
       const completed = await waitForTerminalTask(workspaceRoot, launched.taskId, 120_000);
       assert.equal(completed.status, "cancelled");

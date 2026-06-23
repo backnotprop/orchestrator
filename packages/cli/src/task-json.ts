@@ -1,5 +1,6 @@
 import {
   isTerminalTaskStatus,
+  taskDisplayState,
   taskControlCommands,
   uniqueIdPrefix,
   type AgentTaskControlStopTarget,
@@ -10,6 +11,8 @@ import {
   type LogStream,
   type TaskLocation,
   type TaskEvent,
+  type TaskDisplayState,
+  type TaskObservation,
   type TaskStatus,
 } from "@backnotprop/orchestrator-core";
 
@@ -26,8 +29,14 @@ export type TaskCommandSummary = {
   runtime: string;
   model?: string;
   status: TaskStatus;
+  state?: TaskDisplayState;
   active: boolean;
+  actionable: boolean;
+  observationReason?: string;
   exitCode?: number | null;
+  stopRequestedAt?: string;
+  stopReason?: string;
+  stopSignal?: NodeJS.Signals;
   location?: TaskLocation;
   commands: AgentTaskControlTaskCommands;
   stop?: AgentTaskControlStopTarget;
@@ -36,10 +45,11 @@ export type TaskCommandSummary = {
 export function taskCommandSummary(
   task: AgentTaskRecord,
   taskIds: readonly string[],
-  options: { stopArgsSuffix?: readonly string[] } = {},
+  options: { stopArgsSuffix?: readonly string[]; observation?: TaskObservation } = {},
 ): TaskCommandSummary {
   const id = uniqueIdPrefix(task.taskId, taskIds);
-  const active = !isTerminalTaskStatus(task.status);
+  const observation = options.observation ?? fallbackTaskObservation(task);
+  const state = observation.state;
   return {
     schemaVersion: 1,
     id,
@@ -48,11 +58,33 @@ export function taskCommandSummary(
     runtime: task.runtime,
     ...(task.model ? { model: task.model } : {}),
     status: task.status,
-    active,
+    ...(state === task.status ? {} : { state }),
+    active: observation.active,
+    actionable: observation.actionable,
+    ...(observation.reason && state !== task.status
+      ? { observationReason: observation.reason }
+      : {}),
     ...(task.exitCode !== undefined ? { exitCode: task.exitCode } : {}),
+    ...(task.stopRequestedAt ? { stopRequestedAt: task.stopRequestedAt } : {}),
+    ...(task.stopReason ? { stopReason: task.stopReason } : {}),
+    ...(task.stopSignal ? { stopSignal: task.stopSignal } : {}),
     ...(task.location ? { location: task.location } : {}),
     commands: taskControlCommands(id, options.stopArgsSuffix ?? []),
-    ...(active ? { stop: taskStopTarget(task, id, options.stopArgsSuffix ?? []) } : {}),
+    ...(observation.actionable
+      ? { stop: taskStopTarget(task, id, options.stopArgsSuffix ?? []) }
+      : {}),
+  };
+}
+
+function fallbackTaskObservation(task: AgentTaskRecord): TaskObservation {
+  const state = taskDisplayState(task);
+  const active = !isTerminalTaskStatus(task.status);
+  return {
+    status: task.status,
+    state,
+    active,
+    actionable: active,
+    checkedAt: new Date().toISOString(),
   };
 }
 
@@ -86,6 +118,7 @@ export function taskLogsJsonPayload(input: {
   stdout: TailRead;
   stderr: TailRead;
   stopArgsSuffix?: readonly string[];
+  observation?: TaskObservation;
 }): TaskCommandSummary & {
   stream: LogStream;
   stdout: string;
@@ -102,7 +135,10 @@ export function taskLogsJsonPayload(input: {
   const { task, stdout, stderr } = input;
 
   return {
-    ...taskCommandSummary(task, input.taskIds, { stopArgsSuffix: input.stopArgsSuffix }),
+    ...taskCommandSummary(task, input.taskIds, {
+      stopArgsSuffix: input.stopArgsSuffix,
+      observation: input.observation,
+    }),
     stream: input.stream,
     stdout: stdout.text,
     stderr: stderr.text,
@@ -127,6 +163,7 @@ export function taskEventsJsonPayload(input: {
   maxBytes: number;
   eventsTruncated: boolean;
   stopArgsSuffix?: readonly string[];
+  observation?: TaskObservation;
 }): TaskCommandSummary & {
   agentOnly: boolean;
   count: number;
@@ -138,6 +175,7 @@ export function taskEventsJsonPayload(input: {
   return {
     ...taskCommandSummary(input.task, input.taskIds, {
       stopArgsSuffix: input.stopArgsSuffix,
+      observation: input.observation,
     }),
     agentOnly: input.agentOnly,
     count: input.events.length,
@@ -154,7 +192,11 @@ export type InterruptTaskSummary = {
   name: string;
   runtime: string;
   status: TaskStatus;
+  state?: TaskDisplayState;
   error?: string;
+  stopRequestedAt?: string;
+  stopReason?: string;
+  stopSignal?: NodeJS.Signals;
 };
 
 export function summarizeInterruptTasksResult(
@@ -180,7 +222,11 @@ export function summarizeInterruptTasksResult(
     },
     interrupted: result.interrupted.map((task) => summarizeInterruptTask(task, aliases)),
     skipped: result.skipped.map((skipped) => ({
-      task: summarizeInterruptTask(skipped.task, aliases),
+      task: summarizeInterruptTask(
+        skipped.task,
+        aliases,
+        skipped.reason === "terminal" ? undefined : skipped.reason,
+      ),
       reason: skipped.reason,
     })),
     failed: result.failed.map((failed) => ({
@@ -223,14 +269,20 @@ export function compactInterruptTasksResult(summary: InterruptTasksJsonSummary):
 function summarizeInterruptTask(
   task: AgentTaskRecord,
   aliases: ReadonlyMap<string, string>,
+  stateOverride?: TaskDisplayState,
 ): InterruptTaskSummary {
+  const state = stateOverride ?? taskDisplayState(task);
   return {
     taskId: task.taskId,
     id: aliases.get(task.taskId) ?? shortId(task.taskId),
     name: task.name ?? task.taskId,
     runtime: task.runtime,
     status: task.status,
+    ...(state === task.status ? {} : { state }),
     ...(task.error ? { error: task.error } : {}),
+    ...(task.stopRequestedAt ? { stopRequestedAt: task.stopRequestedAt } : {}),
+    ...(task.stopReason ? { stopReason: task.stopReason } : {}),
+    ...(task.stopSignal ? { stopSignal: task.stopSignal } : {}),
   };
 }
 

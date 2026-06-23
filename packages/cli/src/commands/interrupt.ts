@@ -215,8 +215,9 @@ async function printInterruptTasksResult(
 
   process.stdout.write(`interrupted ${summary.interrupted.length} tasks\n`);
   for (const task of summary.interrupted) {
+    const state = task.state ?? task.status;
     process.stdout.write(
-      `${"cancelled".padEnd(10)} ${task.id.padEnd(8)} ${task.runtime.padEnd(12)} ${task.name}\n`,
+      `${state.padEnd(10)} ${task.id.padEnd(8)} ${task.runtime.padEnd(12)} ${task.name}\n`,
     );
   }
   for (const skipped of summary.skipped) {
