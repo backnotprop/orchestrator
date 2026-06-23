@@ -138,6 +138,54 @@ test("CLI uses one task store and filters ps by workspace", async () => {
   }, "orchestrator-cli-machine-store-");
 });
 
+test("CLI list and ps use the same normalized workspace filter", async () => {
+  await withTempWorkspace(async (workspaceRoot) => {
+    const repo = `${workspaceRoot}/repo`;
+    await mkdir(repo, { recursive: true });
+
+    const launch = await runCli(workspaceRoot, [
+      "launch",
+      "shell",
+      "--workspace",
+      repo,
+      "--wait",
+      "--json",
+      "printf normalized-filter",
+    ]);
+    const launched = JSON.parse(launch.stdout) as AgentTaskRecord;
+    const task = await readTaskRecord({ workspaceRoot }, launched.taskId);
+    assert.equal(task.location?.kind, "local");
+    await writeFile(
+      task.paths.taskJson,
+      `${JSON.stringify(
+        {
+          ...task,
+          location: {
+            ...task.location,
+            workspaceRoot: `${repo}/.`,
+          },
+        },
+        null,
+        2,
+      )}\n`,
+    );
+
+    const list = await runCli(workspaceRoot, ["list", "--workspace", repo, "--json"]);
+    const listed = JSON.parse(list.stdout) as AgentTaskRecord[];
+    assert.equal(
+      listed.some((candidate) => candidate.taskId === launched.taskId),
+      true,
+    );
+
+    const ps = await runCli(workspaceRoot, ["ps", "--workspace", repo, "--json"]);
+    const psView = JSON.parse(ps.stdout) as { rows: Array<{ taskId: string }> };
+    assert.equal(
+      psView.rows.some((row) => row.taskId === launched.taskId),
+      true,
+    );
+  }, "orchestrator-cli-list-ps-normalized-filter-");
+});
+
 test("CLI launch --json --compact returns a small agent control summary", async () => {
   await withTempWorkspace(async (workspaceRoot) => {
     const command = 'node -e "setTimeout(() => {}, 5000)"';

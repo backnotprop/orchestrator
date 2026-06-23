@@ -861,11 +861,18 @@ function matchesParentFilter(task: AgentTaskRecord, parentRunId: string | undefi
   );
 }
 
-function matchesWorkspaceFilter(task: AgentTaskRecord, input: AgentTaskPsInput): boolean {
+export function matchesTaskWorkspace(
+  task: Pick<AgentTaskRecord, "location" | "cwd">,
+  input: { workspaceRoot: string; allWorkspaces?: boolean },
+): boolean {
   if (input.allWorkspaces) {
     return true;
   }
   return taskWorkspaceRoot(task, input.workspaceRoot) === resolve(input.workspaceRoot);
+}
+
+function matchesWorkspaceFilter(task: AgentTaskRecord, input: AgentTaskPsInput): boolean {
+  return matchesTaskWorkspace(task, input);
 }
 
 function matchesCwdFilter(task: AgentTaskRecord, cwd: string | undefined): boolean {

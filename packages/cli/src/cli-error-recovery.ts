@@ -1,6 +1,6 @@
-import { existsSync } from "node:fs";
-import { dirname, resolve } from "node:path";
+import { resolve } from "node:path";
 import { cliErrorJson } from "./cli-errors.ts";
+import { resolveDefaultWorkspaceRoot } from "./parsing/primitives.ts";
 import { compactPsViewCommands, type PsViewCommands } from "./ps-view-commands.ts";
 
 export function cliErrorJsonWithRecovery(error: unknown, argv: readonly string[]): unknown {
@@ -73,23 +73,4 @@ function recoveryCommonOptionsFromArgv(argv: readonly string[]): {
   }
 
   return common;
-}
-
-function resolveDefaultWorkspaceRoot(cwd: string): string {
-  const resolved = resolve(cwd);
-  return findNearestGitRoot(resolved) ?? resolved;
-}
-
-function findNearestGitRoot(start: string): string | undefined {
-  let current = start;
-  while (true) {
-    if (existsSync(resolve(current, ".git"))) {
-      return current;
-    }
-    const parent = dirname(current);
-    if (parent === current) {
-      return undefined;
-    }
-    current = parent;
-  }
 }

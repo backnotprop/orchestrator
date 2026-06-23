@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { writeFile } from "node:fs/promises";
+import { mkdir, writeFile } from "node:fs/promises";
 import test from "node:test";
 import { AGENT_CONTROL_PREVIEW_MAX_BYTES } from "@backnotprop/orchestrator-core";
 import type { AgentTaskRecord } from "@backnotprop/orchestrator-core";
@@ -82,6 +82,57 @@ test("CLI loads custom process runtimes from workspace config", async () => {
     assert.equal(columns[0], "custom echo");
     assert.equal(columns[2], "echo-agent");
   }, "orchestrator-cli-custom-config-");
+});
+
+test("CLI launch loads custom runtimes from the target workspace config", async () => {
+  await withTempWorkspace(async (workspaceRoot) => {
+    const repoA = `${workspaceRoot}/repo-a`;
+    await mkdir(repoA, { recursive: true });
+    await writeFile(
+      `${repoA}/orchestrator.config.json`,
+      `${JSON.stringify(
+        {
+          agents: {
+            "repo-agent": {
+              adapter: "process",
+              command: "node",
+              args: [
+                "-e",
+                "process.stdout.write('target:' + (process.argv.at(-1) ?? ''))",
+                "{prompt}",
+              ],
+              output: "text",
+            },
+          },
+        },
+        null,
+        2,
+      )}\n`,
+    );
+
+    const launch = await runCli(workspaceRoot, [
+      "launch",
+      "repo-agent",
+      "--workspace",
+      repoA,
+      "--name",
+      "target custom",
+      "--wait",
+      "--json",
+      "--compact",
+      "hello",
+    ]);
+    const launched = JSON.parse(launch.stdout) as {
+      runtime: string;
+      status: string;
+      output: string;
+      location?: { workspaceRoot?: string };
+    };
+    assert.equal(launched.runtime, "repo-agent");
+    assert.equal(launched.status, "succeeded");
+    assert.equal(launched.output, "target:hello");
+    assert.equal(launched.location?.workspaceRoot, repoA);
+  }, "orchestrator-cli-target-custom-config-");
 });
 
 test("CLI compact launch exposes bounded failure follow-up", async () => {

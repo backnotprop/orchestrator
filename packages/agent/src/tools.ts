@@ -2,13 +2,14 @@ import { randomUUID } from "node:crypto";
 import { resolve } from "node:path";
 import {
   buildAgentLaunchPlan,
-  loadConfiguredRuntimeRegistry,
+  createConfiguredRuntimeRegistryLoader,
   type OrchestratorConfigLoadOptions,
 } from "@backnotprop/orchestrator-core/runtime";
 import {
   interruptTasks,
   launchTask,
   listTasks,
+  matchesTaskWorkspace,
   readTaskEvents,
   readTaskLogs,
   readTaskOutput,
@@ -247,8 +248,8 @@ function createLaunchAgentTool(context: ToolContext): OrchestratorParentTool {
     }),
     executionMode: "parallel",
     async execute(toolCallId, params) {
-      const loaded = await loadRegistry(context);
       const workspaceRoot = resolve(params.workspace ?? context.workspaceRoot);
+      const loaded = await loadRegistry(context, workspaceRoot);
       const cwd = resolveCwd(params.cwd ?? context.cwd, workspaceRoot);
       const runtime = loaded.registry[params.runtime];
       const plan = buildAgentLaunchPlan(
@@ -265,7 +266,7 @@ function createLaunchAgentTool(context: ToolContext): OrchestratorParentTool {
       );
       const parentSessionId = resolveParentSessionId(context);
       const launchInput: LaunchTaskInput = {
-        workspaceRoot: context.workspaceRoot,
+        workspaceRoot,
         ...(context.orchestratorDir ? { orchestratorDir: context.orchestratorDir } : {}),
         taskId: randomUUID(),
         plan,
@@ -342,10 +343,7 @@ function createListAgentsTool(context: ToolContext): OrchestratorParentTool {
       const workspaceRoot = resolve(params.workspace ?? context.workspaceRoot);
       const workspaceFiltered = params.allWorkspaces
         ? filtered
-        : filtered.filter(
-            (task) =>
-              task.location?.kind !== "local" || task.location.workspaceRoot === workspaceRoot,
-          );
+        : filtered.filter((task) => matchesTaskWorkspace(task, { workspaceRoot }));
       const limit = Math.max(0, Math.trunc(params.limit ?? workspaceFiltered.length));
       const selected = limit > 0 ? workspaceFiltered.slice(-limit) : [];
 
@@ -567,14 +565,13 @@ function interruptAgentDetails(
   };
 }
 
-async function loadRegistry(context: ToolContext) {
-  const options: OrchestratorConfigLoadOptions = {
-    workspaceRoot: context.workspaceRoot,
+async function loadRegistry(context: ToolContext, workspaceRoot = context.workspaceRoot) {
+  const options: Omit<OrchestratorConfigLoadOptions, "workspaceRoot"> = {
     ...(context.configPath ? { configPath: context.configPath } : {}),
     ...(context.configEnv ? { env: context.configEnv } : {}),
   };
 
-  return loadConfiguredRuntimeRegistry(options);
+  return createConfiguredRuntimeRegistryLoader(options).load(workspaceRoot);
 }
 
 function normalizeToolContext(context: ParentAgentToolContext): ToolContext {

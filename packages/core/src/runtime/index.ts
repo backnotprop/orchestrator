@@ -14,8 +14,13 @@ export {
   loadConfiguredRuntimeRegistry,
   OrchestratorConfigError,
 } from "./config.ts";
+export { createConfiguredRuntimeRegistryLoader } from "./registry-loader.ts";
 export { buildAgentLaunchPlan, LaunchPlanError } from "./launch-plan.ts";
 export type { ConfiguredRuntimeRegistry, OrchestratorConfigLoadOptions } from "./config.ts";
+export type {
+  ConfiguredRuntimeRegistryLoader,
+  ConfiguredRuntimeRegistryLoaderOptions,
+} from "./registry-loader.ts";
 export type {
   AgentLaunchPlan,
   AgentRuntimeId,

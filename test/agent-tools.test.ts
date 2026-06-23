@@ -63,6 +63,7 @@ type ToolDetails = {
   stdout?: string;
   stderr?: string;
   events?: Array<{ type: string; data: Record<string, unknown> }>;
+  loadedConfigPaths?: readonly string[];
   usage?: {
     inputTokens?: number;
     outputTokens?: number;
@@ -378,6 +379,69 @@ test("parent agent tools can launch children across workspaces", async () => {
     assert.equal(persisted?.location?.workspaceRoot, repoA);
     assert.equal(persisted?.location?.cwd, repoASubdir);
     assert.deepEqual(persisted?.labels, { suite: "parent-tool", component: "api" });
+  });
+});
+
+test("parent launch_agent loads custom runtimes from the target workspace config", async () => {
+  await withTempWorkspace(async (workspaceRoot) => {
+    const repoA = `${workspaceRoot}/repo-a`;
+    const repoB = `${workspaceRoot}/repo-b`;
+    await mkdir(repoA, { recursive: true });
+    await mkdir(repoB, { recursive: true });
+    await writeFile(
+      `${repoA}/orchestrator.config.json`,
+      JSON.stringify({
+        agents: {
+          "repo-agent": {
+            adapter: "process",
+            command: "node",
+            args: [
+              "-e",
+              "process.stdout.write('target:' + (process.argv.at(-1) ?? ''))",
+              "{prompt}",
+            ],
+            output: "text",
+          },
+        },
+      }),
+    );
+
+    const tools = createOrchestratorAgentTools({
+      workspaceRoot: repoB,
+      configEnv: {
+        HOME: workspaceRoot,
+        XDG_CONFIG_HOME: join(workspaceRoot, ".config"),
+        ORCHESTRATOR_HOME: join(workspaceRoot, ".orchestrator"),
+      },
+      backgroundLauncher: async (input) => {
+        const handle = await launchTask(input);
+        handle.completed.catch(() => {});
+        return handle.task;
+      },
+    });
+
+    const launch = await executeTool<ToolDetails>(getTool(tools, "launch_agent"), {
+      runtime: "repo-agent",
+      instructions: "hello",
+      name: "target custom child",
+      workspace: repoA,
+    });
+    const taskId = launch.details.task?.taskId;
+    assert.ok(taskId);
+    assert.equal(launch.details.task?.runtime, "repo-agent");
+    assert.equal(launch.details.task?.location?.workspaceRoot, repoA);
+    assert.deepEqual(launch.details.loadedConfigPaths, [`${repoA}/orchestrator.config.json`]);
+
+    const read = await executeTool<ToolDetails>(getTool(tools, "read_agent"), {
+      taskId,
+      wait: true,
+      timeoutMs: 5_000,
+    });
+    assert.equal(read.details.output, "target:hello");
+
+    const persisted = (await listTasks({ workspaceRoot })).find((task) => task.taskId === taskId);
+    assert.equal(persisted?.location?.workspaceRoot, repoA);
+    assert.equal(persisted?.launchPlan.executable, "node");
   });
 });
 

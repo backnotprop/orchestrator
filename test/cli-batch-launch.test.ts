@@ -215,6 +215,158 @@ test("CLI launch -f supports per-task workspace and cwd", async () => {
   }, "orchestrator-cli-batch-cross-workspace-");
 });
 
+test("CLI launch -f loads custom runtimes from each task workspace", async () => {
+  await withTempWorkspace(async (workspaceRoot) => {
+    const repoA = `${workspaceRoot}/repo-a`;
+    const repoB = `${workspaceRoot}/repo-b`;
+    await mkdir(repoA, { recursive: true });
+    await mkdir(repoB, { recursive: true });
+    await writeFile(
+      `${repoA}/orchestrator.config.json`,
+      JSON.stringify({
+        agents: {
+          "repo-a-agent": {
+            adapter: "process",
+            command: "node",
+            args: ["-e", "process.stdout.write('a:' + (process.argv.at(-1) ?? ''))", "{prompt}"],
+            output: "text",
+          },
+        },
+      }),
+    );
+    await writeFile(
+      `${repoB}/orchestrator.config.json`,
+      JSON.stringify({
+        agents: {
+          "repo-b-agent": {
+            adapter: "process",
+            command: "node",
+            args: ["-e", "process.stdout.write('b:' + (process.argv.at(-1) ?? ''))", "{prompt}"],
+            output: "text",
+          },
+        },
+      }),
+    );
+
+    const manifestPath = `${workspaceRoot}/agents-target-config.json`;
+    await writeFile(
+      manifestPath,
+      JSON.stringify({
+        schemaVersion: 1,
+        tasks: [
+          {
+            runtime: "repo-a-agent",
+            workspace: repoA,
+            name: "repo a custom",
+            task: "alpha",
+          },
+          {
+            runtime: "repo-b-agent",
+            workspace: repoB,
+            name: "repo b custom",
+            task: "beta",
+          },
+        ],
+      }),
+    );
+
+    const launch = await runCli(workspaceRoot, [
+      "launch",
+      "-f",
+      manifestPath,
+      "--json",
+      "--compact",
+      "--brief",
+    ]);
+    const parsed = JSON.parse(launch.stdout) as {
+      tasks: Array<{
+        taskId: string;
+        runtime: string;
+        location?: { workspaceRoot?: string };
+      }>;
+      commands: { waitPreview: { args: string[] } };
+    };
+    assert.deepEqual(
+      parsed.tasks.map((task) => [task.runtime, task.location?.workspaceRoot]),
+      [
+        ["repo-a-agent", repoA],
+        ["repo-b-agent", repoB],
+      ],
+    );
+
+    const read = await runCli(workspaceRoot, parsed.commands.waitPreview.args);
+    const completed = JSON.parse(read.stdout) as { tasks: Array<{ output: string }> };
+    assert.deepEqual(completed.tasks.map((task) => task.output).sort(), ["a:alpha", "b:beta"]);
+  }, "orchestrator-cli-batch-target-config-");
+});
+
+test("CLI launch -f preflights custom runtimes before starting any target task", async () => {
+  await withTempWorkspace(async (workspaceRoot) => {
+    const repoA = `${workspaceRoot}/repo-a`;
+    const repoB = `${workspaceRoot}/repo-b`;
+    await mkdir(repoA, { recursive: true });
+    await mkdir(repoB, { recursive: true });
+    await writeFile(
+      `${repoA}/orchestrator.config.json`,
+      JSON.stringify({
+        agents: {
+          "repo-a-agent": {
+            adapter: "process",
+            command: "node",
+            args: [
+              "-e",
+              "process.stdout.write('should-not-run:' + (process.argv.at(-1) ?? ''))",
+              "{prompt}",
+            ],
+            output: "text",
+          },
+        },
+      }),
+    );
+
+    const manifestPath = `${workspaceRoot}/agents-target-config-invalid.json`;
+    await writeFile(
+      manifestPath,
+      JSON.stringify({
+        schemaVersion: 1,
+        tasks: [
+          {
+            runtime: "repo-a-agent",
+            workspace: repoA,
+            name: "valid target custom",
+            task: "alpha",
+          },
+          {
+            runtime: "repo-b-agent",
+            workspace: repoB,
+            name: "missing target custom",
+            task: "beta",
+          },
+        ],
+      }),
+    );
+
+    await assert.rejects(
+      runCli(workspaceRoot, ["launch", "-f", manifestPath, "--json", "--compact", "--brief"]),
+      (error: unknown) => {
+        assert(error instanceof Error);
+        const stderr = "stderr" in error ? String(error.stderr) : "";
+        assert.match(stderr, /repo-b-agent/);
+        return true;
+      },
+    );
+
+    const list = await runCli(workspaceRoot, [
+      "list",
+      "-A",
+      "--workspace",
+      workspaceRoot,
+      "--json",
+    ]);
+    assert.deepEqual(JSON.parse(list.stdout), []);
+  }, "orchestrator-cli-batch-target-config-preflight-");
+});
+
 test("CLI launch -f - reads a manifest from stdin", async () => {
   await withTempWorkspace(async (workspaceRoot) => {
     const command = 'node -e "setTimeout(() => console.log(\\"stdin-ok\\"), 1000)"';

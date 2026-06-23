@@ -13,6 +13,7 @@ export {
   buildAgentTaskPsView,
   compactAgentTaskPsView,
   groupControlCommands,
+  matchesTaskWorkspace,
   taskBatchControlCommands,
   taskControlCommands,
 } from "./operations.ts";
