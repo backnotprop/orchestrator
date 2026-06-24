@@ -328,6 +328,13 @@ test("launchTask persists parent metadata and ps groups child tasks by parent ru
         parentSessionId: "session-123",
         parentToolCallId: "tool-call-123",
       },
+      provider: {
+        provider: "codex",
+        protocol: "jsonrpc",
+        transport: "stdio",
+        threadId: "thread-123",
+        turnId: "turn-123",
+      },
     });
 
     const completed = await handle.completed;
@@ -337,6 +344,13 @@ test("launchTask persists parent metadata and ps groups child tasks by parent ru
       parentRunId: "3133aaea-a17e-4094-b9df-67a77dc87437",
       parentSessionId: "session-123",
       parentToolCallId: "tool-call-123",
+    });
+    assert.deepEqual(completed.provider, {
+      provider: "codex",
+      protocol: "jsonrpc",
+      transport: "stdio",
+      threadId: "thread-123",
+      turnId: "turn-123",
     });
 
     const events = await readTaskEvents(completed.paths.eventsJsonl);

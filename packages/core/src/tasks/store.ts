@@ -300,6 +300,7 @@ export async function updateTaskStatus(
       | "stopReason"
       | "stopSignal"
       | "supervision"
+      | "provider"
     >
   > = {},
 ): Promise<AgentTaskRecord> {

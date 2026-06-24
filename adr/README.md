@@ -9,6 +9,7 @@ This is the canonical ADR workspace.
 ## Backlog
 
 - [Job-control UX backlog](specs/job-control-ux-backlog-20260619-203821.md)
+- [Service and Slack interface backlog](specs/service-and-slack-interface-backlog-20260623.md)
 
 ## Specs
 
@@ -56,3 +57,20 @@ This is the canonical ADR workspace.
 - [28. Add compact machine control view](decisions/0028-add-compact-machine-control-view-20260620-082105.md)
 - [29. Add batch launch manifests](decisions/0029-add-batch-launch-manifests-20260622-054900.md)
 - [30. Use single control-plane task store](decisions/0030-use-single-control-plane-task-store-20260622-074546.md)
+- [31. Extract run command execution from CLI](decisions/0031-extract-run-command-execution-from-cli-20260622-130242.md)
+- [32. Extract task inspection commands from CLI](decisions/0032-extract-task-inspection-commands-from-cli-20260622-134039.md)
+- [33. Extract watch command execution from CLI](decisions/0033-extract-watch-command-execution-from-cli-20260622-154207.md)
+- [34. Extract ps command execution from CLI](decisions/0034-extract-ps-command-execution-from-cli-20260622-182831.md)
+- [35. Extract interrupt command execution from CLI](decisions/0035-extract-interrupt-command-execution-from-cli-20260622-185318.md)
+- [36. Extract doctor command execution from CLI](decisions/0036-extract-doctor-command-execution-from-cli-20260622-191454.md)
+- [37. Extract help command contract from CLI](decisions/0037-extract-help-command-contract-from-cli-20260622-193136.md)
+- [38. Extract list command execution from CLI](decisions/0038-extract-list-command-execution-from-cli-20260622-201419.md)
+- [39. Extract parser primitives from CLI](decisions/0039-extract-parser-primitives-from-cli-20260622-203723.md)
+- [40. Add common option parser helper](decisions/0040-add-common-option-parser-helper-20260622-205422.md)
+- [41. Clean up task inspection parsers](decisions/0041-clean-up-task-inspection-parsers-20260622-212320.md)
+- [42. Clean up heavy CLI parsers](decisions/0042-clean-up-heavy-cli-parsers-20260623-044430.md)
+- [43. Extract parser functions from CLI](decisions/0043-extract-parser-functions-from-cli-20260623-062013.md)
+- [44. Model interrupt as stop request metadata](decisions/0044-model-interrupt-as-stop-request-metadata-20260623-075635.md)
+- [45. Add supervisor heartbeats and stale task reconciliation](decisions/0045-add-supervisor-heartbeats-and-stale-task-reconciliation-20260623-102201.md)
+- [46. Extract task executor foundation for protocol runtimes](decisions/0046-extract-task-executor-foundation-for-protocol-runtimes-20260624-055627.md)
+- [47. Build internal JSON-RPC stdio client](decisions/0047-build-internal-json-rpc-stdio-client-20260624-065645.md)

@@ -99,6 +99,7 @@ export type {
   TaskParent,
   TaskPaths,
   TaskProcessIdentity,
+  TaskProviderMetadata,
   TaskSupervision,
   TaskStatus,
   TaskStoreOptions,

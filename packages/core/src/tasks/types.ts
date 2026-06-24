@@ -44,6 +44,17 @@ export type TaskParent = {
   parentToolCallId?: string;
 };
 
+export type TaskProviderMetadata = {
+  provider?: string;
+  protocol?: "jsonrpc";
+  transport?: "stdio" | "unix" | "websocket" | "http";
+  threadId?: string;
+  turnId?: string;
+  sessionId?: string;
+  remoteTaskId?: string;
+  connectionId?: string;
+};
+
 export type TaskUsage = {
   inputTokens?: number;
   outputTokens?: number;
@@ -131,6 +142,7 @@ export type AgentTaskRecord = {
   stopSignal?: NodeJS.Signals;
   supervision?: TaskSupervision;
   parent?: TaskParent;
+  provider?: TaskProviderMetadata;
   storeScope?: TaskStoreScope;
   location?: TaskLocation;
   labels?: Record<string, string>;
@@ -201,6 +213,7 @@ export type LaunchTaskInput = TaskStoreOptions & {
   name?: string;
   model?: string;
   parent?: TaskParent;
+  provider?: TaskProviderMetadata;
   location?: TaskLocation;
   labels?: Record<string, string>;
   timeoutMs?: number;
