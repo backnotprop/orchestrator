@@ -2,6 +2,7 @@ import { BUILT_IN_AGENT_RUNTIMES, getRuntimeConfig } from "./runtimes.ts";
 import type {
   AgentLaunchPlan,
   BuildAgentLaunchPlanInput,
+  BuildAgentResumeLaunchPlanInput,
   HeadlessAgentRuntimeConfig,
   OutputTransport,
   RuntimeRegistry,
@@ -67,13 +68,17 @@ export function buildAgentLaunchPlan(
       ? { input: input.task, closeAfterWrite: runtime.launch.prompt.closeAfterWrite }
       : undefined;
 
+  const executionKind = runtime.executionKind ?? "process";
   const taskForSdkOrHttp =
-    runtime.launch.prompt.kind === "sdk" || runtime.launch.prompt.kind === "http"
+    executionKind !== "protocol" &&
+    (runtime.launch.prompt.kind === "sdk" || runtime.launch.prompt.kind === "http")
       ? input.task
       : undefined;
+  const taskForProtocol = executionKind === "protocol" ? input.task : undefined;
 
   return {
     runtime: runtime.id,
+    executionKind,
     displayName: runtime.displayName,
     executable: runtime.launch.executable,
     args,
@@ -94,7 +99,49 @@ export function buildAgentLaunchPlan(
     },
     ...(stdin ? { stdin } : {}),
     ...(taskForSdkOrHttp ? { taskForSdkOrHttp } : {}),
+    ...(taskForProtocol ? { taskForProtocol } : {}),
   };
+}
+
+export function buildAgentResumeLaunchPlan(
+  input: BuildAgentResumeLaunchPlanInput,
+  registry: RuntimeRegistry = BUILT_IN_AGENT_RUNTIMES,
+): AgentLaunchPlan {
+  validateLaunchInput(input);
+
+  const runtime = getRuntimeOrThrow(input.runtime, registry);
+
+  if (!runtime.enabled && !input.allowDisabledRuntime) {
+    throw new LaunchPlanError(
+      `Runtime "${input.runtime}" is disabled. Enable it explicitly before building resume plans.`,
+      {
+        reason: "disabled_runtime",
+        input: input.runtime,
+        hint: "Enable the runtime in config or choose an enabled runtime from orchestrator help --json --compact.",
+      },
+    );
+  }
+
+  if (!runtime.capabilities.supportsResume || runtime.resume?.supported !== true) {
+    throw new LaunchPlanError(`Runtime "${input.runtime}" does not support provider resume.`, {
+      reason: "unsupported_resume",
+      input: input.runtime,
+      hint: "Use resume only with tasks that have real provider session metadata, or launch a new follow-up task with context.",
+    });
+  }
+
+  switch (runtime.id) {
+    case "codex":
+      return buildCodexResumePlan(input, runtime);
+    case "claude-code":
+      return buildClaudeCodeResumePlan(input, runtime);
+    default:
+      throw new LaunchPlanError(`Runtime "${input.runtime}" does not support provider resume.`, {
+        reason: "unsupported_resume",
+        input: input.runtime,
+        hint: "This release supports provider resume for codex and claude-code only.",
+      });
+  }
 }
 
 function validateLaunchInput(input: BuildAgentLaunchPlanInput): void {
@@ -105,6 +152,104 @@ function validateLaunchInput(input: BuildAgentLaunchPlanInput): void {
   if (input.cwd.trim().length === 0) {
     throw new LaunchPlanError("cwd must not be empty.");
   }
+}
+
+function buildCodexResumePlan(
+  input: BuildAgentResumeLaunchPlanInput,
+  runtime: HeadlessAgentRuntimeConfig,
+): AgentLaunchPlan {
+  const threadId = input.provider.threadId?.trim();
+  if (!threadId) {
+    throw new LaunchPlanError(`Runtime "${runtime.id}" resume requires provider.threadId.`, {
+      reason: "missing_resume_provider_id",
+      input: runtime.id,
+      hint: "Resume a Codex task only after its task record has provider.threadId from thread.started.",
+    });
+  }
+
+  const outputMode = resolveOutputMode(runtime, input.outputMode);
+  return baseResumePlan({
+    input,
+    runtime,
+    outputMode,
+    args: [
+      ...runtime.launch.baseArgs,
+      ...modelArgs(runtime, input.model),
+      ...outputMode.extraArgs,
+      "resume",
+      threadId,
+      input.task,
+    ],
+    resume: {
+      provider: "codex",
+      threadId,
+    },
+  });
+}
+
+function buildClaudeCodeResumePlan(
+  input: BuildAgentResumeLaunchPlanInput,
+  runtime: HeadlessAgentRuntimeConfig,
+): AgentLaunchPlan {
+  const sessionId = input.provider.sessionId?.trim();
+  if (!sessionId) {
+    throw new LaunchPlanError(`Runtime "${runtime.id}" resume requires provider.sessionId.`, {
+      reason: "missing_resume_provider_id",
+      input: runtime.id,
+      hint: "Resume a Claude Code task only after its task record has provider.sessionId from session_id.",
+    });
+  }
+
+  const outputMode = resolveOutputMode(runtime, input.outputMode);
+  return baseResumePlan({
+    input,
+    runtime,
+    outputMode,
+    args: [
+      ...runtime.launch.baseArgs,
+      "--resume",
+      sessionId,
+      ...modelArgs(runtime, input.model),
+      ...outputMode.extraArgs,
+      input.task,
+    ],
+    resume: {
+      provider: "claude-code",
+      sessionId,
+    },
+  });
+}
+
+function baseResumePlan(args: {
+  input: BuildAgentResumeLaunchPlanInput;
+  runtime: HeadlessAgentRuntimeConfig;
+  outputMode: { extraArgs: readonly string[]; output: OutputTransport };
+  args: string[];
+  resume: NonNullable<AgentLaunchPlan["resume"]>;
+}): AgentLaunchPlan {
+  return {
+    runtime: args.runtime.id,
+    executionKind: args.runtime.executionKind ?? "process",
+    displayName: args.runtime.displayName,
+    executable: args.runtime.launch.executable,
+    args: args.args,
+    env: {
+      ...(args.runtime.launch.env ?? {}),
+      ...(args.input.env ?? {}),
+    },
+    cwd: args.input.cwd,
+    promptTransport: args.runtime.launch.prompt,
+    outputTransport: args.outputMode.output,
+    expectedProcesses: args.runtime.detect.expectedProcesses ?? [args.runtime.detect.command],
+    interrupt: args.runtime.control.interrupt,
+    canSteerRunning: args.runtime.control.steerRunning,
+    handlesOwnAuth: args.runtime.capabilities.handlesOwnAuth,
+    enabled: args.runtime.enabled,
+    safety: {
+      acceptsShellCommand: args.runtime.safety?.acceptsShellCommand ?? false,
+    },
+    resume: args.resume,
+  };
 }
 
 function getRuntimeOrThrow(

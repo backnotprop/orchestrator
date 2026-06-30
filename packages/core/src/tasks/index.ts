@@ -45,6 +45,7 @@ export {
 export type { TaskGroupLookupErrorReason } from "./groups.ts";
 export { readTaskEvents, readTaskLogs } from "./readers.ts";
 export {
+  appendAgentTaskEvent,
   TaskLookupError,
   getDefaultOrchestratorDir,
   getOrchestratorDir,
@@ -100,6 +101,7 @@ export type {
   TaskPaths,
   TaskProcessIdentity,
   TaskProviderMetadata,
+  TaskResumeMetadata,
   TaskSupervision,
   TaskStatus,
   TaskStoreOptions,

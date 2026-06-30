@@ -108,14 +108,14 @@ export async function commandRead(options: ReadOptions): Promise<void> {
   });
 
   if (output.length > 0) {
-    process.stdout.write(output);
+    writeHumanReadOutput(output);
     return;
   }
 
   if (!isTerminalStatus(task.status)) {
     const stdout = await readTail(task.paths.stdoutLog, options.maxBytes ?? 200_000);
     if (stdout.length > 0) {
-      process.stdout.write(stdout);
+      writeHumanReadOutput(stdout);
       return;
     }
 
@@ -125,7 +125,7 @@ export async function commandRead(options: ReadOptions): Promise<void> {
     return;
   }
 
-  process.stdout.write(output);
+  writeHumanReadOutput(output);
 }
 
 export async function commandLogs(options: LogsOptions): Promise<void> {
@@ -352,6 +352,13 @@ function onlyTaskId(options: ReadOptions): string {
     });
   }
   return taskId;
+}
+
+function writeHumanReadOutput(output: string): void {
+  process.stdout.write(output);
+  if (output.length > 0 && !output.endsWith("\n")) {
+    process.stdout.write("\n");
+  }
 }
 
 function readBatchSummary(

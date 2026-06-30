@@ -8,6 +8,7 @@ import {
   BUILT_IN_AGENT_RUNTIMES,
   LaunchPlanError,
   buildAgentLaunchPlan,
+  buildAgentResumeLaunchPlan,
   compileOrchestratorConfig,
   getEnabledAgentRuntimes,
   loadConfiguredRuntimeRegistry,
@@ -18,7 +19,13 @@ const sampleTask = "Review this repository and summarize the main risks.";
 const sampleCwd = "/tmp/orchestrator-workspace";
 
 test("built-in runtime registry is exhaustive and internally consistent", () => {
-  assert.deepEqual([...ALL_AGENT_RUNTIMES].sort(), ["claude-code", "codex", "pi", "shell"]);
+  assert.deepEqual([...ALL_AGENT_RUNTIMES].sort(), [
+    "claude-code",
+    "codex",
+    "codex-app-server",
+    "pi",
+    "shell",
+  ]);
 
   assert.deepEqual(Object.keys(BUILT_IN_AGENT_RUNTIMES).sort(), [...ALL_AGENT_RUNTIMES].sort());
 
@@ -58,6 +65,7 @@ test("every enabled runtime can produce an argv-based launch plan", () => {
     assert.equal(typeof plan.outputTransport.kind, "string");
     assert.equal(Object.hasOwn(plan, "command"), false);
     assert.equal(plan.safety.acceptsShellCommand, runtime.id === "shell");
+    assert.equal(plan.executionKind, runtime.executionKind ?? "process");
   }
 });
 
@@ -117,6 +125,27 @@ test("codex default plan uses exec JSONL events for observable headless runs", (
   assert.equal(plan.executable, "codex");
   assert.deepEqual(plan.args, ["exec", "--skip-git-repo-check", "--json", sampleTask]);
   assert.deepEqual(plan.outputTransport, { kind: "jsonl_events", finalEvent: "turn.completed" });
+});
+
+test("codex-app-server plan uses protocol execution without putting prompt in argv", () => {
+  const plan = buildAgentLaunchPlan({
+    runtime: "codex-app-server",
+    task: sampleTask,
+    cwd: sampleCwd,
+    model: "gpt-5.4-mini",
+  });
+
+  assert.equal(plan.executionKind, "protocol");
+  assert.equal(plan.executable, "codex");
+  assert.deepEqual(plan.args, ["app-server", "--listen", "stdio://"]);
+  assert.deepEqual(plan.promptTransport, { kind: "sdk" });
+  assert.deepEqual(plan.outputTransport, {
+    kind: "transcript_file",
+    pathHint: "transcript.jsonl",
+  });
+  assert.equal(plan.interrupt, "api");
+  assert.equal(plan.taskForProtocol, sampleTask);
+  assert.equal(plan.taskForSdkOrHttp, undefined);
 });
 
 test("model hints are mapped by runtime config when supported", () => {
@@ -642,6 +671,72 @@ test("empty task instructions and cwd fail before producing a plan", () => {
         cwd: " ",
       }),
     /cwd must not be empty/,
+  );
+});
+
+test("resume launch plans use explicit provider handles", () => {
+  const codex = buildAgentResumeLaunchPlan({
+    runtime: "codex",
+    task: "continue codex",
+    cwd: sampleCwd,
+    model: "gpt-5.4-mini",
+    provider: { threadId: "thread-123" },
+  });
+  assert.deepEqual(codex.args, [
+    "exec",
+    "--skip-git-repo-check",
+    "--model",
+    "gpt-5.4-mini",
+    "--json",
+    "resume",
+    "thread-123",
+    "continue codex",
+  ]);
+  assert.deepEqual(codex.resume, { provider: "codex", threadId: "thread-123" });
+
+  const claude = buildAgentResumeLaunchPlan({
+    runtime: "claude-code",
+    task: "continue claude",
+    cwd: sampleCwd,
+    model: "haiku",
+    provider: { sessionId: "session-123" },
+  });
+  assert.deepEqual(claude.args, [
+    "-p",
+    "--resume",
+    "session-123",
+    "--model",
+    "haiku",
+    "--output-format",
+    "stream-json",
+    "--verbose",
+    "continue claude",
+  ]);
+  assert.deepEqual(claude.resume, { provider: "claude-code", sessionId: "session-123" });
+});
+
+test("resume launch plans reject unsupported runtimes and missing provider handles", () => {
+  assert.throws(
+    () =>
+      buildAgentResumeLaunchPlan({
+        runtime: "shell",
+        task: sampleTask,
+        cwd: sampleCwd,
+        provider: { sessionId: "session-123" },
+      }),
+    (error: unknown) => error instanceof LaunchPlanError && error.reason === "unsupported_resume",
+  );
+
+  assert.throws(
+    () =>
+      buildAgentResumeLaunchPlan({
+        runtime: "codex",
+        task: sampleTask,
+        cwd: sampleCwd,
+        provider: {},
+      }),
+    (error: unknown) =>
+      error instanceof LaunchPlanError && error.reason === "missing_resume_provider_id",
   );
 });
 

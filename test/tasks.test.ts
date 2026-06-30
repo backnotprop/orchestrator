@@ -1036,6 +1036,12 @@ test("launchTask normalizes Claude stream-json fixtures and extracts final resul
     const agentEvents = events.filter((event) => event.type === "agent_event");
     assert.ok(agentEvents.some((event) => event.data.kind === "agent.message"));
     assert.ok(agentEvents.some((event) => event.data.kind === "agent.result"));
+
+    const task = await readTaskRecord({ workspaceRoot }, completed.taskId);
+    assert.deepEqual(task.provider, {
+      provider: "claude-code",
+      sessionId: "fixture-session",
+    });
   });
 });
 
@@ -1087,6 +1093,10 @@ test("launchTask normalizes Claude stream-json usage and persists final task usa
     });
 
     const task = await readTaskRecord({ workspaceRoot }, completed.taskId);
+    assert.deepEqual(task.provider, {
+      provider: "claude-code",
+      sessionId: "fixture-session",
+    });
     assert.equal(task.usage?.inputTokens, 40);
     assert.equal(task.usage?.outputTokens, 7);
     assert.equal(task.usage?.cacheReadTokens, 10);
@@ -1140,6 +1150,10 @@ test("launchTask normalizes Codex exec JSONL fixtures and extracts final result"
     });
 
     const task = await readTaskRecord({ workspaceRoot }, completed.taskId);
+    assert.deepEqual(task.provider, {
+      provider: "codex",
+      threadId: "019ed6c8-5e27-7f02-827c-7fcd44bde1a1",
+    });
     assert.equal(task.usage?.inputTokens, 16484);
     assert.equal(task.usage?.outputTokens, 31);
     assert.equal(task.usage?.cacheReadTokens, 10624);
@@ -1149,6 +1163,57 @@ test("launchTask normalizes Codex exec JSONL fixtures and extracts final result"
     assert.equal(task.usage?.scope, "task");
     assert.equal(task.usage?.final, true);
     assert.match(task.usage?.updatedAt ?? "", /^\d{4}-\d{2}-\d{2}T/);
+  });
+});
+
+test("launchTask fails resumed process tasks when provider emits a different session id", async () => {
+  await withTempWorkspace(async (workspaceRoot) => {
+    const plan = jsonlFixturePlan({
+      runtime: "codex",
+      fixturePath: join(fixturesDir, "codex-exec-jsonl.jsonl"),
+      cwd: workspaceRoot,
+    });
+    const handle = await launchTask({
+      workspaceRoot,
+      plan: {
+        ...plan,
+        resume: {
+          provider: "codex",
+          threadId: "requested-thread",
+        },
+      },
+      provider: {
+        provider: "codex",
+        threadId: "requested-thread",
+      },
+      resume: {
+        fromTaskId: "source-task",
+        rootTaskId: "source-task",
+        attempt: 1,
+      },
+    });
+
+    const completed = await handle.completed;
+    assert.equal(completed.status, "failed");
+    assert.match(completed.error ?? "", /requested-thread/);
+
+    const events = await readTaskEvents(completed.paths.eventsJsonl);
+    assert.ok(
+      events.some(
+        (event) =>
+          event.type === "agent_event" &&
+          event.data.kind === "task.resume" &&
+          event.data.fromTaskId === "source-task",
+      ),
+    );
+    assert.ok(
+      events.some(
+        (event) =>
+          event.type === "agent_event" &&
+          event.data.kind === "runtime.error" &&
+          String(event.data.message).includes("requested-thread"),
+      ),
+    );
   });
 });
 

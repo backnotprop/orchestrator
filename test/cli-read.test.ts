@@ -67,7 +67,7 @@ test("CLI launches a background task, lists it, and reads the result", async () 
     const shortTaskId = launched.taskId.slice(0, 8);
 
     const read = await runCli(workspaceRoot, ["read", shortTaskId, "--workspace", workspaceRoot]);
-    assert.equal(read.stdout, "cli-ok");
+    assert.equal(read.stdout, "cli-ok\n");
 
     const readJson = await runCli(workspaceRoot, [
       "read",

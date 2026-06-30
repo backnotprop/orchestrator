@@ -1,4 +1,10 @@
-export const BUILT_IN_RUNTIME_IDS = ["codex", "claude-code", "pi", "shell"] as const;
+export const BUILT_IN_RUNTIME_IDS = [
+  "codex",
+  "codex-app-server",
+  "claude-code",
+  "pi",
+  "shell",
+] as const;
 
 export type BuiltInAgentRuntimeId = (typeof BUILT_IN_RUNTIME_IDS)[number];
 export type AgentRuntimeId = BuiltInAgentRuntimeId | (string & {});
@@ -21,6 +27,7 @@ export type OutputTransport =
 export type InterruptStrategy = "process_group" | "stdin" | "api" | "unsupported";
 export type CwdPolicy = "workspace" | "worktree" | "any";
 export type IsolationDefault = "shared" | "worktree";
+export type RuntimeExecutionKind = "process" | "protocol";
 
 export type RuntimeCapabilities = {
   supportsStreaming: boolean;
@@ -40,6 +47,7 @@ export type HeadlessAgentRuntimeConfig = {
   id: AgentRuntimeId;
   displayName: string;
   enabled: boolean;
+  executionKind?: RuntimeExecutionKind;
   detect: {
     command: string;
     aliases?: readonly string[];
@@ -89,8 +97,23 @@ export type BuildAgentLaunchPlanInput = {
   allowDisabledRuntime?: boolean;
 };
 
+export type BuildAgentResumeLaunchPlanInput = {
+  runtime: AgentRuntimeId;
+  task: string;
+  cwd: string;
+  env?: Readonly<Record<string, string>>;
+  model?: string;
+  outputMode?: string;
+  allowDisabledRuntime?: boolean;
+  provider: {
+    threadId?: string;
+    sessionId?: string;
+  };
+};
+
 export type AgentLaunchPlan = {
   runtime: AgentRuntimeId;
+  executionKind?: RuntimeExecutionKind;
   displayName: string;
   executable: string;
   args: string[];
@@ -106,9 +129,15 @@ export type AgentLaunchPlan = {
   safety: {
     acceptsShellCommand: boolean;
   };
+  resume?: {
+    provider: "codex" | "claude-code";
+    threadId?: string;
+    sessionId?: string;
+  };
   stdin?: {
     input: string;
     closeAfterWrite: boolean;
   };
   taskForSdkOrHttp?: string;
+  taskForProtocol?: string;
 };

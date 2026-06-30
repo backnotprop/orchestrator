@@ -37,7 +37,7 @@ export const CLAUDE_CODE_RUNTIME = {
     cwdPolicy: "workspace",
     modelFlag: "--model",
   },
-  resume: { supported: false },
+  resume: { supported: true, args: ["--resume"] },
   control: {
     interrupt: "process_group",
     steerRunning: false,
@@ -45,7 +45,7 @@ export const CLAUDE_CODE_RUNTIME = {
   capabilities: {
     supportsStreaming: true,
     supportsRunningSteer: false,
-    supportsResume: false,
+    supportsResume: true,
     supportsStructuredEvents: true,
     supportsWorktree: true,
     handlesOwnAuth: true,
@@ -108,6 +108,45 @@ export const CODEX_RUNTIME = {
   },
 } satisfies HeadlessAgentRuntimeConfig;
 
+export const CODEX_APP_SERVER_RUNTIME = {
+  id: "codex-app-server",
+  displayName: "Codex App Server",
+  enabled: true,
+  executionKind: "protocol",
+  detect: {
+    command: "codex",
+    versionArgs: ["--version"],
+    expectedProcesses: ["codex"],
+  },
+  launch: {
+    executable: "codex",
+    baseArgs: ["app-server", "--listen", "stdio://"],
+    prompt: { kind: "sdk" },
+    output: { kind: "transcript_file", pathHint: "transcript.jsonl" },
+    cwdPolicy: "workspace",
+  },
+  resume: {
+    supported: false,
+  },
+  control: {
+    interrupt: "api",
+    steerRunning: false,
+  },
+  capabilities: {
+    supportsStreaming: true,
+    supportsRunningSteer: false,
+    supportsResume: false,
+    supportsStructuredEvents: true,
+    supportsWorktree: true,
+    handlesOwnAuth: true,
+  },
+  defaults: {
+    timeoutMs: 900_000,
+    maxOutputBytes: 200_000,
+    isolation: "shared",
+  },
+} satisfies HeadlessAgentRuntimeConfig;
+
 export const PI_RUNTIME = {
   id: "pi",
   displayName: "Pi",
@@ -135,7 +174,7 @@ export const PI_RUNTIME = {
     cwdPolicy: "workspace",
     modelFlag: "--model",
   },
-  resume: { supported: true, args: ["--continue"] },
+  resume: { supported: false },
   control: {
     interrupt: "process_group",
     steerRunning: false,
@@ -143,7 +182,7 @@ export const PI_RUNTIME = {
   capabilities: {
     supportsStreaming: true,
     supportsRunningSteer: false,
-    supportsResume: true,
+    supportsResume: false,
     supportsStructuredEvents: true,
     supportsWorktree: true,
     handlesOwnAuth: true,
@@ -195,6 +234,7 @@ export const SHELL_RUNTIME = {
 
 export const BUILT_IN_AGENT_RUNTIMES = {
   codex: CODEX_RUNTIME,
+  "codex-app-server": CODEX_APP_SERVER_RUNTIME,
   "claude-code": CLAUDE_CODE_RUNTIME,
   pi: PI_RUNTIME,
   shell: SHELL_RUNTIME,

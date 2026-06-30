@@ -1005,9 +1005,46 @@ test("parent AI session starts with only Orchestrator tools enabled", async () =
         /User request:\nClean up this repo\./,
       );
       assert.match(buildOrchestratorParentPrompt("Clean up this repo."), /wait: true/);
+      assert.match(buildOrchestratorParentPrompt("Clean up this repo."), /runtime: "shell"/);
+      assert.match(
+        buildOrchestratorParentPrompt("Clean up this repo."),
+        /Do not launch Codex or Claude just to run a deterministic shell command\./,
+      );
     } finally {
       created.session.dispose();
     }
+  });
+});
+
+test("launch_agent metadata teaches shell versus model runtime choice", async () => {
+  await withTempWorkspace(async (workspaceRoot) => {
+    const launchAgent = getTool(createOrchestratorAgentTools({ workspaceRoot }), "launch_agent");
+    const promptGuidelines = launchAgent.promptGuidelines;
+
+    assert.match(launchAgent.description, /Shell/);
+    assert.ok(promptGuidelines);
+    assert.ok(
+      promptGuidelines.some(
+        (guideline) =>
+          guideline.includes('runtime: "shell"') &&
+          guideline.includes("exact local shell commands"),
+      ),
+    );
+    assert.ok(
+      promptGuidelines.some(
+        (guideline) =>
+          guideline.includes('runtime: "codex"') &&
+          guideline.includes('runtime: "claude-code"') &&
+          guideline.includes("AI work"),
+      ),
+    );
+    assert.ok(
+      promptGuidelines.some((guideline) =>
+        guideline.includes(
+          "Do not launch Codex or Claude just to run a deterministic shell command",
+        ),
+      ),
+    );
   });
 });
 

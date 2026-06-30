@@ -1,6 +1,6 @@
 import { appendFile } from "node:fs/promises";
 import type { AgentLaunchPlan } from "../runtime/index.ts";
-import type { TaskEvent, TaskPaths, TaskUsage } from "./types.ts";
+import type { TaskEvent, TaskPaths, TaskProviderMetadata, TaskUsage } from "./types.ts";
 import { normalizeTaskUsage, usageWithUpdatedAt, type NormalizedTaskUsage } from "./usage.ts";
 
 export type RuntimeOutputAdapterResult = {
@@ -19,12 +19,14 @@ export type RuntimeOutputAdapter = {
 
 type AppendEvent = (type: TaskEvent["type"], data?: Record<string, unknown>) => Promise<TaskEvent>;
 type UsageSink = (usage: TaskUsage) => Promise<void>;
+type ProviderSink = (provider: TaskProviderMetadata) => Promise<void>;
 
 export function createRuntimeOutputAdapter(input: {
   plan: AgentLaunchPlan;
   paths: TaskPaths;
   appendEvent: AppendEvent;
   onUsage?: UsageSink;
+  onProvider?: ProviderSink;
 }): RuntimeOutputAdapter {
   switch (input.plan.outputTransport.kind) {
     case "jsonl_events":
@@ -33,6 +35,7 @@ export function createRuntimeOutputAdapter(input: {
         input.paths,
         input.appendEvent,
         input.onUsage,
+        input.onProvider,
       );
     case "stdout_json":
       return new StdoutJsonOutputAdapter();
@@ -95,17 +98,20 @@ class JsonlRuntimeOutputAdapter implements RuntimeOutputAdapter {
   private readonly paths: TaskPaths;
   private readonly appendEvent: AppendEvent;
   private readonly onUsage: UsageSink | undefined;
+  private readonly onProvider: ProviderSink | undefined;
 
   constructor(
     plan: AgentLaunchPlan,
     paths: TaskPaths,
     appendEvent: AppendEvent,
     onUsage: UsageSink | undefined,
+    onProvider: ProviderSink | undefined,
   ) {
     this.plan = plan;
     this.paths = paths;
     this.appendEvent = appendEvent;
     this.onUsage = onUsage;
+    this.onProvider = onProvider;
   }
 
   async onStdoutChunk(chunk: Buffer): Promise<void> {
@@ -177,7 +183,24 @@ class JsonlRuntimeOutputAdapter implements RuntimeOutputAdapter {
       if (errorText) {
         this.errorText = errorText;
       }
+      const provider = providerMetadataFromRuntimeEvent(this.plan.runtime, normalized);
+      const mismatch = providerMetadataMismatch(this.plan.resume, provider);
+      if (mismatch) {
+        this.errorText = mismatch;
+        await this.appendEvent(
+          "agent_event",
+          compactData({
+            runtime: this.plan.runtime,
+            source: "stdout",
+            kind: "runtime.error",
+            message: mismatch,
+          }),
+        );
+      }
       const event = await this.appendEvent("agent_event", normalized);
+      if (provider) {
+        await this.onProvider?.(provider);
+      }
       const usage = normalizeTaskUsage(normalized.usage, { updatedAt: event.ts });
       if (usage) {
         this.usage = usage;
@@ -220,6 +243,42 @@ class JsonlRuntimeOutputAdapter implements RuntimeOutputAdapter {
       ? this.plan.outputTransport.finalEvent
       : "final";
   }
+}
+
+function providerMetadataFromRuntimeEvent(
+  runtime: string,
+  event: Record<string, unknown>,
+): TaskProviderMetadata | undefined {
+  if (runtime === "codex") {
+    const threadId = stringValue(event, "threadId");
+    return threadId ? { provider: "codex", threadId } : undefined;
+  }
+
+  if (runtime === "claude-code") {
+    const sessionId = stringValue(event, "sessionId");
+    return sessionId ? { provider: "claude-code", sessionId } : undefined;
+  }
+
+  return undefined;
+}
+
+function providerMetadataMismatch(
+  expected: AgentLaunchPlan["resume"] | undefined,
+  actual: TaskProviderMetadata | undefined,
+): string | undefined {
+  if (!expected || !actual) {
+    return undefined;
+  }
+
+  if (expected.provider === "codex") {
+    return actual.threadId && actual.threadId !== expected.threadId
+      ? `Codex resumed thread "${actual.threadId}" but Orchestrator requested "${expected.threadId}".`
+      : undefined;
+  }
+
+  return actual.sessionId && actual.sessionId !== expected.sessionId
+    ? `Claude Code resumed session "${actual.sessionId}" but Orchestrator requested "${expected.sessionId}".`
+    : undefined;
 }
 
 function runtimeErrorMessage(event: Record<string, unknown>): string | undefined {

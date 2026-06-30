@@ -92,6 +92,7 @@ function startProcessTask(context: TaskExecutionContext): TaskExecutionHandle {
     paths,
     appendEvent: queueEvent,
     onUsage: updateTaskUsage,
+    onProvider: context.updateProvider,
   });
 
   const child = spawn(input.plan.executable, input.plan.args, {
@@ -423,7 +424,7 @@ export function killPidGroup(pid: number, signal: NodeJS.Signals = "SIGTERM"): v
       process.kill(pid, signal);
     }
   } catch (error) {
-    if (!isNoSuchProcess(error)) {
+    if (!isIgnorableKillError(error)) {
       throw error;
     }
   }
@@ -449,6 +450,8 @@ function now(): string {
   return new Date().toISOString();
 }
 
-function isNoSuchProcess(error: unknown): boolean {
-  return error instanceof Error && "code" in error && error.code === "ESRCH";
+function isIgnorableKillError(error: unknown): boolean {
+  return (
+    error instanceof Error && "code" in error && (error.code === "ESRCH" || error.code === "EPERM")
+  );
 }

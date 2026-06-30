@@ -307,6 +307,51 @@ test("CLI run --background creates a managed parent task", async () => {
       "--json",
       "--compact",
     ]);
+
+    const agentEvents = await runCli(workspaceRoot, [
+      "events",
+      launched.id,
+      "--workspace",
+      workspaceRoot,
+      "--agent-only",
+      "--json",
+    ]);
+    const parsedAgentEvents = JSON.parse(agentEvents.stdout) as Array<{
+      type: string;
+      data?: {
+        kind?: string;
+        error?: { message?: string };
+      };
+    }>;
+    assert.deepEqual(
+      parsedAgentEvents.map((event) => event.data?.kind),
+      ["run.error"],
+    );
+    assert.match(parsedAgentEvents[0]?.data?.error?.message ?? "", /ENOTDIR/);
+
+    const watchedAgentEvents = await runCli(workspaceRoot, [
+      "watch",
+      launched.id,
+      "--workspace",
+      workspaceRoot,
+      "--agent-only",
+      "--json",
+    ]);
+    const parsedWatchedAgentEvents = watchedAgentEvents.stdout
+      .trim()
+      .split("\n")
+      .filter(Boolean)
+      .map(
+        (line) =>
+          JSON.parse(line) as {
+            type: string;
+            data?: { kind?: string };
+          },
+      );
+    assert.deepEqual(
+      parsedWatchedAgentEvents.map((event) => event.data?.kind),
+      ["run.error"],
+    );
   }, "orchestrator-cli-run-background-");
 });
 
@@ -370,6 +415,7 @@ test("CLI help handles an empty configured runtime list", async () => {
           agents: {
             "claude-code": { enabled: false },
             codex: { enabled: false },
+            "codex-app-server": { enabled: false },
             pi: { enabled: false },
             shell: { enabled: false },
           },
@@ -381,6 +427,11 @@ test("CLI help handles an empty configured runtime list", async () => {
 
     const result = await runCli(workspaceRoot, ["--help", "--workspace", workspaceRoot]);
     assert.match(result.stdout, /Runtime ids:\n  none configured/);
+    assert.doesNotMatch(result.stdout, /Use runtime shell/);
+    assert.match(
+      result.stdout,
+      /Do not call launch for exact local shell commands unless a local-command runtime is enabled/,
+    );
 
     const compact = await runCli(workspaceRoot, [
       "help",
@@ -397,6 +448,10 @@ test("CLI help handles an empty configured runtime list", async () => {
     assert.equal(parsed.canLaunchChildAgents, false);
     assert.deepEqual(parsed.runtimeIds, []);
     assert.ok(parsed.agentQuickStart.some((step) => step.includes("do not call launch")));
+    assert.ok(
+      parsed.agentQuickStart.some((step) => step.includes("No shell or built-in AI runtime")),
+    );
+    assert.ok(!parsed.agentQuickStart.some((step) => step.includes('runtime "shell"')));
     assert.ok(!parsed.agentQuickStart.some((step) => step.includes("Start many tasks")));
   }, "orchestrator-cli-no-runtimes-help-");
 });

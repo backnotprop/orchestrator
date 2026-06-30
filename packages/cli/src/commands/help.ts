@@ -83,6 +83,12 @@ export async function commandHelp(options: HelpOptions): Promise<void> {
 
 export function buildCliHelpText(registry: RuntimeRegistry = BUILT_IN_AGENT_RUNTIMES): string {
   const help = buildCliHelpDocument(registry);
+  const shellRuntimeInstruction = shellRuntimeChoiceInstruction(help.runtimes, {
+    quoteRuntimeIds: false,
+  });
+  const modelRuntimeInstruction = modelRuntimeChoiceInstruction(help.runtimes, {
+    quoteRuntimeIds: false,
+  });
   const runtimeLines = help.runtimes
     .map((runtime) => {
       const outputModes =
@@ -103,6 +109,7 @@ Usage:
   orchestrator run [--agent-dir <path>] [--session-dir <path>] [--name <name>] [--background] [--json [--compact [--brief]]] [--trace-tools[=text|jsonl]] [--stream-json] "<request>"
   orchestrator launch <runtime> [--name <name>] [--model <model>] [--cwd <path>] [--wait] [--json [--compact [--brief]]] "<task>"
   orchestrator launch -f <manifest.json|-> --json [--compact [--brief]]
+  orchestrator resume <task-id|prefix> [--name <name>] [--model <model>] [--wait] [--json [--compact [--brief]]] "<next task>"
   orchestrator list [--status <status>] [-A|--all-workspaces] [--json]
   orchestrator ps [--all] [-A|--all-workspaces] [--cwd <path>] [--watch] [--runtime <runtime>] [--status <status>] [--parent <run-id>] [--json [--compact [--active] [--brief]]]
   orchestrator read <task-id|prefix>... [--wait] [--timeout-ms <ms>] [--interval-ms <ms>] [--max-bytes <bytes>] [--json [--compact]]
@@ -125,40 +132,44 @@ Agent instructions:
   6. Use run --trace-tools when you need to see parent tool calls live.
   7. Use run --stream-json when another program needs the full run event stream.
   8. Treat launch as a background job by default. Capture taskId from stdout.
-  9. Orchestrator uses one default machine store at ~/.orchestrator/tasks; workspace is a project scope/filter, and cwd is the agent process directory.
-  10. Task commands accept full task ids or unique prefixes shown by ps/list from the same store.
-  11. Common options like --workspace, --orchestrator-dir, --config, and --json may appear before or after the command.
-  12. Prefer launch --json --compact and ps --json --compact for normal agent control.
-  13. Use help --json --compact when software needs a smaller command contract.
-  14. When --json is present, command errors are JSON on stderr with reason/input/matches/hint and recovery.views.*.args when available.
-  15. Use ps for the current workspace operations view; use ps -A for all workspaces.
-  16. Use ps --watch to watch the selected scope update live.
-  17. Use ps --json --compact --active when an agent or script needs active task and stop targets.
-  18. Use ps --json --compact --active --brief to scan many running tasks with less JSON.
-  19. Use ps -A --json --compact --active --brief to scan active work across the machine.
-  20. Use ps --parent <run-id|prefix> --json --compact --brief to inspect one parent run and its children.
-  21. If active ps is empty after short work, run views.recent.args from compact ps to recover recent finished tasks and batch read commands.
-  22. Use launch -f <manifest.json|-> --json --compact --brief to start several tasks in one call.
-  23. Use launch --json --compact --brief when starting one task and only task id/status/stop is needed.
-  24. When compact JSON returns stop.args, run those portable args to stop exactly the returned task, group, or selected active set.
-  25. Compact ps stop.args are scoped to the current view; parent/group stops may include children of that selected run.
-  26. When JSON output returns commands.*.args, pass those portable args to orchestrator for read/watch/logs/events follow-up.
-  27. Treat returned args as an argument vector. Do not join them into one shell string.
-  28. Use compact ps top-level commands.waitPreview.args to wait for every listed task with bounded output.
-  29. Use compact ps group commands.waitPreview.args to wait for one listed group with bounded output.
-  30. Use commands.readPreview, commands.waitPreview, or commands.logsPreview when another agent needs bounded output before deciding whether to fetch more.
-  31. Use watch to follow one task live. Use watch --agent-only --json for normalized agent event JSONL.
-  32. Use read for final agent answers. Use read <id> <id> --wait --json --compact to build your own multi-task wait call.
-  33. If compact read returns active: true, use commands.waitPreview.args to wait with bounded output or commands.readPreview.args to poll again.
-  34. If compact batch read times out, use its top-level commands.waitPreview.args to wait again or stop.args to stop still-active work safely.
-  35. If compact read returns failed status, use commands.logsPreview.args for bounded raw logs or commands.events.args for the task timeline.
-  36. Check outputTruncated/stdoutTruncated/stderrTruncated in JSON output; ByReadLimit means re-read with more bytes can help, ByCaptureLimit means the task was launched with too small a capture cap.
-  37. If compact read is truncated by read limit, use commands.read.args to fetch more output.
-  38. Use logs --json --compact for a one-line raw stdout/stderr snapshot and events --json --compact for a one-line task timeline.
-  39. Use interrupt to cancel running agents. Use interrupt <id> <id> --json --compact to stop a selected subset.
-  40. Use --children for parent runs with children.
-  41. Use interrupt --active only for deliberate workspace cleanup; use interrupt -A --active --yes only for deliberate all-workspace cleanup.
-  42. Model values are passed through to the provider CLI; aliases are not normalized yet.
+  9. ${shellRuntimeInstruction}
+  10. ${modelRuntimeInstruction}
+  11. Do not launch Codex or Claude just to run a deterministic shell command.
+  12. Orchestrator uses one default machine store at ~/.orchestrator/tasks; workspace is a project scope/filter, and cwd is the agent process directory.
+  13. Task commands accept full task ids or unique prefixes shown by ps/list from the same store.
+  14. Common options like --workspace, --orchestrator-dir, --config, and --json may appear before or after the command.
+  15. Prefer launch --json --compact and ps --json --compact for normal agent control.
+  16. Use help --json --compact when software needs a smaller command contract.
+  17. When --json is present, command errors are JSON on stderr with reason/input/matches/hint and recovery.views.*.args when available.
+  18. Use ps for the current workspace operations view; use ps -A for all workspaces.
+  19. Use ps --watch to watch the selected scope update live.
+  20. Use ps --json --compact --active when an agent or script needs active task and stop targets.
+  21. Use ps --json --compact --active --brief to scan many running tasks with less JSON.
+  22. Use ps -A --json --compact --active --brief to scan active work across the machine.
+  23. Use ps --parent <run-id|prefix> --json --compact --brief to inspect one parent run and its children.
+  24. If active ps is empty after short work, run views.recent.args from compact ps to recover recent finished tasks and batch read commands.
+  25. Use launch -f <manifest.json|-> --json --compact --brief to start several tasks in one call.
+  26. Use launch --json --compact --brief when starting one task and only task id/status/stop is needed.
+  27. Use resume only for true provider resume from a finished task whose runtime reports resumeSupported and has stored provider metadata.
+  28. When compact JSON returns stop.args, run those portable args to stop exactly the returned task, group, or selected active set.
+  29. Compact ps stop.args are scoped to the current view; parent/group stops may include children of that selected run.
+  30. When JSON output returns commands.*.args, pass those portable args to orchestrator for read/watch/logs/events follow-up.
+  31. Treat returned args as an argument vector. Do not join them into one shell string.
+  32. Use compact ps top-level commands.waitPreview.args to wait for every listed task with bounded output.
+  33. Use compact ps group commands.waitPreview.args to wait for one listed group with bounded output.
+  34. Use commands.readPreview, commands.waitPreview, or commands.logsPreview when another agent needs bounded output before deciding whether to fetch more.
+  35. Use watch to follow one task live. Use watch --agent-only --json for normalized agent event JSONL.
+  36. Use read for final agent answers. Use read <id> <id> --wait --json --compact to build your own multi-task wait call.
+  37. If compact read returns active: true, use commands.waitPreview.args to wait with bounded output or commands.readPreview.args to poll again.
+  38. If compact batch read times out, use its top-level commands.waitPreview.args to wait again or stop.args to stop still-active work safely.
+  39. If compact read returns failed status, use commands.logsPreview.args for bounded raw logs or commands.events.args for the task timeline.
+  40. Check outputTruncated/stdoutTruncated/stderrTruncated in JSON output; ByReadLimit means re-read with more bytes can help, ByCaptureLimit means the task was launched with too small a capture cap.
+  41. If compact read is truncated by read limit, use commands.read.args to fetch more output.
+  42. Use logs --json --compact for a one-line raw stdout/stderr snapshot and events --json --compact for a one-line task timeline.
+  43. Use interrupt to cancel running agents. Use interrupt <id> <id> --json --compact to stop a selected subset.
+  44. Use --children for parent runs with children.
+  45. Use interrupt --active only for deliberate workspace cleanup; use interrupt -A --active --yes only for deliberate all-workspace cleanup.
+  46. Model values are passed through to the provider CLI; aliases are not normalized yet.
 
 Common options:
   --workspace <path>          Workspace scope. Defaults to the nearest git repo, then current directory.
@@ -176,6 +187,16 @@ Launch options:
   --max-output-bytes <bytes>  Override captured output cap.
   --wait                      Run in the foreground until the task completes.
   --compact                   With --json, print a small launch result for agents/scripts.
+  --brief                     With --compact, omit follow-up command bundles.
+
+Resume options:
+  --name <name>               Short label for the resumed task.
+  --model <model>             Optional provider model override.
+  --output-mode <mode>        Adapter-selected output mode.
+  --timeout-ms <ms>           Override runtime timeout.
+  --max-output-bytes <bytes>  Override captured output cap.
+  --wait                      Run in the foreground until the resumed task completes.
+  --compact                   With --json, print a small resume result for agents/scripts.
   --brief                     With --compact, omit follow-up command bundles.
 
 Ps options:
@@ -235,6 +256,12 @@ function buildCliHelpDocument(
   registry: RuntimeRegistry = BUILT_IN_AGENT_RUNTIMES,
 ): CliHelpDocument {
   const runtimes = orderedRuntimeConfigs(registry);
+  const shellRuntimeInstruction = shellRuntimeChoiceInstruction(runtimes, {
+    quoteRuntimeIds: true,
+  });
+  const modelRuntimeInstruction = modelRuntimeChoiceInstruction(runtimes, {
+    quoteRuntimeIds: true,
+  });
 
   return {
     schemaVersion: 1,
@@ -249,8 +276,13 @@ function buildCliHelpDocument(
       "Use run --trace-tools when you need to see parent tool calls live.",
       "Use run --stream-json when a plugin, script, TUI, or other program needs the full live run stream.",
       "Use launch to start a registered runtime.",
+      shellRuntimeInstruction,
+      modelRuntimeInstruction,
+      "Do not launch Codex or Claude just to run a deterministic shell command.",
       "Use launch --json --compact when software needs only the new task id and status.",
       "Use launch -f <manifest.json|-> --json --compact --brief when software needs to start several tasks in one call.",
+      "Use resume <task-id|prefix> only for true provider resume from a finished task whose runtime reports resumeSupported and has stored provider metadata.",
+      "Use default structured runtime output when you may want to resume later; text output may not capture provider thread/session ids.",
       "Orchestrator uses one default machine store at ~/.orchestrator/tasks; workspace is project scope, and cwd is the agent process directory.",
       "Capture taskId from launch output. Task commands accept the full id or a unique prefix shown by ps/list from the same store.",
       "Common options like --workspace, --orchestrator-dir, --config, and --json may appear before or after the command.",
@@ -353,6 +385,27 @@ function buildCliHelpDocument(
           "--json",
           "-f <manifest.json|->",
           "--file <manifest.json|->",
+          "--name <name>",
+          "--model <model>",
+          "--output-mode <mode>",
+          "--timeout-ms <ms>",
+          "--max-output-bytes <bytes>",
+          "--wait",
+          "--compact",
+          "--brief",
+        ],
+      },
+      {
+        name: "resume",
+        usage:
+          'orchestrator resume <task-id|prefix> [--name <name>] [--model <model>] [--wait] [--json [--compact [--brief]]] "<next task>"',
+        semantics:
+          "Starts a new managed task that resumes the real provider session from a finished resume-supported task.",
+        options: [
+          "--workspace <path>",
+          "--orchestrator-dir <path>",
+          "--config <path>",
+          "--json",
           "--name <name>",
           "--model <model>",
           "--output-mode <mode>",
@@ -512,6 +565,9 @@ function buildCliHelpDocument(
           "Add --background when that parent run should be listed and managed like any other task.",
           "Add --trace-tools to run when you need to see live parent tool calls.",
           "Use --stream-json when software needs the complete live parent run stream.",
+          shellRuntimeInstruction,
+          modelRuntimeInstruction,
+          "Do not launch Codex or Claude just to run a deterministic shell command.",
           "Use ps or ps --watch to see all child tasks created by the parent agent.",
           "Use ps --json --compact --active when software needs active child tasks and stop targets.",
           "Use ps --json --compact --active --brief when software needs to scan many running child tasks without follow-up command bundles.",
@@ -538,6 +594,8 @@ function buildCliHelpDocument(
           'Run launch with a short name, runtime, model, and task: orchestrator launch codex --name "inspect store" --model gpt-5.4-mini --json --compact "task".',
           "Add --brief to compact launch when one task only needs id/status/stop.",
           "Use launch -f <manifest.json|-> --json --compact --brief when several tasks should start from one manifest.",
+          "Use resume <task-id|prefix> --json --compact only when you need true provider resume from a finished task whose runtime reports resumeSupported and has stored provider metadata.",
+          "Use default structured runtime output when you may want to resume later; text output may not capture provider thread/session ids.",
           "Extract taskId from launch output, or use the short id shown by ps/list when it is unique.",
           "Run list to see named tasks.",
           "Run ps to see grouped agent work.",
@@ -574,6 +632,74 @@ function buildCliHelpDocument(
   };
 }
 
+function shellRuntimeChoiceInstruction(
+  runtimes: readonly { id: string }[],
+  options: { quoteRuntimeIds: boolean },
+): string {
+  const renderedShell = options.quoteRuntimeIds ? '"shell"' : "shell";
+  if (runtimes.some((runtime) => runtime.id === "shell")) {
+    return `Use runtime ${renderedShell} for exact local shell commands and small local utility tasks.`;
+  }
+
+  return "Do not call launch for exact local shell commands unless a local-command runtime is enabled.";
+}
+
+function modelRuntimeChoiceInstruction(
+  runtimes: readonly { id: string }[],
+  options: { quoteRuntimeIds: boolean },
+): string {
+  const modelRuntimeIds = runtimes
+    .map((runtime) => runtime.id)
+    .filter((runtimeId) => runtimeId === "codex" || runtimeId === "claude-code");
+  if (modelRuntimeIds.length === 0) {
+    return "Use a configured AI runtime for AI work only when one is enabled and clearly known from context.";
+  }
+
+  return `Use runtime ${formatRuntimeIdList(modelRuntimeIds, options.quoteRuntimeIds)} for AI work such as code review, implementation, research, repo inspection, or analysis.`;
+}
+
+function compactRuntimeChoiceInstruction(runtimes: readonly { id: string }[]): string {
+  const hasShellRuntime = runtimes.some((runtime) => runtime.id === "shell");
+  const modelRuntimeIds = runtimes
+    .map((runtime) => runtime.id)
+    .filter((runtimeId) => runtimeId === "codex" || runtimeId === "claude-code");
+
+  if (!hasShellRuntime && modelRuntimeIds.length === 0) {
+    return "No shell or built-in AI runtime is enabled; do not call launch until an agent config enables a suitable runtime.";
+  }
+
+  const clauses: string[] = [];
+  if (hasShellRuntime) {
+    clauses.push('use runtime "shell" for exact local shell commands');
+  } else {
+    clauses.push(
+      "do not call launch for exact local shell commands unless a local-command runtime is enabled",
+    );
+  }
+
+  if (modelRuntimeIds.length > 0) {
+    clauses.push(`use runtime ${formatRuntimeIdList(modelRuntimeIds, true)} for AI work`);
+  } else {
+    clauses.push("use a configured AI runtime for AI work only when one is enabled");
+  }
+
+  return `${capitalizeFirst(clauses.join("; "))}.`;
+}
+
+function formatRuntimeIdList(runtimeIds: readonly string[], quoted: boolean): string {
+  const rendered = runtimeIds.map((runtimeId) => (quoted ? `"${runtimeId}"` : runtimeId));
+  if (rendered.length <= 1) {
+    return rendered[0] ?? "an available runtime";
+  }
+
+  const last = rendered.at(-1) ?? "an available runtime";
+  return `${rendered.slice(0, -1).join(", ")} or ${last}`;
+}
+
+function capitalizeFirst(value: string): string {
+  return value.length > 0 ? `${value[0]?.toUpperCase()}${value.slice(1)}` : value;
+}
+
 function compactCliHelpDocument(
   document: CliHelpDocument,
   options: Pick<HelpOptions, "workspaceRoot" | "configPath">,
@@ -594,6 +720,7 @@ function compactCliHelpDocument(
   );
   const runtimeIds = document.runtimes.map((runtime) => runtime.id);
   const canLaunchChildAgents = runtimeIds.length > 0;
+  const compactRuntimeInstruction = compactRuntimeChoiceInstruction(document.runtimes);
 
   return {
     schemaVersion: document.schemaVersion,
@@ -602,9 +729,12 @@ function compactCliHelpDocument(
     agentQuickStart: [
       "Run doctor --json --compact when runtime availability is uncertain.",
       "If compact doctor returns parent.canRun: true, append the request to parent.run.argsPrefix or parent.run.backgroundArgsPrefix.",
+      compactRuntimeInstruction,
+      "Do not launch Codex or Claude just to run a deterministic shell command.",
       ...(canLaunchChildAgents
         ? ["Start many tasks with launch -f <manifest.json|-> --json --compact --brief."]
         : ["If runtimeIds is empty, do not call launch; add or enable an agent config first."]),
+      "Resume finished resume-supported tasks with stored provider metadata by using resume <task-id|prefix> --json --compact.",
       "Find running tasks with ps --json --compact --active --brief.",
       "Narrow one parent run with ps --parent <run-id|prefix> --json --compact --brief.",
       "If active ps is empty after short work, run views.recent.args from compact ps to recover recent tasks.",
@@ -677,6 +807,9 @@ function buildCliExamples(registry: RuntimeRegistry): string[] {
   if (registry.codex?.enabled) {
     examples.push(
       'orchestrator launch codex --name "write tests" --model gpt-5.4-mini --json --compact "write tests for the task store"',
+    );
+    examples.push(
+      'orchestrator resume <task-id|prefix> --json --compact "continue from the prior result"',
     );
   }
 

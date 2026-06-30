@@ -1,6 +1,7 @@
 export {
   ALL_AGENT_RUNTIMES,
   BUILT_IN_AGENT_RUNTIMES,
+  CODEX_APP_SERVER_RUNTIME,
   CLAUDE_CODE_RUNTIME,
   CODEX_RUNTIME,
   getEnabledAgentRuntimes,
@@ -15,7 +16,11 @@ export {
   OrchestratorConfigError,
 } from "./config.ts";
 export { createConfiguredRuntimeRegistryLoader } from "./registry-loader.ts";
-export { buildAgentLaunchPlan, LaunchPlanError } from "./launch-plan.ts";
+export {
+  buildAgentLaunchPlan,
+  buildAgentResumeLaunchPlan,
+  LaunchPlanError,
+} from "./launch-plan.ts";
 export type { ConfiguredRuntimeRegistry, OrchestratorConfigLoadOptions } from "./config.ts";
 export type {
   ConfiguredRuntimeRegistryLoader,
@@ -25,6 +30,7 @@ export type {
   AgentLaunchPlan,
   AgentRuntimeId,
   BuildAgentLaunchPlanInput,
+  BuildAgentResumeLaunchPlanInput,
   BuiltInAgentRuntimeId,
   CwdPolicy,
   HeadlessAgentRuntimeConfig,
@@ -33,6 +39,7 @@ export type {
   OutputTransport,
   PromptTransport,
   RuntimeCapabilities,
+  RuntimeExecutionKind,
   RuntimeOutputMode,
   RuntimeRegistry,
 } from "./types.ts";

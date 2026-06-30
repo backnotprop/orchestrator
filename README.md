@@ -102,6 +102,7 @@ orchestrator ps --json --compact --active --brief
 orchestrator ps -A --json --compact --active --brief
 orchestrator launch codex --name "inspect store" --model gpt-5.4-mini --json --compact --brief "Inspect the task store."
 orchestrator launch -f agents.json --json --compact --brief
+orchestrator resume <task-id|prefix> --json --compact "Continue from the prior result."
 orchestrator watch <task-id|prefix>
 orchestrator read <task-id|prefix>... --wait --json --compact
 orchestrator logs <task-id|prefix> --follow
@@ -225,6 +226,9 @@ The CLI package is `@backnotprop/orchestrator-cli`. The reusable runtime package
 - `help --json --compact`: get the small command contract for agents/scripts; use `help --json` when you need the full contract
 - `run`: start the parent AI agent; add `--background` to manage it like a task, `--trace-tools` to see tool calls live, or `--stream-json` for a full JSONL stream
 - `launch`: start one agent in the background; add `--json --compact` for a small machine-readable result, or use `launch -f agents.json --json --compact --brief` to start several agents from one manifest
+- `resume`: start a new task that resumes a finished Codex or Claude Code provider session
+  Resume needs stored provider metadata, so use the default structured runtime
+  modes when you may want to resume later.
 - `list`: see known tasks in a simple task list
 - `ps`: see grouped agent work in the current workspace
 - `ps -A`: see grouped agent work across all workspaces
@@ -266,11 +270,17 @@ First-class targets:
 - Claude Code
 - Codex
 
-The runtime layer is generic, but the first release is focused on those two.
-`shell` is also enabled as a local-command runtime for research, tests, and
-operator utility tasks.
+`codex` is the stable headless Codex runtime backed by `codex exec`.
+`codex-app-server` is the experimental protocol runtime backed by
+`codex app-server --listen stdio://`.
+
+The runtime layer is generic, but the first release is focused on Claude Code
+and Codex. `shell` is also enabled as a local-command runtime for research,
+tests, and operator utility tasks.
 Built-in runtimes can also be disabled in config. See
 [doc/disable-agents.md](doc/disable-agents.md).
+For the app-server runtime distinction and current limits, see
+[doc/codex-app-server.md](doc/codex-app-server.md).
 
 ## Files
 

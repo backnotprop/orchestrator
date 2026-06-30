@@ -44,6 +44,12 @@ export type TaskParent = {
   parentToolCallId?: string;
 };
 
+export type TaskResumeMetadata = {
+  fromTaskId: string;
+  rootTaskId: string;
+  attempt: number;
+};
+
 export type TaskProviderMetadata = {
   provider?: string;
   protocol?: "jsonrpc";
@@ -142,6 +148,7 @@ export type AgentTaskRecord = {
   stopSignal?: NodeJS.Signals;
   supervision?: TaskSupervision;
   parent?: TaskParent;
+  resume?: TaskResumeMetadata;
   provider?: TaskProviderMetadata;
   storeScope?: TaskStoreScope;
   location?: TaskLocation;
@@ -213,6 +220,7 @@ export type LaunchTaskInput = TaskStoreOptions & {
   name?: string;
   model?: string;
   parent?: TaskParent;
+  resume?: TaskResumeMetadata;
   provider?: TaskProviderMetadata;
   location?: TaskLocation;
   labels?: Record<string, string>;

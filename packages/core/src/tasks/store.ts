@@ -283,6 +283,20 @@ export async function appendSequencedTaskEvent(
   });
 }
 
+export async function appendAgentTaskEvent(
+  options: TaskStoreOptions,
+  taskId: string,
+  data: Record<string, unknown>,
+): Promise<TaskEvent> {
+  const resolvedTaskId = await resolveTaskId(options, taskId);
+  return await appendSequencedTaskEvent(
+    getTaskPaths(options, resolvedTaskId),
+    resolvedTaskId,
+    "agent_event",
+    data,
+  );
+}
+
 export async function updateTaskStatus(
   task: AgentTaskRecord,
   status: TaskStatus,

@@ -11,6 +11,7 @@ import { commandInterrupt } from "./commands/interrupt.ts";
 import { commandLaunch } from "./commands/launch.ts";
 import { commandList } from "./commands/list.ts";
 import { commandPs } from "./commands/ps.ts";
+import { commandResume } from "./commands/resume.ts";
 import { commandRun, commandRunParentTask } from "./commands/run.ts";
 import { commandEvents, commandLogs, commandRead } from "./commands/task-inspection.ts";
 import { commandWatch } from "./commands/watch.ts";
@@ -22,6 +23,7 @@ import { parseLaunchOptions } from "./parsing/launch.ts";
 import { parseListOptions } from "./parsing/list.ts";
 import { normalizeLeadingCommonOptions } from "./parsing/leading-common-options.ts";
 import { parsePsOptions } from "./parsing/ps.ts";
+import { parseResumeOptions } from "./parsing/resume.ts";
 import { parseRunOptions } from "./parsing/run.ts";
 import {
   parseEventsOptions,
@@ -40,6 +42,9 @@ export async function main(argv: readonly string[] = process.argv.slice(2)): Pro
     switch (command) {
       case "launch":
         await commandLaunch(parseLaunchOptions(rest), { cliEntryPath: CLI_ENTRY_PATH });
+        return 0;
+      case "resume":
+        await commandResume(parseResumeOptions(rest), { cliEntryPath: CLI_ENTRY_PATH });
         return 0;
       case "list":
         await commandList(parseListOptions(rest));

@@ -1,11 +1,13 @@
 import { randomUUID } from "node:crypto";
-import { readFile, stat } from "node:fs/promises";
+import { appendFile, readFile, stat, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import type { AgentLaunchPlan } from "../runtime/index.ts";
 import { observeTaskState } from "./observation.ts";
+import { CodexAppServerTaskExecutor } from "./executors/protocol/codex-app-server.ts";
 import { killPidGroup, ProcessTaskExecutor } from "./executors/process.ts";
-import type { TaskExecutionHandle } from "./executors/types.ts";
+import type { TaskExecutionHandle, TaskExecutor } from "./executors/types.ts";
 import { isTerminalTaskStatus } from "./types.ts";
+import { selectTaskUsage } from "./usage.ts";
 import type {
   AgentTaskRecord,
   InterruptTaskInput,
@@ -16,7 +18,10 @@ import type {
   ReadTaskOutputInput,
   TaskObservedState,
   TaskEvent,
+  TaskProviderMetadata,
   TaskStoreOptions,
+  TaskStatus,
+  TaskUsage,
 } from "./types.ts";
 import {
   appendSequencedTaskEvent,
@@ -45,6 +50,7 @@ type RunningTask = {
 
 const runningTasks = new Map<string, RunningTask>();
 const processTaskExecutor = new ProcessTaskExecutor();
+const codexAppServerTaskExecutor = new CodexAppServerTaskExecutor();
 
 export { listTasks } from "./store.ts";
 
@@ -76,6 +82,7 @@ export function validateLaunchTaskInput(input: LaunchTaskInput): void {
 
 export async function launchTask(input: LaunchTaskInput): Promise<LaunchTaskHandle> {
   validateLaunchTaskInput(input);
+  const executor = taskExecutorForPlan(input.plan);
   const taskName = normalizeTaskName(input.name);
 
   const taskId = input.taskId ?? randomUUID();
@@ -92,6 +99,7 @@ export async function launchTask(input: LaunchTaskInput): Promise<LaunchTaskHand
     status: "queued",
     createdAt,
     ...(input.parent ? { parent: input.parent } : {}),
+    ...(input.resume ? { resume: input.resume } : {}),
     ...(input.provider ? { provider: { ...input.provider } } : {}),
     storeScope: input.orchestratorDir ? "custom" : "machine",
     location,
@@ -101,7 +109,16 @@ export async function launchTask(input: LaunchTaskInput): Promise<LaunchTaskHand
 
   await initializeTaskFiles(initialTask);
 
+  let task = initialTask;
   let eventQueue: Promise<unknown> = Promise.resolve();
+  let taskRecordQueue: Promise<unknown> = Promise.resolve();
+  let stdoutQueue: Promise<unknown> = Promise.resolve();
+  let stderrQueue: Promise<unknown> = Promise.resolve();
+  let combinedQueue: Promise<unknown> = Promise.resolve();
+  let transcriptQueue: Promise<unknown> = Promise.resolve();
+  let stdoutBytes = 0;
+  let stderrBytes = 0;
+  let combinedBytes = 0;
   const maxOutputBytes = input.maxOutputBytes ?? 2_000_000;
   const appendEvent = async (
     type: TaskEvent["type"],
@@ -110,6 +127,113 @@ export async function launchTask(input: LaunchTaskInput): Promise<LaunchTaskHand
     const write = eventQueue.then(() => appendSequencedTaskEvent(paths, taskId, type, data));
     eventQueue = write.catch(() => {});
     return await write;
+  };
+  const queueTaskRecordUpdate = async (
+    update: (current: AgentTaskRecord) => Promise<AgentTaskRecord>,
+  ): Promise<AgentTaskRecord> => {
+    const write = taskRecordQueue.then(async () => {
+      const current = await readTaskRecord(input, taskId);
+      const updated = await update(current);
+      task = updated;
+      return updated;
+    });
+    taskRecordQueue = write.catch(() => {});
+    return await write;
+  };
+  const appendOutput = async (
+    path: string,
+    chunk: Buffer | string,
+    stream: "stdout" | "stderr" | "combined",
+  ): Promise<void> => {
+    const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    let currentBytes: number;
+    if (stream === "stdout") {
+      stdoutBytes += bytes.byteLength;
+      currentBytes = stdoutBytes;
+    } else if (stream === "stderr") {
+      stderrBytes += bytes.byteLength;
+      currentBytes = stderrBytes;
+    } else {
+      combinedBytes += bytes.byteLength;
+      currentBytes = combinedBytes;
+    }
+    await appendBoundedOutput({
+      path,
+      chunk: bytes,
+      currentBytes,
+      maxBytes: maxOutputBytes,
+    });
+  };
+  const appendStdout = async (chunk: Buffer | string): Promise<void> => {
+    const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    const write = stdoutQueue.then(async () => {
+      await appendOutput(paths.stdoutLog, bytes, "stdout");
+      await appendEvent("stdout", { bytes: bytes.byteLength });
+    });
+    stdoutQueue = write.catch(() => {});
+    await write;
+  };
+  const appendStderr = async (chunk: Buffer | string): Promise<void> => {
+    const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    const write = stderrQueue.then(async () => {
+      await appendOutput(paths.stderrLog, bytes, "stderr");
+      await appendEvent("stderr", { bytes: bytes.byteLength });
+    });
+    stderrQueue = write.catch(() => {});
+    await write;
+  };
+  const appendCombined = async (chunk: Buffer | string): Promise<void> => {
+    const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    const write = combinedQueue.then(() => appendOutput(paths.combinedLog, bytes, "combined"));
+    combinedQueue = write.catch(() => {});
+    await write;
+  };
+  const appendTranscript = async (line: string | Record<string, unknown>): Promise<void> => {
+    const rendered = typeof line === "string" ? line : JSON.stringify(line);
+    const write = transcriptQueue.then(() => appendFile(paths.transcriptJsonl, `${rendered}\n`));
+    transcriptQueue = write.catch(() => {});
+    await write;
+  };
+  const updateTask = async (patch: Partial<AgentTaskRecord>): Promise<AgentTaskRecord> =>
+    await queueTaskRecordUpdate((current) => updateTaskStatus(current, current.status, patch));
+  const setStatus = async (
+    status: TaskStatus,
+    details: Partial<AgentTaskRecord> = {},
+  ): Promise<AgentTaskRecord> =>
+    await queueTaskRecordUpdate((current) => updateTaskStatus(current, status, details));
+  const updateUsage = async (usage: TaskUsage): Promise<void> => {
+    await queueTaskRecordUpdate(async (current) => {
+      const selected = selectTaskUsage(current.usage, usage);
+      if (selected === current.usage) {
+        return current;
+      }
+      return await updateTaskStatus(current, current.status, { usage: selected });
+    });
+  };
+  const updateProvider = async (provider: TaskProviderMetadata): Promise<void> => {
+    await queueTaskRecordUpdate((current) =>
+      updateTaskStatus(current, current.status, {
+        provider: { ...(current.provider ?? {}), ...provider },
+      }),
+    );
+  };
+  const writeResult = async (text: string): Promise<void> => {
+    await writeFile(paths.resultMd, text);
+    await appendEvent("result", { path: paths.resultMd, bytes: Buffer.byteLength(text) });
+  };
+  const markTerminal = async (
+    status: TaskStatus,
+    details: Partial<AgentTaskRecord> = {},
+    eventData: Record<string, unknown> = {},
+  ): Promise<AgentTaskRecord> => {
+    const finished = await queueTaskRecordUpdate((current) =>
+      updateTaskStatus(current, status, {
+        finishedAt: now(),
+        ...details,
+      }),
+    );
+    await appendEvent(status === "succeeded" ? "completed" : status, eventData);
+    return finished;
   };
 
   await appendEvent("queued", { runtime: input.plan.runtime });
@@ -122,20 +246,38 @@ export async function launchTask(input: LaunchTaskInput): Promise<LaunchTaskHand
       ...(input.parent.parentToolCallId ? { parentToolCallId: input.parent.parentToolCallId } : {}),
     });
   }
-  let task = await updateTaskStatus(initialTask, "starting");
+  if (input.resume) {
+    await appendEvent("agent_event", {
+      kind: "task.resume",
+      fromTaskId: input.resume.fromTaskId,
+      rootTaskId: input.resume.rootTaskId,
+      attempt: input.resume.attempt,
+    });
+  }
+  task = await updateTaskStatus(initialTask, "starting");
   await appendEvent("starting", {
     executable: input.plan.executable,
     args: input.plan.args,
     cwd: input.plan.cwd,
   });
 
-  const execution = processTaskExecutor.start({
+  const execution = executor.start({
     input,
     taskId,
     task,
     paths,
     maxOutputBytes,
     appendEvent,
+    appendStdout,
+    appendStderr,
+    appendCombined,
+    appendTranscript,
+    updateTask,
+    setStatus,
+    updateUsage,
+    updateProvider,
+    writeResult,
+    markTerminal,
   });
   const completed = execution.completed.finally(() => {
     runningTasks.delete(taskId);
@@ -447,6 +589,22 @@ function validateLaunchPlan(plan: AgentLaunchPlan): void {
   if (!plan.cwd.trim()) {
     throw new TaskSupervisorError("Launch plan cwd must not be empty.");
   }
+
+  taskExecutorForPlan(plan);
+}
+
+function taskExecutorForPlan(plan: AgentLaunchPlan): TaskExecutor {
+  if ((plan.executionKind ?? "process") === "process") {
+    return processTaskExecutor;
+  }
+
+  if (plan.runtime === "codex-app-server") {
+    return codexAppServerTaskExecutor;
+  }
+
+  throw new TaskSupervisorError(
+    `No protocol executor is registered for runtime "${plan.runtime}".`,
+  );
 }
 
 function normalizeTaskName(name: string | undefined): string | undefined {
@@ -471,6 +629,22 @@ async function readTail(path: string, maxBytes: number): Promise<string> {
   }
 
   return contents.subarray(contents.byteLength - maxBytes).toString("utf8");
+}
+
+async function appendBoundedOutput(input: {
+  path: string;
+  chunk: Buffer;
+  currentBytes: number;
+  maxBytes: number;
+}): Promise<void> {
+  const previousBytes = input.currentBytes - input.chunk.byteLength;
+  const remainingBytes = input.maxBytes - previousBytes;
+
+  if (remainingBytes <= 0) {
+    return;
+  }
+
+  await appendFile(input.path, input.chunk.subarray(0, remainingBytes));
 }
 
 function now(): string {

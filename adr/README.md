@@ -19,6 +19,8 @@ This is the canonical ADR workspace.
 - [Batch launch CLI](specs/batch-launch-cli-20260622-050535.md)
 - [Local returned command args](specs/local-returned-command-args-20260622-063117.md)
 - [Single control-plane task store](specs/single-control-plane-task-store-20260622-074105.md)
+- [Persist parent events for background runs](specs/persist-parent-events-for-background-runs-20260630-104204.md)
+- [Parent launch_agent runtime guidance](specs/parent-launch-agent-runtime-guidance-20260630-111352.md)
 
 ## Intent Notes
 
@@ -74,3 +76,7 @@ This is the canonical ADR workspace.
 - [45. Add supervisor heartbeats and stale task reconciliation](decisions/0045-add-supervisor-heartbeats-and-stale-task-reconciliation-20260623-102201.md)
 - [46. Extract task executor foundation for protocol runtimes](decisions/0046-extract-task-executor-foundation-for-protocol-runtimes-20260624-055627.md)
 - [47. Build internal JSON-RPC stdio client](decisions/0047-build-internal-json-rpc-stdio-client-20260624-065645.md)
+- [48. Add Codex app-server protocol executor](decisions/0048-add-codex-app-server-protocol-executor-20260624-084935.md)
+- [49. Polish Codex app-server runtime with live smoke](decisions/0049-polish-codex-app-server-runtime-with-live-smoke-20260624-113358.md)
+- [50. Use simple task-shaped resume before pooling](decisions/0050-use-simple-task-shaped-resume-before-pooling-20260630-051045.md)
+- [51. Persist parent events for background runs](decisions/0051-persist-parent-events-for-background-runs-20260630-104204.md)

@@ -240,10 +240,14 @@ function createLaunchAgentTool(context: ToolContext): OrchestratorParentTool {
     name: "launch_agent",
     label: "Launch agent",
     description:
-      "Start a Claude Code, Codex, or configured custom agent as a background Orchestrator task.",
+      "Start Shell, Claude Code, Codex, or a configured custom agent as a background Orchestrator task.",
     promptSnippet: "launch_agent starts a background agent task and returns its task id.",
     promptGuidelines: [
       "Use launch_agent when a request should be delegated to another agent.",
+      'Use runtime: "shell" for exact local shell commands and small local utility tasks. Put the command itself in instructions.',
+      'Use runtime: "codex" or runtime: "claude-code" for AI work such as code review, implementation, research, repo inspection, or analysis.',
+      "Use configured custom runtime ids only when the user names one or the runtime is clearly known from context.",
+      "Do not launch Codex or Claude just to run a deterministic shell command.",
       "Keep instructions explicit. Do not assume hidden role templates exist.",
       "After launching, use list_agents, read_agent_events, read_agent_logs, and read_agent to inspect the task.",
     ],

@@ -9,7 +9,11 @@ import {
   runStreamPayloadsFromParentToolTrace,
   type RunStreamEvent,
 } from "@backnotprop/orchestrator-agent";
-import type { AgentLaunchPlan, LaunchTaskInput } from "@backnotprop/orchestrator-core";
+import {
+  appendAgentTaskEvent,
+  type AgentLaunchPlan,
+  type LaunchTaskInput,
+} from "@backnotprop/orchestrator-core";
 import { launchInBackground, writeParentRunRequest } from "../background-task.ts";
 import { CliError } from "../cli-errors.ts";
 import { renderRunTraceEvents } from "../render-run-trace.ts";
@@ -51,6 +55,8 @@ type ParentRunResult = {
   output: string;
   modelFallbackMessage?: string;
 };
+
+type RunEventSink = (event: RunStreamEvent) => void | Promise<void>;
 
 type RunCommandContext = {
   cliEntryPath: string;
@@ -119,6 +125,16 @@ export async function commandRunParentTask(
         brief: false,
         traceTools: "off",
         streamJson: false,
+        runEventSink: async (event) => {
+          await appendAgentTaskEvent(
+            {
+              workspaceRoot: request.workspaceRoot,
+              ...(request.orchestratorDir ? { orchestratorDir: request.orchestratorDir } : {}),
+            },
+            request.parentTaskId,
+            { ...event },
+          );
+        },
       },
       context,
     );
@@ -189,12 +205,28 @@ async function commandRunBackground(
 }
 
 async function executeParentRun(
-  options: RunOptions & { parentRunId?: string; parentTaskId?: string },
+  options: RunOptions & {
+    parentRunId?: string;
+    parentTaskId?: string;
+    runEventSink?: RunEventSink;
+  },
   context: RunCommandContext,
 ): Promise<ParentRunResult> {
   const runEvents = createRunStreamSequencer({ runId: options.parentRunId ?? randomUUID() });
+  const persistedRunEvents = createQueuedRunEventSink(options.runEventSink);
+  const shouldEmitRunLifecycle = options.streamJson || Boolean(options.runEventSink);
   let parentSessionId: string | undefined;
   let created: Awaited<ReturnType<typeof createOrchestratorParentSession>>;
+
+  const publishRunEvent = (payload: Parameters<typeof runEvents.create>[0]): RunStreamEvent => {
+    const event = runEvents.create(payload);
+    if (options.streamJson) {
+      writeRunJsonStreamEvent(event);
+    }
+    persistedRunEvents.write(event);
+    return event;
+  };
+
   try {
     created = await createOrchestratorParentSession({
       workspaceRoot: options.workspaceRoot,
@@ -207,22 +239,18 @@ async function executeParentRun(
       parentSessionId: () => parentSessionId,
       configEnv: process.env,
       backgroundLauncher: (input) => launchInBackground(input, context),
-      ...(options.traceTools === "off" && !options.streamJson
+      ...(options.traceTools === "off" && !options.streamJson && !options.runEventSink
         ? {}
         : {
             trace: (event) => {
-              const shouldRenderRunEvents = options.streamJson || options.traceTools === "text";
-              const traceEvents = shouldRenderRunEvents
-                ? runStreamPayloadsFromParentToolTrace(event).map((payload) =>
-                    runEvents.create(payload),
-                  )
+              const shouldCreateRunEvents =
+                options.streamJson ||
+                options.traceTools === "text" ||
+                Boolean(options.runEventSink);
+              const traceEvents = shouldCreateRunEvents
+                ? runStreamPayloadsFromParentToolTrace(event).map(publishRunEvent)
                 : [];
 
-              if (options.streamJson) {
-                for (const traceEvent of traceEvents) {
-                  writeRunJsonStreamEvent(traceEvent);
-                }
-              }
               if (options.traceTools === "jsonl") {
                 process.stderr.write(`${JSON.stringify(event)}\n`);
               } else if (options.traceTools === "text") {
@@ -232,13 +260,12 @@ async function executeParentRun(
           }),
     });
   } catch (error) {
-    if (options.streamJson) {
-      writeRunJsonStreamEvent(
-        runEvents.create({
-          kind: "run.error",
-          error: normalizeRunStreamError(error),
-        }),
-      );
+    if (shouldEmitRunLifecycle) {
+      publishRunEvent({
+        kind: "run.error",
+        error: normalizeRunStreamError(error),
+      });
+      await persistedRunEvents.flush().catch(() => undefined);
     }
     throw error;
   }
@@ -246,15 +273,13 @@ async function executeParentRun(
   parentSessionId = session.sessionId;
 
   try {
-    if (options.streamJson) {
-      writeRunJsonStreamEvent(
-        runEvents.create({
-          kind: "run.started",
-          sessionId: session.sessionId,
-          cwd: resolve(options.workspaceRoot),
-          request: options.request,
-        }),
-      );
+    if (shouldEmitRunLifecycle) {
+      publishRunEvent({
+        kind: "run.started",
+        sessionId: session.sessionId,
+        cwd: resolve(options.workspaceRoot),
+        request: options.request,
+      });
     }
 
     try {
@@ -262,29 +287,27 @@ async function executeParentRun(
         expandPromptTemplates: false,
       });
     } catch (error) {
-      if (options.streamJson) {
-        writeRunJsonStreamEvent(
-          runEvents.create({
-            kind: "run.error",
-            sessionId: session.sessionId,
-            error: normalizeRunStreamError(error),
-          }),
-        );
+      if (shouldEmitRunLifecycle) {
+        publishRunEvent({
+          kind: "run.error",
+          sessionId: session.sessionId,
+          error: normalizeRunStreamError(error),
+        });
+        await persistedRunEvents.flush().catch(() => undefined);
       }
       throw error;
     }
 
     const output = session.getLastAssistantText() ?? "";
-    if (options.streamJson) {
-      writeRunJsonStreamEvent(
-        runEvents.create({
-          kind: "run.final",
-          sessionId: session.sessionId,
-          output,
-          ...(modelFallbackMessage ? { modelFallbackMessage } : {}),
-        }),
-      );
+    if (shouldEmitRunLifecycle) {
+      publishRunEvent({
+        kind: "run.final",
+        sessionId: session.sessionId,
+        output,
+        ...(modelFallbackMessage ? { modelFallbackMessage } : {}),
+      });
     }
+    await persistedRunEvents.flush();
 
     return {
       sessionId: session.sessionId,
@@ -294,6 +317,35 @@ async function executeParentRun(
   } finally {
     session.dispose();
   }
+}
+
+function createQueuedRunEventSink(sink: RunEventSink | undefined): {
+  write: (event: RunStreamEvent) => void;
+  flush: () => Promise<void>;
+} {
+  let writeQueue = Promise.resolve();
+  let writeError: unknown;
+
+  return {
+    write(event) {
+      if (!sink || writeError) {
+        return;
+      }
+      writeQueue = writeQueue
+        .then(async () => {
+          await sink(event);
+        })
+        .catch((error: unknown) => {
+          writeError = error;
+        });
+    },
+    async flush() {
+      await writeQueue;
+      if (writeError) {
+        throw writeError;
+      }
+    },
+  };
 }
 
 function parentRunLaunchPlan(input: {

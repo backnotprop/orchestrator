@@ -146,6 +146,12 @@ test("CLI help teaches agents the job-control contract", async () => {
       result.stdout.toString(),
       /Prefer launch --json --compact and ps --json --compact/,
     );
+    assert.match(result.stdout.toString(), /Use runtime shell for exact local shell commands/);
+    assert.match(result.stdout.toString(), /Use runtime codex or claude-code for AI work/);
+    assert.match(
+      result.stdout.toString(),
+      /Do not launch Codex or Claude just to run a deterministic shell command/,
+    );
     assert.match(result.stdout.toString(), /launch -f <manifest\.json\|->/);
     assert.match(result.stdout.toString(), /Common options like --workspace/);
     assert.match(result.stdout.toString(), /commands\.\*\.args/);
@@ -222,6 +228,28 @@ test("CLI JSON help exposes a machine-readable agent contract", async () => {
       ),
     );
     assert.ok(help.agentInstructions.some((instruction) => instruction.includes("Use run")));
+    assert.ok(
+      help.agentInstructions.some(
+        (instruction) =>
+          instruction.includes('runtime "shell"') &&
+          instruction.includes("exact local shell commands"),
+      ),
+    );
+    assert.ok(
+      help.agentInstructions.some(
+        (instruction) =>
+          instruction.includes('runtime "codex"') &&
+          instruction.includes('"claude-code"') &&
+          instruction.includes("AI work"),
+      ),
+    );
+    assert.ok(
+      help.agentInstructions.some((instruction) =>
+        instruction.includes(
+          "Do not launch Codex or Claude just to run a deterministic shell command",
+        ),
+      ),
+    );
     assert.ok(help.agentInstructions.some((instruction) => instruction.includes("--background")));
     assert.ok(help.agentInstructions.some((instruction) => instruction.includes("--trace-tools")));
     assert.ok(help.agentInstructions.some((instruction) => instruction.includes("--stream-json")));
@@ -604,6 +632,19 @@ test("CLI compact JSON help exposes a small agent command contract", async () =>
     assert.ok(help.commands.some((command) => command.name === "help"));
     assert.ok(help.commands.every((command) => command.options === undefined));
     assert.ok(help.agentQuickStart.some((step) => step.includes("launch -f <manifest.json|->")));
+    assert.ok(
+      help.agentQuickStart.some(
+        (step) =>
+          step.includes('runtime "shell"') &&
+          step.includes('runtime "claude-code"') &&
+          !step.includes('"codex"'),
+      ),
+    );
+    assert.ok(
+      help.agentQuickStart.some((step) =>
+        step.includes("Do not launch Codex or Claude just to run a deterministic shell command"),
+      ),
+    );
     assert.ok(help.agentQuickStart.some((step) => step.includes("commands.waitPreview.args")));
     assert.ok(
       help.agentQuickStart.some(
@@ -957,6 +998,7 @@ test("CLI compact config discovery preserves explicit config and portable follow
           agents: {
             "claude-code": { enabled: false },
             codex: { enabled: false },
+            "codex-app-server": { enabled: false },
             pi: { enabled: false },
             "external-agent": {
               enabled: true,

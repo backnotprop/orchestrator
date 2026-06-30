@@ -95,14 +95,62 @@ that avoid scraping large JSON payloads or resolving full task ids manually.
    - Follow-up research should verify whether another Codex surface can expose
      token usage earlier.
 
+## Current Status
+
+The original control-path items are largely implemented now: short ids work in
+task commands, parent/group interruption exists, compact JSON exposes follow-up
+args, and token usage is shown when runtimes emit it. Keep the historical list
+above for context, but treat the manual smoke checklist below as the next
+unresolved UX backlog.
+
+## Manual Smoke Refinement Checklist
+
+A June 2026 manual smoke pass showed that the core CLI is usable: compact JSON
+returns follow-up args, short ids work, token usage appears when runtimes emit
+it, resume works for supported runtimes, and grouped `ps --all` is readable.
+The next refinements are smaller product fixes around observability and
+agent-facing behavior:
+
+- [ ] Persist parent run and tool events for background runs.
+  - Background `orchestrator run --background` should preserve `run.started`,
+    `tool.call`, `tool.result`, `task.started`, `task.finished`, and
+    `run.final` events.
+  - `events <parent-id> --agent-only`, `watch <parent-id>`, `ps`, and the
+    future TUI should be able to replay what the parent did.
+
+- [x] Tighten parent `launch_agent` runtime guidance.
+  - If the user asks for a shell/local-command child, the parent should launch
+    `runtime: "shell"` directly instead of trying Codex first.
+  - Tool instructions should clearly separate shell/local commands from
+    Codex/Claude model work.
+  - Prefer sharper schema/instructions before adding heavy product logic.
+
+- [ ] Keep structured output as the normal provider path.
+  - Default structured modes should remain the recommended path for reliable
+    output, provider metadata, token usage, and resume.
+  - Provider text modes should be documented as diagnostic or provider-specific.
+  - Resume docs should continue to say that resumable tasks need stored provider
+    metadata.
+
+- [ ] Clarify or improve `logs --stream all`.
+  - Current JSON output reports `stdout` and `stderr` separately.
+  - Either document that `all` means both streams, not exact interleaving, or add
+    a future interleaved/combined mode.
+
+- [ ] Add a small parent-run smoke test.
+  - Start a parent run, have it launch a child, wait for the child, and finish.
+  - Assert parent/child grouping, persisted parent events, child task result,
+    and readable compact follow-up commands.
+
 ## Priority
 
-Do these before deeper TUI polish:
+Do these next before deeper TUI polish:
 
-1. Short-id resolution.
-2. Group/parent-child interrupt.
-3. Compact running-task JSON view.
-4. Codex live-token adapter research.
+1. Persist parent run and tool events for background runs.
+2. Tighten parent `launch_agent` runtime guidance.
+3. Add a small parent-run smoke test.
+4. Clarify or improve `logs --stream all`.
+5. Keep structured output as the normal provider path.
 
-These are control-path fixes. They make Orchestrator safer and more usable for
-humans and agents without changing the core task model.
+These are product-quality fixes. They make Orchestrator easier to debug and
+safer for agents to use without changing the core task model.

@@ -119,7 +119,7 @@ test("CLI interrupt shows delayed shutdown as stopping until final cancellation"
   await withTempWorkspace(async (workspaceRoot) => {
     const command = [
       "printf 'ready\\n'",
-      "trap 'printf stopping\\\\n; sleep 2; exit 0' TERM",
+      "trap 'printf stopping\\\\n; sleep 5; exit 0' TERM",
       "while true; do sleep 1; done",
     ].join("; ");
     const launch = await runCli(workspaceRoot, [

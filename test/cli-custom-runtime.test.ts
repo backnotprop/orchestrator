@@ -75,7 +75,7 @@ test("CLI loads custom process runtimes from workspace config", async () => {
       "--workspace",
       workspaceRoot,
     ]);
-    assert.equal(read.stdout, "custom config works");
+    assert.equal(read.stdout, "custom config works\n");
 
     const list = await runCli(workspaceRoot, ["list", "--workspace", workspaceRoot]);
     const columns = list.stdout.trim().split("\t");

@@ -81,6 +81,7 @@ or ambiguous task/group ids. Use the id for follow-up commands:
 orchestrator ps --json --compact --active
 orchestrator ps --json --compact --active --brief
 orchestrator ps -A --json --compact --active --brief
+orchestrator resume <task-id> --json --compact "Continue from the prior result."
 orchestrator watch <task-id> --agent-only --json
 orchestrator read <task-id>... --wait --json --compact
 orchestrator logs <task-id> --follow
@@ -105,6 +106,10 @@ wait with `read <id> <id> --wait --json --compact`. Use
 `watch --agent-only --json` for a parseable stream of normalized agent events.
 Use `logs` for raw stdout/stderr. Use `events` for normalized task and agent
 events.
+Use `resume <task-id> --json --compact` only when you need true provider resume
+from a finished Codex or Claude Code task.
+Resume needs stored provider metadata, so use default structured runtime output
+when you may want to resume later.
 
 ## Runtime Choices
 
@@ -114,6 +119,16 @@ Common first-release runtimes are:
 orchestrator launch claude-code --name "review tests" --model sonnet --json --compact "Find missing tests."
 orchestrator launch codex --name "inspect store" --model gpt-5.4-mini --json --compact "Inspect the task store."
 ```
+
+Use `shell` for exact local shell commands and small local utility tasks:
+
+```sh
+orchestrator launch shell --name "local check" --json --compact 'printf "OK\n"'
+```
+
+Do not launch Codex or Claude just to run a deterministic shell command. Use
+Codex or Claude Code for AI work such as code review, implementation, research,
+repo inspection, or analysis.
 
 Custom agents launch by their configured runtime id:
 
@@ -131,6 +146,15 @@ instead of guessing.
   id/status/stop.
 - Prefer `launch -f <manifest.json|-> --json --compact --brief` when you need
   to start several tasks at once.
+- Use `shell` for exact local shell commands and small local utility tasks. Put
+  the command itself in the task instructions.
+- Use `codex` or `claude-code` for AI work such as code review,
+  implementation, research, repo inspection, or analysis.
+- Do not launch Codex or Claude just to run a deterministic shell command.
+- Use `resume` only for true provider resume from a finished Codex or Claude
+  Code task. For other runtimes, launch a new task with explicit context.
+  Resume needs stored provider metadata; text output may not capture provider
+  thread/session ids.
 - Use `help --json --compact` for quick discovery; use `fullHelp.args` when you
   need the full contract.
 - Use `doctor --json --compact` when runtime availability is uncertain.
