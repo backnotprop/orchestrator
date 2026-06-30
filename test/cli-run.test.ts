@@ -3,11 +3,20 @@ import { execFile } from "node:child_process";
 import { writeFile } from "node:fs/promises";
 import test from "node:test";
 import { promisify } from "node:util";
+import {
+  createOrchestratorAgentTools,
+  type CreateOrchestratorParentSessionOptions,
+  type OrchestratorParentTool,
+  type createOrchestratorParentSession,
+} from "@backnotprop/orchestrator-agent";
 import { AGENT_CONTROL_PREVIEW_MAX_BYTES } from "@backnotprop/orchestrator-core";
-import { readTaskRecord } from "@backnotprop/orchestrator-core/tasks";
+import { launchTask, readTaskRecord } from "@backnotprop/orchestrator-core/tasks";
+import { writeParentRunRequest } from "../packages/cli/src/background-task.ts";
+import { commandRunParentTask } from "../packages/cli/src/commands/run.ts";
 import {
   assertOneJsonLine,
   cliPath,
+  orchestratorPlan,
   PACKAGE_CLI_TIMEOUT_MS,
   repoRoot,
   runCli,
@@ -16,6 +25,40 @@ import {
 } from "./cli-support.ts";
 
 const execFileAsync = promisify(execFile);
+
+type ParentSessionResult = Awaited<ReturnType<typeof createOrchestratorParentSession>>;
+
+type LaunchAgentDetails = {
+  task: {
+    taskId: string;
+    runtime: string;
+    status: string;
+    name?: string;
+  };
+};
+
+type ReadAgentDetails = {
+  retrievalStatus?: string;
+  task: {
+    taskId: string;
+    runtime: string;
+    status: string;
+  };
+  output: string;
+};
+
+type ParsedTaskEvent = {
+  type: string;
+  data?: {
+    kind?: string;
+    toolName?: string;
+    taskId?: string;
+    runtime?: string;
+    status?: string;
+    output?: string;
+    error?: { message?: string };
+  };
+};
 
 test("CLI run requires a user request before creating a parent session", async () => {
   await withTempWorkspace(async (workspaceRoot) => {
@@ -355,6 +398,109 @@ test("CLI run --background creates a managed parent task", async () => {
   }, "orchestrator-cli-run-background-");
 });
 
+test("CLI parent task persists successful run events for later replay", async () => {
+  await withTempWorkspace(async (workspaceRoot) => {
+    const parentTaskId = "11111111-2222-4333-8444-555555555555";
+    const parent = await launchTask({
+      workspaceRoot,
+      taskId: parentTaskId,
+      name: "parent event success",
+      plan: orchestratorPlan("printf 'parent placeholder\\n'", workspaceRoot),
+      location: {
+        kind: "local",
+        workspaceRoot,
+        workspaceName: "workspace",
+        cwd: workspaceRoot,
+      },
+    });
+    await parent.completed;
+
+    const requestPath = await writeParentRunRequest(
+      {
+        schemaVersion: 1,
+        workspaceRoot,
+        request: "Launch a shell child and wait for it.",
+        parentRunId: parentTaskId,
+        parentTaskId,
+      },
+      parentTaskId,
+    );
+
+    const stdout = await captureStdout(async () => {
+      await commandRunParentTask(requestPath, {
+        cliEntryPath: cliPath,
+        createParentSession: createSuccessfulFakeParentSession,
+      });
+    });
+    assert.equal(stdout, "Child output: OK\n\n");
+
+    const agentEvents = await runCli(workspaceRoot, [
+      "events",
+      parentTaskId,
+      "--workspace",
+      workspaceRoot,
+      "--agent-only",
+      "--json",
+    ]);
+    const parsedAgentEvents = JSON.parse(agentEvents.stdout) as ParsedTaskEvent[];
+    const eventKinds = parsedAgentEvents.map((event) => event.data?.kind);
+    assertEventKindSubsequence(eventKinds, [
+      "run.started",
+      "tool.call",
+      "tool.result",
+      "task.started",
+      "tool.call",
+      "tool.result",
+      "task.finished",
+      "run.final",
+    ]);
+    assert.ok(
+      parsedAgentEvents.some(
+        (event) => event.data?.kind === "tool.call" && event.data.toolName === "launch_agent",
+      ),
+    );
+    assert.ok(
+      parsedAgentEvents.some(
+        (event) => event.data?.kind === "tool.call" && event.data.toolName === "read_agent",
+      ),
+    );
+    assert.ok(
+      parsedAgentEvents.some(
+        (event) => event.data?.kind === "task.started" && event.data.runtime === "shell",
+      ),
+    );
+    assert.ok(
+      parsedAgentEvents.some(
+        (event) =>
+          event.data?.kind === "task.finished" &&
+          event.data.runtime === "shell" &&
+          event.data.status === "succeeded" &&
+          event.data.output?.includes("OK"),
+      ),
+    );
+    assert.equal(parsedAgentEvents.at(-1)?.data?.kind, "run.final");
+    assert.match(parsedAgentEvents.at(-1)?.data?.output ?? "", /OK/);
+
+    const watchedAgentEvents = await runCli(workspaceRoot, [
+      "watch",
+      parentTaskId,
+      "--workspace",
+      workspaceRoot,
+      "--agent-only",
+      "--json",
+    ]);
+    const parsedWatchedAgentEvents = watchedAgentEvents.stdout
+      .trim()
+      .split("\n")
+      .filter(Boolean)
+      .map((line) => JSON.parse(line) as ParsedTaskEvent);
+    assert.deepEqual(
+      parsedWatchedAgentEvents.map((event) => event.data?.kind),
+      eventKinds,
+    );
+  }, "orchestrator-cli-parent-task-events-success-");
+});
+
 test("CLI hides configured disabled runtimes and refuses to launch them", async () => {
   await withTempWorkspace(async (workspaceRoot) => {
     await writeFile(
@@ -455,3 +601,111 @@ test("CLI help handles an empty configured runtime list", async () => {
     assert.ok(!parsed.agentQuickStart.some((step) => step.includes("Start many tasks")));
   }, "orchestrator-cli-no-runtimes-help-");
 });
+
+async function createSuccessfulFakeParentSession(
+  options: CreateOrchestratorParentSessionOptions,
+): Promise<ParentSessionResult> {
+  let output = "";
+  const session = {
+    sessionId: "fake-parent-session",
+    async prompt(): Promise<void> {
+      const tools = createOrchestratorAgentTools(options);
+      const launch = await executeParentTool<LaunchAgentDetails>(
+        parentTool(tools, "launch_agent"),
+        "fake-launch-agent",
+        {
+          runtime: "shell",
+          name: "echo demo",
+          instructions: "printf 'OK\\n'",
+          timeoutMs: 10_000,
+          maxOutputBytes: 1_000,
+        },
+      );
+      const read = await executeParentTool<ReadAgentDetails>(
+        parentTool(tools, "read_agent"),
+        "fake-read-agent",
+        {
+          taskId: launch.task.taskId,
+          wait: true,
+          timeoutMs: 10_000,
+          maxBytes: 1_000,
+        },
+      );
+      assert.equal(read.retrievalStatus, "completed");
+      assert.equal(read.task.status, "succeeded");
+      output = `Child output: ${read.output}`;
+    },
+    getLastAssistantText(): string {
+      return output;
+    },
+    dispose(): void {},
+  };
+
+  return {
+    session: session as unknown as ParentSessionResult["session"],
+    extensionsResult: {
+      extensions: [],
+      diagnostics: [],
+    } as unknown as ParentSessionResult["extensionsResult"],
+  };
+}
+
+function parentTool(
+  tools: readonly OrchestratorParentTool[],
+  name: string,
+): OrchestratorParentTool {
+  const tool = tools.find((candidate) => candidate.name === name);
+  assert.ok(tool, `Expected parent tool ${name}.`);
+  return tool;
+}
+
+async function executeParentTool<TDetails>(
+  tool: OrchestratorParentTool,
+  toolCallId: string,
+  params: unknown,
+): Promise<TDetails> {
+  const result = await tool.execute(
+    toolCallId,
+    params as never,
+    undefined,
+    undefined,
+    undefined as never,
+  );
+  return result.details as TDetails;
+}
+
+async function captureStdout(action: () => Promise<void>): Promise<string> {
+  const originalWrite = process.stdout.write;
+  let output = "";
+  process.stdout.write = ((
+    chunk: string | Uint8Array,
+    encodingOrCallback?: BufferEncoding | ((error?: Error | null) => void),
+    callback?: (error?: Error | null) => void,
+  ): boolean => {
+    output += typeof chunk === "string" ? chunk : Buffer.from(chunk).toString("utf8");
+    const writeCallback = typeof encodingOrCallback === "function" ? encodingOrCallback : callback;
+    writeCallback?.();
+    return true;
+  }) as typeof process.stdout.write;
+
+  try {
+    await action();
+    return output;
+  } finally {
+    process.stdout.write = originalWrite;
+  }
+}
+
+function assertEventKindSubsequence(
+  actual: readonly (string | undefined)[],
+  expected: readonly string[],
+): void {
+  let actualIndex = 0;
+  for (const expectedKind of expected) {
+    const nextIndex = actual.findIndex(
+      (actualKind, index) => index >= actualIndex && actualKind === expectedKind,
+    );
+    assert.notEqual(nextIndex, -1, `Expected event kind ${expectedKind}.`);
+    actualIndex = nextIndex + 1;
+  }
+}

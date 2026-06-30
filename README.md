@@ -227,8 +227,9 @@ The CLI package is `@backnotprop/orchestrator-cli`. The reusable runtime package
 - `run`: start the parent AI agent; add `--background` to manage it like a task, `--trace-tools` to see tool calls live, or `--stream-json` for a full JSONL stream
 - `launch`: start one agent in the background; add `--json --compact` for a small machine-readable result, or use `launch -f agents.json --json --compact --brief` to start several agents from one manifest
 - `resume`: start a new task that resumes a finished Codex or Claude Code provider session
-  Resume needs stored provider metadata, so use the default structured runtime
-  modes when you may want to resume later.
+  Resume needs stored provider metadata. Keep the default runtime output mode
+  when you want reliable results, provider ids, token usage, or resume.
+  Provider text modes are mainly diagnostic or provider-specific.
 - `list`: see known tasks in a simple task list
 - `ps`: see grouped agent work in the current workspace
 - `ps -A`: see grouped agent work across all workspaces
@@ -251,6 +252,7 @@ The CLI package is `@backnotprop/orchestrator-cli`. The reusable runtime package
 - If compact batch `read` times out, use top-level `commands.waitPreview.args` to wait again or `stop.args` to stop still-active work safely
 - If compact `read` returns failed status, use `commands.logsPreview.args` for bounded raw logs or `commands.events.args` for the task timeline
 - Use `logs --json --compact` for a one-line raw stdout/stderr snapshot and `events --json --compact` for a one-line task timeline
+- Use `logs --follow --stream all` when you need live raw output with stdout/stderr order preserved
 - If compact `read` is truncated by read limit, use `commands.read.args` to fetch more output
 - Use `commands.watch.args` for the full live stream and `commands.agentWatch.args` for normalized live agent events only
 - JSON stop targets include portable `stop.args`; run those args to stop exactly the returned task, group, or selected active set

@@ -111,12 +111,15 @@ it, resume works for supported runtimes, and grouped `ps --all` is readable.
 The next refinements are smaller product fixes around observability and
 agent-facing behavior:
 
-- [ ] Persist parent run and tool events for background runs.
+- [x] Persist parent run and tool events for background runs.
   - Background `orchestrator run --background` should preserve `run.started`,
     `tool.call`, `tool.result`, `task.started`, `task.finished`, and
     `run.final` events.
   - `events <parent-id> --agent-only`, `watch <parent-id>`, `ps`, and the
     future TUI should be able to replay what the parent did.
+  - Covered by a deterministic successful parent-task integration test that uses
+    the real task store, real parent tools, a real child task, and `events` /
+    `watch` replay.
 
 - [x] Tighten parent `launch_agent` runtime guidance.
   - If the user asks for a shell/local-command child, the parent should launch
@@ -125,32 +128,36 @@ agent-facing behavior:
     Codex/Claude model work.
   - Prefer sharper schema/instructions before adding heavy product logic.
 
-- [ ] Keep structured output as the normal provider path.
+- [x] Keep structured output as the normal provider path.
   - Default structured modes should remain the recommended path for reliable
     output, provider metadata, token usage, and resume.
   - Provider text modes should be documented as diagnostic or provider-specific.
   - Resume docs should continue to say that resumable tasks need stored provider
     metadata.
+  - Covered in README command docs, CLI help text/JSON help, compact help, and
+    the packaged Orchestrator skill.
 
-- [ ] Clarify or improve `logs --stream all`.
-  - Current JSON output reports `stdout` and `stderr` separately.
-  - Either document that `all` means both streams, not exact interleaving, or add
-    a future interleaved/combined mode.
+- [x] Clarify or improve `logs --stream all`.
+  - `logs --follow --stream all` preserves combined stdout/stderr order for live
+    raw output.
+  - JSON logs remain a snapshot with separate `stdout` and `stderr` fields by
+    design.
+  - Covered in CLI help, README command docs, the packaged Orchestrator skill,
+    and the combined-output test.
 
-- [ ] Add a small parent-run smoke test.
-  - Start a parent run, have it launch a child, wait for the child, and finish.
-  - Assert parent/child grouping, persisted parent events, child task result,
-    and readable compact follow-up commands.
+- [x] Add an optional broader parent-run smoke test.
+  - Start a live parent run, have it launch a child, wait for the child, and
+    finish.
+  - Covered by `test/parent-run-smoke.test.ts`.
+  - The test is skipped by default. Run it with `RUN_PARENT_RUN_SMOKE=1`.
+  - It verifies parent/child grouping, child task result, replayable parent
+    agent events, watch replay, and readable compact follow-up commands through
+    the full CLI process path.
 
 ## Priority
 
-Do these next before deeper TUI polish:
-
-1. Persist parent run and tool events for background runs.
-2. Tighten parent `launch_agent` runtime guidance.
-3. Add a small parent-run smoke test.
-4. Clarify or improve `logs --stream all`.
-5. Keep structured output as the normal provider path.
+The manual-smoke backlog items above are now covered. Treat future work here as
+new TUI or operator polish, not as unfinished cleanup from this smoke pass.
 
 These are product-quality fixes. They make Orchestrator easier to debug and
 safer for agents to use without changing the core task model.

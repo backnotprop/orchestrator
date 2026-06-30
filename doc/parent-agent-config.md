@@ -121,6 +121,26 @@ orchestrator run \
   "Review this repo."
 ```
 
+## Live Smoke Test
+
+The parent-run smoke test uses a real parent agent, starts a background
+Orchestrator run, launches one shell child, waits for the result, and checks
+`read`, `events`, `watch`, and `ps` output.
+
+It is skipped by default because it makes a real model call:
+
+```sh
+RUN_PARENT_RUN_SMOKE=1 node --experimental-strip-types --test test/parent-run-smoke.test.ts
+```
+
+By default it uses `~/.pi/agent`. Override that path when needed:
+
+```sh
+RUN_PARENT_RUN_SMOKE=1 \
+PARENT_RUN_SMOKE_AGENT_DIR=/path/to/agent-config \
+node --experimental-strip-types --test test/parent-run-smoke.test.ts
+```
+
 ## Doctor Output
 
 `doctor` checks the parent-agent config directory, auth file, model config,

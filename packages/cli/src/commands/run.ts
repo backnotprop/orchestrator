@@ -60,6 +60,7 @@ type RunEventSink = (event: RunStreamEvent) => void | Promise<void>;
 
 type RunCommandContext = {
   cliEntryPath: string;
+  createParentSession?: typeof createOrchestratorParentSession;
 };
 
 export async function commandRun(options: RunOptions, context: RunCommandContext): Promise<void> {
@@ -217,6 +218,7 @@ async function executeParentRun(
   const shouldEmitRunLifecycle = options.streamJson || Boolean(options.runEventSink);
   let parentSessionId: string | undefined;
   let created: Awaited<ReturnType<typeof createOrchestratorParentSession>>;
+  const createParentSession = context.createParentSession ?? createOrchestratorParentSession;
 
   const publishRunEvent = (payload: Parameters<typeof runEvents.create>[0]): RunStreamEvent => {
     const event = runEvents.create(payload);
@@ -228,7 +230,7 @@ async function executeParentRun(
   };
 
   try {
-    created = await createOrchestratorParentSession({
+    created = await createParentSession({
       workspaceRoot: options.workspaceRoot,
       ...(options.orchestratorDir ? { orchestratorDir: options.orchestratorDir } : {}),
       ...(options.configPath ? { configPath: options.configPath } : {}),

@@ -150,7 +150,7 @@ Agent instructions:
   24. If active ps is empty after short work, run views.recent.args from compact ps to recover recent finished tasks and batch read commands.
   25. Use launch -f <manifest.json|-> --json --compact --brief to start several tasks in one call.
   26. Use launch --json --compact --brief when starting one task and only task id/status/stop is needed.
-  27. Use resume only for true provider resume from a finished task whose runtime reports resumeSupported and has stored provider metadata.
+  27. Use resume only for true provider resume from a finished task whose runtime reports resumeSupported and has stored provider metadata. Keep the default runtime output mode when you want reliable results, provider ids, token usage, or resume.
   28. When compact JSON returns stop.args, run those portable args to stop exactly the returned task, group, or selected active set.
   29. Compact ps stop.args are scoped to the current view; parent/group stops may include children of that selected run.
   30. When JSON output returns commands.*.args, pass those portable args to orchestrator for read/watch/logs/events follow-up.
@@ -165,7 +165,7 @@ Agent instructions:
   39. If compact read returns failed status, use commands.logsPreview.args for bounded raw logs or commands.events.args for the task timeline.
   40. Check outputTruncated/stdoutTruncated/stderrTruncated in JSON output; ByReadLimit means re-read with more bytes can help, ByCaptureLimit means the task was launched with too small a capture cap.
   41. If compact read is truncated by read limit, use commands.read.args to fetch more output.
-  42. Use logs --json --compact for a one-line raw stdout/stderr snapshot and events --json --compact for a one-line task timeline.
+  42. Use logs --json --compact for a one-line raw stdout/stderr snapshot and events --json --compact for a one-line task timeline. Use logs --follow --stream all when live stdout/stderr order matters.
   43. Use interrupt to cancel running agents. Use interrupt <id> <id> --json --compact to stop a selected subset.
   44. Use --children for parent runs with children.
   45. Use interrupt --active only for deliberate workspace cleanup; use interrupt -A --active --yes only for deliberate all-workspace cleanup.
@@ -282,7 +282,7 @@ function buildCliHelpDocument(
       "Use launch --json --compact when software needs only the new task id and status.",
       "Use launch -f <manifest.json|-> --json --compact --brief when software needs to start several tasks in one call.",
       "Use resume <task-id|prefix> only for true provider resume from a finished task whose runtime reports resumeSupported and has stored provider metadata.",
-      "Use default structured runtime output when you may want to resume later; text output may not capture provider thread/session ids.",
+      "Keep the default runtime output mode when you want reliable results, provider ids, token usage, or resume. Provider text modes are mainly diagnostic or provider-specific.",
       "Orchestrator uses one default machine store at ~/.orchestrator/tasks; workspace is project scope, and cwd is the agent process directory.",
       "Capture taskId from launch output. Task commands accept the full id or a unique prefix shown by ps/list from the same store.",
       "Common options like --workspace, --orchestrator-dir, --config, and --json may appear before or after the command.",
@@ -315,6 +315,7 @@ function buildCliHelpDocument(
       "Check outputTruncated/stdoutTruncated/stderrTruncated in JSON output; ByReadLimit means re-read with more bytes can help, ByCaptureLimit means the task was launched with too small a capture cap.",
       "If compact read is truncated by read limit, use commands.read.args to fetch more output.",
       "Use logs --json --compact for a one-line raw stdout/stderr snapshot and events --json --compact for a one-line task timeline.",
+      "Use logs --follow --stream all when live stdout/stderr order matters.",
       "Use watch to follow one task live. Use watch --agent-only --json for normalized agent event JSONL.",
       "Pass model names exactly as the underlying provider CLI expects; this CLI does not normalize model aliases yet.",
       "Use interrupt to cancel a running task by process group.",
@@ -595,7 +596,7 @@ function buildCliHelpDocument(
           "Add --brief to compact launch when one task only needs id/status/stop.",
           "Use launch -f <manifest.json|-> --json --compact --brief when several tasks should start from one manifest.",
           "Use resume <task-id|prefix> --json --compact only when you need true provider resume from a finished task whose runtime reports resumeSupported and has stored provider metadata.",
-          "Use default structured runtime output when you may want to resume later; text output may not capture provider thread/session ids.",
+          "Keep the default runtime output mode when you want reliable results, provider ids, token usage, or resume. Provider text modes are mainly diagnostic or provider-specific.",
           "Extract taskId from launch output, or use the short id shown by ps/list when it is unique.",
           "Run list to see named tasks.",
           "Run ps to see grouped agent work.",
@@ -735,6 +736,7 @@ function compactCliHelpDocument(
         ? ["Start many tasks with launch -f <manifest.json|-> --json --compact --brief."]
         : ["If runtimeIds is empty, do not call launch; add or enable an agent config first."]),
       "Resume finished resume-supported tasks with stored provider metadata by using resume <task-id|prefix> --json --compact.",
+      "Keep the default runtime output mode when you want reliable results, provider ids, token usage, or resume.",
       "Find running tasks with ps --json --compact --active --brief.",
       "Narrow one parent run with ps --parent <run-id|prefix> --json --compact --brief.",
       "If active ps is empty after short work, run views.recent.args from compact ps to recover recent tasks.",

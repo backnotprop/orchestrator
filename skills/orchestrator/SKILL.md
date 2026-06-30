@@ -108,8 +108,9 @@ Use `logs` for raw stdout/stderr. Use `events` for normalized task and agent
 events.
 Use `resume <task-id> --json --compact` only when you need true provider resume
 from a finished Codex or Claude Code task.
-Resume needs stored provider metadata, so use default structured runtime output
-when you may want to resume later.
+Resume needs stored provider metadata. Keep the default runtime output mode when
+you want reliable results, provider ids, token usage, or resume. Provider text
+modes are mainly diagnostic or provider-specific.
 
 ## Runtime Choices
 
@@ -153,8 +154,9 @@ instead of guessing.
 - Do not launch Codex or Claude just to run a deterministic shell command.
 - Use `resume` only for true provider resume from a finished Codex or Claude
   Code task. For other runtimes, launch a new task with explicit context.
-  Resume needs stored provider metadata; text output may not capture provider
-  thread/session ids.
+  Resume needs stored provider metadata. Keep the default runtime output mode
+  when you want reliable results, provider ids, token usage, or resume.
+  Provider text modes are mainly diagnostic or provider-specific.
 - Use `help --json --compact` for quick discovery; use `fullHelp.args` when you
   need the full contract.
 - Use `doctor --json --compact` when runtime availability is uncertain.
@@ -197,6 +199,8 @@ instead of guessing.
   bounded raw logs or `commands.events.args` for the task timeline.
 - Use `logs --json --compact` for a one-line raw stdout/stderr snapshot and
   `events --json --compact` for a one-line task timeline.
+- Use `logs --follow --stream all` when you need live raw output with stdout and
+  stderr order preserved.
 - If compact `read` is truncated by read limit, use `commands.read.args` to
   fetch more output.
 - Use `commands.watch.args` for the full live event stream and
