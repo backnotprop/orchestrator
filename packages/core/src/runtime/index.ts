@@ -37,6 +37,7 @@ export type {
   InterruptStrategy,
   IsolationDefault,
   OutputTransport,
+  ProtocolExecutionMode,
   PromptTransport,
   RuntimeCapabilities,
   RuntimeExecutionKind,

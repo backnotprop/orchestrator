@@ -21,11 +21,14 @@ This is the canonical ADR workspace.
 - [Single control-plane task store](specs/single-control-plane-task-store-20260622-074105.md)
 - [Persist parent events for background runs](specs/persist-parent-events-for-background-runs-20260630-104204.md)
 - [Parent launch_agent runtime guidance](specs/parent-launch-agent-runtime-guidance-20260630-111352.md)
+- [Codex app-server resume](specs/codex-app-server-resume-20260630-163105.md)
+- [Send messages to running Codex app-server tasks](specs/codex-app-server-steering-20260630-232736.md)
 
 ## Intent Notes
 
 - [Batch launch manifests](intent/batch-launch-manifests-20260622-055107.md)
 - [Single control-plane task store](intent/single-control-plane-task-store-20260622-075137.md)
+- [Send messages to running Codex app-server tasks](intent/send-messages-to-running-codex-app-server-tasks-20260701.md)
 
 ## Decisions
 
@@ -80,3 +83,5 @@ This is the canonical ADR workspace.
 - [49. Polish Codex app-server runtime with live smoke](decisions/0049-polish-codex-app-server-runtime-with-live-smoke-20260624-113358.md)
 - [50. Use simple task-shaped resume before pooling](decisions/0050-use-simple-task-shaped-resume-before-pooling-20260630-051045.md)
 - [51. Persist parent events for background runs](decisions/0051-persist-parent-events-for-background-runs-20260630-104204.md)
+- [52. Enable task-shaped resume for Codex app-server](decisions/0052-enable-task-shaped-resume-for-codex-app-server-20260630-163334.md)
+- [53. Send messages to running Codex app-server tasks through file-backed control requests](decisions/0053-send-messages-to-running-codex-app-server-tasks-20260630-234839.md)

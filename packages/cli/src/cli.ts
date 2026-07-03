@@ -13,6 +13,7 @@ import { commandList } from "./commands/list.ts";
 import { commandPs } from "./commands/ps.ts";
 import { commandResume } from "./commands/resume.ts";
 import { commandRun, commandRunParentTask } from "./commands/run.ts";
+import { commandSend } from "./commands/send.ts";
 import { commandEvents, commandLogs, commandRead } from "./commands/task-inspection.ts";
 import { commandWatch } from "./commands/watch.ts";
 import { parseDoctorOptions } from "./parsing/doctor.ts";
@@ -25,6 +26,7 @@ import { normalizeLeadingCommonOptions } from "./parsing/leading-common-options.
 import { parsePsOptions } from "./parsing/ps.ts";
 import { parseResumeOptions } from "./parsing/resume.ts";
 import { parseRunOptions } from "./parsing/run.ts";
+import { parseSendOptions } from "./parsing/send.ts";
 import {
   parseEventsOptions,
   parseLogsOptions,
@@ -45,6 +47,9 @@ export async function main(argv: readonly string[] = process.argv.slice(2)): Pro
         return 0;
       case "resume":
         await commandResume(parseResumeOptions(rest), { cliEntryPath: CLI_ENTRY_PATH });
+        return 0;
+      case "send":
+        await commandSend(parseSendOptions(rest));
         return 0;
       case "list":
         await commandList(parseListOptions(rest));

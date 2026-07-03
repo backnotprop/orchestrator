@@ -123,7 +123,7 @@ test("CLI ps displays actionable unique task id prefixes", async () => {
 
 test("CLI ps exposes compact machine-control JSON", async () => {
   await withTempWorkspace(async (workspaceRoot) => {
-    const runningCommand = 'node -e "setTimeout(() => {}, 5000)"';
+    const runningCommand = 'node -e "setTimeout(() => {}, 60000)"';
     const doneCommand = "printf done";
     const configPath = `${workspaceRoot}/orchestrator.config.json`;
     await writeFile(configPath, `${JSON.stringify({ agents: {} }, null, 2)}\n`);
@@ -825,7 +825,7 @@ test("CLI compact ps ids remain usable when old hidden tasks share prefixes", as
 
 test("CLI ps --watch refreshes the grouped operations view while a task runs", async () => {
   await withTempWorkspace(async (workspaceRoot) => {
-    const command = 'node -e "setTimeout(() => {}, 700)"';
+    const command = 'node -e "setTimeout(() => {}, 3000)"';
     const launch = await runCli(workspaceRoot, [
       "launch",
       "shell",

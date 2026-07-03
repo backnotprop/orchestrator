@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 import {
   CODEX_APP_SERVER_RUNTIME,
   buildAgentLaunchPlan,
+  buildAgentResumeLaunchPlan,
   type AgentLaunchPlan,
   type HeadlessAgentRuntimeConfig,
 } from "@backnotprop/orchestrator-core/runtime";
@@ -17,6 +18,7 @@ import {
   readTaskLogs,
   readTaskOutput,
   readTaskRecord,
+  sendTaskMessage,
 } from "@backnotprop/orchestrator-core/tasks";
 import {
   cliPath,
@@ -75,10 +77,127 @@ test("codex app-server executor captures result, events, provider metadata, and 
 
     const transcript = await readFile(task.paths.transcriptJsonl, "utf8");
     assert.match(transcript, /"method":"thread\/start"/);
+    assert.match(transcript, /"ephemeral":true/);
     assert.match(transcript, /"method":"turn\/start"/);
     assert.match(transcript, /"method":"item\/commandExecution\/requestApproval"/);
     assert.match(transcript, /"method":"turn\/completed"/);
   }, "orchestrator-codex-app-server-success-");
+});
+
+test("codex app-server executor resumes an existing provider thread", async () => {
+  await withTempWorkspace(async (workspaceRoot) => {
+    const handle = await launchTask({
+      workspaceRoot,
+      plan: codexAppServerResumePlan(workspaceRoot),
+      name: "fake codex app-server resume",
+      model: "fake-model",
+      timeoutMs: 5_000,
+      provider: {
+        provider: "codex",
+        protocol: "jsonrpc",
+        transport: "stdio",
+        threadId: "thread-fake-1",
+      },
+      resume: {
+        fromTaskId: "source-task",
+        rootTaskId: "source-task",
+        attempt: 1,
+      },
+    });
+
+    const completed = await handle.completed;
+    assert.equal(completed.status, "succeeded");
+    assert.equal(
+      await readTaskOutput({ workspaceRoot, taskId: completed.taskId }),
+      "Hello from fake Codex.",
+    );
+
+    const task = await readTaskRecord({ workspaceRoot }, completed.taskId);
+    assert.deepEqual(task.provider, {
+      provider: "codex",
+      protocol: "jsonrpc",
+      transport: "stdio",
+      threadId: "thread-fake-1",
+      turnId: "turn-fake-resumed-1",
+    });
+
+    const events = await readTaskEvents({ workspaceRoot, taskId: completed.taskId });
+    const kinds = events.flatMap((event) =>
+      event.type === "agent_event" && typeof event.data.kind === "string" ? [event.data.kind] : [],
+    );
+    assert.ok(kinds.includes("thread.resumed"));
+    assert.ok(kinds.includes("turn.started"));
+    assert.ok(kinds.includes("turn.completed"));
+
+    const transcript = await readFile(task.paths.transcriptJsonl, "utf8");
+    assert.match(transcript, /"method":"thread\/resume"/);
+    assert.doesNotMatch(transcript, /"method":"thread\/start"/);
+  }, "orchestrator-codex-app-server-resume-");
+});
+
+test("codex app-server executor can launch an idle persistent session", async () => {
+  await withTempWorkspace(async (workspaceRoot) => {
+    const handle = await launchTask({
+      workspaceRoot,
+      plan: codexAppServerSessionPlan(workspaceRoot),
+      name: "idle app-server session",
+      model: "fake-model",
+      timeoutMs: 10_000,
+    });
+
+    try {
+      await waitFor(async () => {
+        const task = await readTaskRecord({ workspaceRoot }, handle.task.taskId);
+        return task.status === "running" && task.session?.state === "idle";
+      }, 5_000);
+
+      const running = await readTaskRecord({ workspaceRoot }, handle.task.taskId);
+      assert.equal(running.status, "running");
+      assert.equal(running.provider?.provider, "codex");
+      assert.equal(running.provider?.threadId, "thread-fake-1");
+      assert.equal(running.provider?.turnId, undefined);
+      assert.deepEqual(running.session, {
+        kind: "codex-app-server",
+        state: "idle",
+        threadId: "thread-fake-1",
+        startedAt: running.session?.startedAt,
+        updatedAt: running.session?.updatedAt,
+      });
+
+      const transcript = await readFile(running.paths.transcriptJsonl, "utf8");
+      assert.match(transcript, /"method":"initialize"/);
+      assert.match(transcript, /"method":"thread\/start"/);
+      assert.match(transcript, /"ephemeral":false/);
+      assert.doesNotMatch(transcript, /"method":"turn\/start"/);
+
+      const kinds = await agentEventKinds(workspaceRoot, running.taskId);
+      assert.ok(kinds.includes("thread.started"));
+      assert.ok(kinds.includes("session.idle"));
+
+      await interruptTask({
+        workspaceRoot,
+        taskId: running.taskId,
+        reason: "close idle session",
+      });
+    } catch (error) {
+      await interruptTask({
+        workspaceRoot,
+        taskId: handle.task.taskId,
+        reason: "test cleanup",
+      }).catch(() => undefined);
+      throw error;
+    }
+
+    const completed = await handle.completed;
+    assert.equal(completed.status, "cancelled");
+    assert.equal(completed.error, "close idle session");
+    assert.equal(completed.session?.state, "closed");
+    assert.equal(completed.session?.threadId, "thread-fake-1");
+
+    const kinds = await agentEventKinds(workspaceRoot, completed.taskId);
+    assert.ok(kinds.includes("protocol.interrupt.session_idle"));
+    assert.ok(kinds.includes("protocol.interrupt.fallback_kill"));
+  }, "orchestrator-codex-app-server-session-");
 });
 
 test("codex app-server executor maps failed turns to failed tasks", async () => {
@@ -272,6 +391,145 @@ test("codex app-server interrupt keeps stop reason when timeout fires during shu
   }, "orchestrator-codex-app-server-interrupt-timeout-");
 });
 
+test("codex app-server executor accepts a message while the turn is running", async () => {
+  await withTempWorkspace(async (workspaceRoot) => {
+    const handle = await launchTask({
+      workspaceRoot,
+      plan: codexAppServerPlan(workspaceRoot, { FAKE_CODEX_APP_SERVER_MODE: "hang" }),
+      timeoutMs: 10_000,
+    });
+
+    await waitFor(async () => {
+      const task = await readTaskRecord({ workspaceRoot }, handle.task.taskId);
+      return task.provider?.turnId === "turn-fake-1";
+    });
+
+    try {
+      const sent = await sendTaskMessage({
+        workspaceRoot,
+        taskId: handle.task.taskId.slice(0, 8),
+        text: "Focus on failing tests first.",
+        timeoutMs: 2_000,
+      });
+
+      assert.equal(sent.status, "accepted");
+      assert.equal(sent.provider?.provider, "codex");
+      assert.equal(sent.provider?.threadId, "thread-fake-1");
+      assert.equal(sent.provider?.turnId, "turn-fake-1");
+
+      const kinds = await agentEventKinds(workspaceRoot, handle.task.taskId);
+      assert.ok(kinds.includes("protocol.message.requested"));
+      assert.ok(kinds.includes("protocol.message.sent"));
+      assert.ok(!kinds.includes("protocol.message.failed"));
+
+      const task = await readTaskRecord({ workspaceRoot }, handle.task.taskId);
+      const transcript = await readFile(task.paths.transcriptJsonl, "utf8");
+      assert.match(transcript, /"method":"turn\/steer"/);
+    } finally {
+      await interruptTask({
+        workspaceRoot,
+        taskId: handle.task.taskId,
+        reason: "test cleanup",
+      }).catch(() => undefined);
+    }
+
+    const completed = await handle.completed;
+    assert.equal(completed.status, "cancelled");
+  }, "orchestrator-codex-app-server-send-");
+});
+
+test("codex app-server send fails clearly when the provider returns a different turn", async () => {
+  await withTempWorkspace(async (workspaceRoot) => {
+    const handle = await launchTask({
+      workspaceRoot,
+      plan: codexAppServerPlan(workspaceRoot, {
+        FAKE_CODEX_APP_SERVER_MODE: "steer-turn-mismatch",
+      }),
+      timeoutMs: 10_000,
+    });
+
+    await waitFor(async () => {
+      const task = await readTaskRecord({ workspaceRoot }, handle.task.taskId);
+      return task.provider?.turnId === "turn-fake-1";
+    });
+
+    try {
+      await assert.rejects(
+        sendTaskMessage({
+          workspaceRoot,
+          taskId: handle.task.taskId,
+          text: "Focus on failing tests first.",
+          timeoutMs: 2_000,
+        }),
+        (error: unknown) =>
+          error instanceof Error &&
+          "reason" in error &&
+          error.reason === "turn_mismatch" &&
+          /turn-fake-other/.test(error.message),
+      );
+
+      const kinds = await agentEventKinds(workspaceRoot, handle.task.taskId);
+      assert.ok(kinds.includes("protocol.message.requested"));
+      assert.ok(kinds.includes("protocol.message.failed"));
+    } finally {
+      await interruptTask({
+        workspaceRoot,
+        taskId: handle.task.taskId,
+        reason: "test cleanup",
+      }).catch(() => undefined);
+    }
+
+    const completed = await handle.completed;
+    assert.equal(completed.status, "cancelled");
+  }, "orchestrator-codex-app-server-send-mismatch-");
+});
+
+test("codex app-server send respects the message timeout", async () => {
+  await withTempWorkspace(async (workspaceRoot) => {
+    const handle = await launchTask({
+      workspaceRoot,
+      plan: codexAppServerPlan(workspaceRoot, {
+        FAKE_CODEX_APP_SERVER_MODE: "steer-delay",
+      }),
+      timeoutMs: 10_000,
+    });
+
+    await waitFor(async () => {
+      const task = await readTaskRecord({ workspaceRoot }, handle.task.taskId);
+      return task.provider?.turnId === "turn-fake-1";
+    });
+
+    try {
+      await assert.rejects(
+        sendTaskMessage({
+          workspaceRoot,
+          taskId: handle.task.taskId,
+          text: "Focus on failing tests first.",
+          timeoutMs: 100,
+        }),
+        (error: unknown) =>
+          error instanceof Error &&
+          "reason" in error &&
+          error.reason === "provider_rejected" &&
+          /timed out/.test(error.message),
+      );
+
+      const kinds = await agentEventKinds(workspaceRoot, handle.task.taskId);
+      assert.ok(kinds.includes("protocol.message.requested"));
+      assert.ok(kinds.includes("protocol.message.failed"));
+    } finally {
+      await interruptTask({
+        workspaceRoot,
+        taskId: handle.task.taskId,
+        reason: "test cleanup",
+      }).catch(() => undefined);
+    }
+
+    const completed = await handle.completed;
+    assert.equal(completed.status, "cancelled");
+  }, "orchestrator-codex-app-server-send-timeout-");
+});
+
 test("CLI launch can run codex-app-server through the normal command path", async () => {
   await withTempWorkspace(async (workspaceRoot) => {
     const fakeCodex = await installFakeCodex(workspaceRoot);
@@ -329,6 +587,455 @@ test("CLI launch can run codex-app-server through the normal command path", asyn
     assert.doesNotMatch(logOutput, /thread\/tokenUsage\/updated/);
     assert.doesNotMatch(logOutput, /"method":"turn\/start"/);
   }, "orchestrator-codex-app-server-cli-");
+});
+
+test("CLI launch can start and interrupt an idle codex-app-server session", async () => {
+  await withTempWorkspace(async (workspaceRoot) => {
+    const fakeCodex = await installFakeCodex(workspaceRoot);
+
+    const launch = await runCli(
+      workspaceRoot,
+      [
+        "launch",
+        "codex-app-server",
+        "--workspace",
+        workspaceRoot,
+        "--session",
+        "--name",
+        "idle session",
+        "--json",
+      ],
+      10_000,
+      fakeCodex.env,
+    );
+    const task = JSON.parse(launch.stdout) as {
+      taskId: string;
+      runtime: string;
+      status: string;
+      name?: string;
+    };
+    assert.equal(task.runtime, "codex-app-server");
+    assert.equal(task.name, "idle session");
+
+    try {
+      await waitFor(async () => {
+        const record = await readTaskRecord({ workspaceRoot }, task.taskId);
+        return record.status === "running" && record.session?.state === "idle";
+      }, 5_000);
+
+      const record = await readTaskRecord({ workspaceRoot }, task.taskId);
+      assert.equal(record.provider?.provider, "codex");
+      assert.equal(record.provider?.threadId, "thread-fake-1");
+      assert.equal(record.provider?.turnId, undefined);
+      assert.equal(record.session?.state, "idle");
+      assert.equal(record.session?.threadId, "thread-fake-1");
+
+      const events = await runCli(workspaceRoot, [
+        "events",
+        task.taskId,
+        "--workspace",
+        workspaceRoot,
+        "--agent-only",
+      ]);
+      assert.match(events.stdout, /thread\.started/);
+      assert.match(events.stdout, /session\.idle/);
+      assert.doesNotMatch(events.stdout, /turn\.started/);
+
+      const transcript = await readFile(record.paths.transcriptJsonl, "utf8");
+      assert.match(transcript, /"method":"thread\/start"/);
+      assert.match(transcript, /"ephemeral":false/);
+      assert.doesNotMatch(transcript, /"method":"turn\/start"/);
+    } finally {
+      await runCli(
+        workspaceRoot,
+        ["interrupt", task.taskId, "--workspace", workspaceRoot, "--reason", "close idle session"],
+        10_000,
+        fakeCodex.env,
+      ).catch(() => undefined);
+    }
+
+    await waitFor(async () => {
+      const record = await readTaskRecord({ workspaceRoot }, task.taskId);
+      return record.status === "cancelled" && record.session?.state === "closed";
+    }, 5_000);
+  }, "orchestrator-codex-app-server-cli-session-");
+});
+
+test("CLI resume can continue a codex-app-server task", async () => {
+  await withTempWorkspace(async (workspaceRoot) => {
+    const fakeCodex = await installFakeCodex(workspaceRoot);
+
+    const sourceLaunch = await runCli(
+      workspaceRoot,
+      [
+        "launch",
+        "codex-app-server",
+        "--workspace",
+        workspaceRoot,
+        "--wait",
+        "--json",
+        "Say hello in one sentence.",
+      ],
+      10_000,
+      fakeCodex.env,
+    );
+    const source = JSON.parse(sourceLaunch.stdout) as {
+      taskId: string;
+      runtime: string;
+      status: string;
+      provider?: { provider?: string; threadId?: string; turnId?: string };
+    };
+    assert.equal(source.runtime, "codex-app-server");
+    assert.equal(source.status, "succeeded");
+    assert.equal(source.provider?.provider, "codex");
+    assert.equal(source.provider?.threadId, "thread-fake-1");
+
+    const resumedLaunch = await runCli(
+      workspaceRoot,
+      [
+        "resume",
+        source.taskId.slice(0, 8),
+        "--workspace",
+        workspaceRoot,
+        "--wait",
+        "--json",
+        "Continue with one more short sentence.",
+      ],
+      10_000,
+      fakeCodex.env,
+    );
+    const resumed = JSON.parse(resumedLaunch.stdout) as {
+      taskId: string;
+      runtime: string;
+      status: string;
+      provider?: { provider?: string; threadId?: string; turnId?: string };
+    };
+    const stored = await readTaskRecord({ workspaceRoot }, resumed.taskId);
+
+    assert.equal(resumed.runtime, "codex-app-server");
+    assert.equal(resumed.status, "succeeded");
+    assert.deepEqual(stored.resume, {
+      fromTaskId: source.taskId,
+      rootTaskId: source.taskId,
+      attempt: 1,
+    });
+    assert.deepEqual(stored.provider, {
+      provider: "codex",
+      protocol: "jsonrpc",
+      transport: "stdio",
+      threadId: "thread-fake-1",
+      turnId: "turn-fake-resumed-1",
+    });
+
+    const events = await runCli(workspaceRoot, [
+      "events",
+      resumed.taskId,
+      "--workspace",
+      workspaceRoot,
+      "--agent-only",
+    ]);
+    assert.match(events.stdout, /thread\.resumed/);
+    assert.match(events.stdout, /turn\.completed/);
+  }, "orchestrator-codex-app-server-cli-resume-");
+});
+
+test("CLI resume rejects an active codex-app-server task on the same provider thread", async () => {
+  await withTempWorkspace(async (workspaceRoot) => {
+    const fakeCodex = await installFakeCodex(workspaceRoot);
+
+    const sourceLaunch = await runCli(
+      workspaceRoot,
+      [
+        "launch",
+        "codex-app-server",
+        "--workspace",
+        workspaceRoot,
+        "--wait",
+        "--json",
+        "Create the source thread.",
+      ],
+      10_000,
+      fakeCodex.env,
+    );
+    const source = JSON.parse(sourceLaunch.stdout) as { taskId: string };
+
+    const activeLaunch = await runCli(
+      workspaceRoot,
+      [
+        "launch",
+        "codex-app-server",
+        "--workspace",
+        workspaceRoot,
+        "--json",
+        "Keep the same provider thread active.",
+      ],
+      10_000,
+      {
+        ...fakeCodex.env,
+        FAKE_CODEX_APP_SERVER_MODE: "hang",
+        FAKE_CODEX_APP_SERVER_THREAD_ID: "thread-fake-1",
+      },
+    );
+    const active = JSON.parse(activeLaunch.stdout) as { taskId: string };
+
+    try {
+      await waitFor(async () => {
+        const task = await readTaskRecord({ workspaceRoot }, active.taskId);
+        return task.provider?.provider === "codex" && task.provider.threadId === "thread-fake-1";
+      }, 5_000);
+
+      await assert.rejects(
+        runCli(
+          workspaceRoot,
+          [
+            "resume",
+            source.taskId.slice(0, 8),
+            "--workspace",
+            workspaceRoot,
+            "--json",
+            "This should be rejected.",
+          ],
+          10_000,
+          fakeCodex.env,
+        ),
+        (error: unknown) => {
+          const stderr = error instanceof Error && "stderr" in error ? String(error.stderr) : "";
+          const parsed = JSON.parse(stderr) as {
+            error: { reason?: string; input?: string; hint?: string };
+          };
+          assert.equal(parsed.error.reason, "resume_session_active");
+          assert.equal(parsed.error.input, active.taskId);
+          assert.match(parsed.error.hint ?? "", /active task/);
+          return true;
+        },
+      );
+    } finally {
+      await runCli(
+        workspaceRoot,
+        ["interrupt", active.taskId, "--workspace", workspaceRoot, "--reason", "test cleanup"],
+        10_000,
+        fakeCodex.env,
+      ).catch(() => undefined);
+    }
+  }, "orchestrator-codex-app-server-cli-resume-conflict-");
+});
+
+test("CLI send can message a detached running codex-app-server task", async () => {
+  await withTempWorkspace(async (workspaceRoot) => {
+    const fakeCodex = await installFakeCodex(workspaceRoot);
+    const launch = await runCli(
+      workspaceRoot,
+      [
+        "launch",
+        "codex-app-server",
+        "--workspace",
+        workspaceRoot,
+        "--name",
+        "send target",
+        "--json",
+        "Stay active so a follow-up can be sent.",
+      ],
+      10_000,
+      {
+        ...fakeCodex.env,
+        FAKE_CODEX_APP_SERVER_MODE: "hang",
+      },
+    );
+    const task = JSON.parse(launch.stdout) as {
+      taskId: string;
+      runtime: string;
+      status: string;
+    };
+    assert.equal(task.runtime, "codex-app-server");
+
+    try {
+      await waitFor(async () => {
+        const record = await readTaskRecord({ workspaceRoot }, task.taskId);
+        return record.status === "running" && record.provider?.turnId === "turn-fake-1";
+      }, 5_000);
+
+      const send = await runCli(
+        workspaceRoot,
+        [
+          "send",
+          task.taskId.slice(0, 8),
+          "--workspace",
+          workspaceRoot,
+          "--json",
+          "--compact",
+          "Focus on failing tests first.",
+        ],
+        10_000,
+        fakeCodex.env,
+      );
+      const sent = JSON.parse(send.stdout) as {
+        ok: boolean;
+        task: { taskId: string; runtime: string; status: string };
+        message: { status: string; provider?: { threadId?: string; turnId?: string } };
+      };
+      assert.equal(sent.ok, true);
+      assert.equal(sent.task.taskId, task.taskId);
+      assert.equal(sent.task.runtime, "codex-app-server");
+      assert.equal(sent.message.status, "accepted");
+      assert.equal(sent.message.provider?.threadId, "thread-fake-1");
+      assert.equal(sent.message.provider?.turnId, "turn-fake-1");
+
+      const events = await runCli(workspaceRoot, [
+        "events",
+        task.taskId.slice(0, 8),
+        "--workspace",
+        workspaceRoot,
+        "--agent-only",
+      ]);
+      assert.match(events.stdout, /protocol\.message\.requested/);
+      assert.match(events.stdout, /protocol\.message\.sent/);
+      assert.doesNotMatch(events.stdout, /turn\/steer/);
+
+      const record = await readTaskRecord({ workspaceRoot }, task.taskId);
+      const transcript = await readFile(record.paths.transcriptJsonl, "utf8");
+      assert.match(transcript, /"method":"turn\/steer"/);
+    } finally {
+      await runCli(
+        workspaceRoot,
+        ["interrupt", task.taskId, "--workspace", workspaceRoot, "--reason", "test cleanup"],
+        10_000,
+        fakeCodex.env,
+      ).catch(() => undefined);
+    }
+
+    await waitFor(async () => {
+      const record = await readTaskRecord({ workspaceRoot }, task.taskId);
+      return record.status === "cancelled";
+    }, 5_000);
+  }, "orchestrator-codex-app-server-cli-send-");
+});
+
+test("CLI send reports unsupported runtimes as machine-readable errors", async () => {
+  await withTempWorkspace(async (workspaceRoot) => {
+    const launch = await runCli(workspaceRoot, [
+      "launch",
+      "shell",
+      "--workspace",
+      workspaceRoot,
+      "--name",
+      "plain shell",
+      "--json",
+      `${process.execPath} -e "setTimeout(() => {}, 2000)"`,
+    ]);
+    const task = JSON.parse(launch.stdout) as { taskId: string };
+
+    try {
+      await waitFor(async () => {
+        const record = await readTaskRecord({ workspaceRoot }, task.taskId);
+        return record.status === "running";
+      }, 5_000);
+
+      await assert.rejects(
+        runCli(
+          workspaceRoot,
+          [
+            "send",
+            task.taskId.slice(0, 8),
+            "--workspace",
+            workspaceRoot,
+            "--json",
+            "--compact",
+            "Please change direction.",
+          ],
+          10_000,
+        ),
+        (error: unknown) => {
+          const stderr = error instanceof Error && "stderr" in error ? String(error.stderr) : "";
+          const parsed = JSON.parse(stderr) as {
+            error: { reason?: string; input?: string; hint?: string };
+          };
+          assert.equal(parsed.error.reason, "unsupported");
+          assert.equal(parsed.error.input, task.taskId);
+          assert.match(parsed.error.hint ?? "", /resume|launch|read/);
+          return true;
+        },
+      );
+    } finally {
+      await runCli(
+        workspaceRoot,
+        ["interrupt", task.taskId, "--workspace", workspaceRoot, "--reason", "test cleanup"],
+        10_000,
+      ).catch(() => undefined);
+    }
+  }, "orchestrator-codex-app-server-cli-send-unsupported-");
+});
+
+test("CLI send does not apply an expired detached control request later", async () => {
+  await withTempWorkspace(async (workspaceRoot) => {
+    const fakeCodex = await installFakeCodex(workspaceRoot);
+    const launch = await runCli(
+      workspaceRoot,
+      [
+        "launch",
+        "codex-app-server",
+        "--workspace",
+        workspaceRoot,
+        "--name",
+        "expiry target",
+        "--json",
+        "Stay active so an expired follow-up can be rejected.",
+      ],
+      10_000,
+      {
+        ...fakeCodex.env,
+        FAKE_CODEX_APP_SERVER_MODE: "hang",
+      },
+    );
+    const task = JSON.parse(launch.stdout) as { taskId: string };
+
+    try {
+      await waitFor(async () => {
+        const record = await readTaskRecord({ workspaceRoot }, task.taskId);
+        return record.status === "running" && record.provider?.turnId === "turn-fake-1";
+      }, 5_000);
+
+      await assert.rejects(
+        runCli(
+          workspaceRoot,
+          [
+            "send",
+            task.taskId.slice(0, 8),
+            "--workspace",
+            workspaceRoot,
+            "--timeout-ms",
+            "1",
+            "--json",
+            "--compact",
+            "This message should expire before the runner handles it.",
+          ],
+          10_000,
+          fakeCodex.env,
+        ),
+        (error: unknown) => {
+          const stderr = error instanceof Error && "stderr" in error ? String(error.stderr) : "";
+          const parsed = JSON.parse(stderr) as { error: { reason?: string } };
+          assert.equal(parsed.error.reason, "timeout");
+          return true;
+        },
+      );
+
+      await delay(400);
+      const record = await readTaskRecord({ workspaceRoot }, task.taskId);
+      const transcript = await readFile(record.paths.transcriptJsonl, "utf8");
+      assert.doesNotMatch(transcript, /"method":"turn\/steer"/);
+
+      const kinds = await agentEventKinds(workspaceRoot, task.taskId);
+      assert.ok(!kinds.includes("protocol.message.requested"));
+      assert.ok(!kinds.includes("protocol.message.sent"));
+    } finally {
+      await runCli(
+        workspaceRoot,
+        ["interrupt", task.taskId, "--workspace", workspaceRoot, "--reason", "test cleanup"],
+        10_000,
+        fakeCodex.env,
+      ).catch(() => undefined);
+    }
+  }, "orchestrator-codex-app-server-cli-send-expired-");
 });
 
 test("CLI ps surfaces codex-app-server usage while the protocol turn is active", async () => {
@@ -489,6 +1196,55 @@ function codexAppServerPlan(cwd: string, env: Record<string, string> = {}): Agen
       cwd,
       env,
       model: "fake-model",
+    },
+    {
+      "codex-app-server": runtime,
+    },
+  );
+}
+
+function codexAppServerResumePlan(cwd: string, env: Record<string, string> = {}): AgentLaunchPlan {
+  const runtime: HeadlessAgentRuntimeConfig = {
+    ...CODEX_APP_SERVER_RUNTIME,
+    launch: {
+      ...CODEX_APP_SERVER_RUNTIME.launch,
+      executable: process.execPath,
+      baseArgs: [fakeAppServerPath],
+    },
+  };
+
+  return buildAgentResumeLaunchPlan(
+    {
+      runtime: "codex-app-server",
+      task: "Continue in one sentence.",
+      cwd,
+      env,
+      model: "fake-model",
+      provider: { threadId: "thread-fake-1" },
+    },
+    {
+      "codex-app-server": runtime,
+    },
+  );
+}
+
+function codexAppServerSessionPlan(cwd: string, env: Record<string, string> = {}): AgentLaunchPlan {
+  const runtime: HeadlessAgentRuntimeConfig = {
+    ...CODEX_APP_SERVER_RUNTIME,
+    launch: {
+      ...CODEX_APP_SERVER_RUNTIME.launch,
+      executable: process.execPath,
+      baseArgs: [fakeAppServerPath],
+    },
+  };
+
+  return buildAgentLaunchPlan(
+    {
+      runtime: "codex-app-server",
+      cwd,
+      env,
+      model: "fake-model",
+      session: true,
     },
     {
       "codex-app-server": runtime,

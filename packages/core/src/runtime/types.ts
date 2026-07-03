@@ -28,6 +28,7 @@ export type InterruptStrategy = "process_group" | "stdin" | "api" | "unsupported
 export type CwdPolicy = "workspace" | "worktree" | "any";
 export type IsolationDefault = "shared" | "worktree";
 export type RuntimeExecutionKind = "process" | "protocol";
+export type ProtocolExecutionMode = "turn" | "session";
 
 export type RuntimeCapabilities = {
   supportsStreaming: boolean;
@@ -36,6 +37,9 @@ export type RuntimeCapabilities = {
   supportsStructuredEvents: boolean;
   supportsWorktree: boolean;
   handlesOwnAuth: boolean;
+  supportsPersistentSession?: boolean;
+  supportsSessionTurns?: boolean;
+  supportsSessionGoals?: boolean;
 };
 
 export type RuntimeOutputMode = {
@@ -88,13 +92,14 @@ export type RuntimeRegistry = Readonly<Partial<Record<AgentRuntimeId, HeadlessAg
 
 export type BuildAgentLaunchPlanInput = {
   runtime: AgentRuntimeId;
-  task: string;
+  task?: string;
   cwd: string;
   env?: Readonly<Record<string, string>>;
   model?: string;
   outputMode?: string;
   promptFilePath?: string;
   allowDisabledRuntime?: boolean;
+  session?: boolean;
 };
 
 export type BuildAgentResumeLaunchPlanInput = {
@@ -114,6 +119,7 @@ export type BuildAgentResumeLaunchPlanInput = {
 export type AgentLaunchPlan = {
   runtime: AgentRuntimeId;
   executionKind?: RuntimeExecutionKind;
+  protocolExecutionMode?: ProtocolExecutionMode;
   displayName: string;
   executable: string;
   args: string[];

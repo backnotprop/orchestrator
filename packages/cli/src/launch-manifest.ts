@@ -13,7 +13,8 @@ export type LaunchManifestCliDefaults = {
 
 export type NormalizedLaunchRequest = {
   runtime: string;
-  task: string;
+  task?: string;
+  session?: boolean;
   workspaceRoot: string;
   cwd: string;
   name?: string;

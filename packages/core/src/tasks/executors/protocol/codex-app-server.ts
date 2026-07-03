@@ -1,7 +1,12 @@
 import { captureProcessIdentity } from "../../observation.ts";
 import { readTaskRecord, writeTaskHeartbeat } from "../../store.ts";
 import type { AgentTaskRecord, TaskStatus, TaskUsage } from "../../types.ts";
-import type { TaskExecutionContext, TaskExecutionHandle, TaskExecutor } from "../types.ts";
+import {
+  TaskSendMessageError,
+  type TaskExecutionContext,
+  type TaskExecutionHandle,
+  type TaskExecutor,
+} from "../types.ts";
 import {
   JsonRpcStdioClientError,
   startJsonRpcStdioClient,
@@ -14,6 +19,7 @@ const HEARTBEAT_INTERVAL_MS = 5_000;
 const HEARTBEAT_STALE_AFTER_MS = 20_000;
 const INTERRUPT_REQUEST_TIMEOUT_MS = 1_000;
 const INTERRUPT_SETTLE_TIMEOUT_MS = 2_000;
+const SEND_MESSAGE_TIMEOUT_MS = 5_000;
 const CODEX_APPROVAL_REQUEST_METHODS = new Set([
   "item/commandExecution/requestApproval",
   "item/fileChange/requestApproval",
@@ -43,10 +49,104 @@ export class CodexAppServerTaskExecutor implements TaskExecutor {
       cancelRequested: false,
       timedOut: false,
     };
-    const completed = runCodexAppServerTask(context, state);
+    const completed =
+      context.input.plan.protocolExecutionMode === "session"
+        ? runCodexAppServerSession(context, state)
+        : runCodexAppServerTask(context, state);
 
     return {
       completed,
+      async sendMessage(input) {
+        const text = input.text.trim();
+        if (!text) {
+          throw new TaskSendMessageError("invalid_request", "Message must not be empty.");
+        }
+        const client = state.client;
+        if (!client) {
+          throw new TaskSendMessageError(
+            "not_running",
+            "Codex app-server is not running for this task.",
+          );
+        }
+        if (!state.threadId || !state.turnId) {
+          throw new TaskSendMessageError(
+            "not_ready",
+            "Codex app-server has not started a turn for this task yet.",
+          );
+        }
+
+        await appendAgentEvent(
+          context,
+          "protocol.message.requested",
+          compactData({
+            threadId: state.threadId,
+            turnId: state.turnId,
+            bytes: Buffer.byteLength(text),
+            clientMessageId: input.clientMessageId,
+          }),
+        );
+
+        try {
+          const response = await client.request(
+            "turn/steer",
+            {
+              threadId: state.threadId,
+              expectedTurnId: state.turnId,
+              input: [{ type: "text", text }],
+              ...(input.clientMessageId ? { clientUserMessageId: input.clientMessageId } : {}),
+            },
+            { timeoutMs: input.timeoutMs ?? SEND_MESSAGE_TIMEOUT_MS },
+          );
+          await appendProtocolResponse(context, "turn/steer", response);
+          const responseTurnId = extractTurnId(response);
+          if (!responseTurnId) {
+            throw new TaskSendMessageError(
+              "provider_rejected",
+              "Codex app-server turn/steer response did not include turn.id.",
+            );
+          }
+          if (responseTurnId !== state.turnId) {
+            throw new TaskSendMessageError(
+              "turn_mismatch",
+              `Codex app-server accepted message for turn "${responseTurnId}" while Orchestrator expected "${state.turnId}".`,
+            );
+          }
+
+          await appendAgentEvent(
+            context,
+            "protocol.message.sent",
+            compactData({
+              threadId: state.threadId,
+              turnId: state.turnId,
+              clientMessageId: input.clientMessageId,
+            }),
+          );
+          return {
+            status: "accepted",
+            provider: {
+              provider: "codex",
+              protocol: "jsonrpc",
+              transport: "stdio",
+              threadId: state.threadId,
+              turnId: state.turnId,
+            },
+          };
+        } catch (error: unknown) {
+          await appendAgentEvent(
+            context,
+            "protocol.message.failed",
+            compactData({
+              threadId: state.threadId,
+              turnId: state.turnId,
+              error: errorMessage(error),
+            }),
+          );
+          if (error instanceof TaskSendMessageError) {
+            throw error;
+          }
+          throw new TaskSendMessageError("provider_rejected", errorMessage(error));
+        }
+      },
       async interrupt(reason: string, signal: NodeJS.Signals = "SIGTERM"): Promise<void> {
         state.cancelRequested = true;
         state.cancelReason = reason;
@@ -61,7 +161,16 @@ export class CodexAppServerTaskExecutor implements TaskExecutor {
           signal,
         });
 
-        if (state.threadId && state.turnId) {
+        if (
+          context.input.plan.protocolExecutionMode === "session" &&
+          state.threadId &&
+          !state.turnId
+        ) {
+          await appendInterruptEvent(context, "protocol.interrupt.session_idle", {
+            threadId: state.threadId,
+            signal,
+          });
+        } else if (state.threadId && state.turnId) {
           try {
             await client.request(
               "turn/interrupt",
@@ -92,7 +201,7 @@ export class CodexAppServerTaskExecutor implements TaskExecutor {
               error: errorMessage(error),
             });
           }
-        } else {
+        } else if (context.input.plan.protocolExecutionMode !== "session") {
           await appendInterruptEvent(context, "protocol.interrupt.missing_turn", {
             hasThreadId: Boolean(state.threadId),
             hasTurnId: Boolean(state.turnId),
@@ -237,29 +346,7 @@ async function runCodexAppServerTask(
     await appendProtocolResponse(context, "initialize", initializeResponse);
     await client.notify("initialized");
 
-    const threadResponse = await client.request("thread/start", {
-      cwd: context.input.plan.cwd,
-      ...(context.input.model ? { model: context.input.model } : {}),
-      ephemeral: true,
-    });
-    await appendProtocolResponse(context, "thread/start", threadResponse);
-    const threadId = extractThreadId(threadResponse);
-    if (!threadId) {
-      throw new Error("Codex app-server thread/start response did not include thread.id.");
-    }
-    state.threadId = threadId;
-    await context.updateProvider({
-      provider: "codex",
-      protocol: "jsonrpc",
-      transport: "stdio",
-      threadId,
-    });
-    await context.appendEvent("agent_event", {
-      runtime: context.input.plan.runtime,
-      source: "protocol",
-      kind: "thread.started",
-      threadId,
-    });
+    const threadId = await openCodexThread(context, state, client);
 
     const turnResponse = await client.request("turn/start", {
       threadId,
@@ -329,6 +416,264 @@ async function runCodexAppServerTask(
       await context.appendCombined(close.stderr).catch(() => undefined);
     }
   }
+}
+
+async function runCodexAppServerSession(
+  context: TaskExecutionContext,
+  state: CodexExecutorState,
+): Promise<AgentTaskRecord> {
+  let heartbeat: NodeJS.Timeout | undefined;
+  let timeout: NodeJS.Timeout | undefined;
+  const pendingNotificationWrites = new Set<Promise<void>>();
+  const sessionClosed = deferred<CodexTerminalResult>();
+  let terminalSettled = false;
+
+  const settleSession = (result: CodexTerminalResult): void => {
+    if (terminalSettled) {
+      return;
+    }
+    terminalSettled = true;
+    sessionClosed.resolve(result);
+  };
+  state.terminalSettled = () => terminalSettled;
+
+  const client = startJsonRpcStdioClient({
+    executable: context.input.plan.executable,
+    args: context.input.plan.args,
+    cwd: context.input.plan.cwd,
+    env: context.input.plan.env,
+    requestTimeoutMs: Math.min(context.input.timeoutMs ?? 60_000, 60_000),
+    onServerRequest: async (request) => await handleServerRequest(context, request),
+    onProtocolError: (error) => {
+      void context.appendStderr(`${error.message}\n`).catch(() => undefined);
+      void context
+        .appendTranscript({
+          direction: "protocol_error",
+          error: error.message,
+          code: error.code,
+          ...(error.details !== undefined ? { details: error.details } : {}),
+        })
+        .catch(() => undefined);
+    },
+  });
+  state.client = client;
+
+  const subscription = client.subscribeNotifications({}, (notification) => {
+    const write = handleNotification(context, notification, {
+      setThreadId: (threadId) => {
+        state.threadId = state.threadId ?? threadId;
+      },
+      setTurnId: (turnId) => {
+        state.turnId = state.turnId ?? turnId;
+      },
+      appendDelta: () => {},
+      setFinalAnswer: () => {},
+      setLastUsage: () => {},
+      settleTurn: settleSession,
+    });
+    pendingNotificationWrites.add(write);
+    write.finally(() => pendingNotificationWrites.delete(write));
+    return write;
+  });
+
+  void client.closed.then(async (closed) => {
+    if (!terminalSettled) {
+      const externalStopReason = await readExternalStopReason(context);
+      const wasCancelled = state.cancelRequested || externalStopReason !== undefined;
+      settleSession({
+        status: wasCancelled ? "cancelled" : "failed",
+        exitCode: closed.exitCode,
+        signal: closed.signal,
+        error: wasCancelled
+          ? (state.cancelReason ?? externalStopReason ?? "Interrupted.")
+          : "Codex app-server session exited unexpectedly.",
+      });
+    }
+  });
+
+  try {
+    const startedAt = now();
+    await context.setStatus("running", {
+      startedAt,
+      ...(client.pid ? { pid: client.pid } : {}),
+      session: {
+        kind: "codex-app-server",
+        state: "starting",
+        startedAt,
+        updatedAt: startedAt,
+      },
+    });
+    await context.appendEvent("running", { pid: client.pid ?? null });
+    heartbeat = await startHeartbeat(context, client.pid, startedAt);
+
+    if (context.input.timeoutMs) {
+      timeout = setTimeout(() => {
+        state.timedOut = true;
+        client.kill("SIGTERM");
+        const wasCancelled = state.cancelRequested;
+        settleSession({
+          status: wasCancelled ? "cancelled" : "timed_out",
+          exitCode: null,
+          error: wasCancelled
+            ? (state.cancelReason ?? "Interrupted.")
+            : `Timed out after ${context.input.timeoutMs}ms.`,
+        });
+      }, context.input.timeoutMs);
+      timeout.unref();
+    }
+
+    const initializeResponse = await client.request("initialize", {
+      clientInfo: {
+        name: "orchestrator",
+        title: "Orchestrator",
+        version: "0.0.0",
+      },
+      capabilities: {
+        experimentalApi: true,
+      },
+    });
+    await appendProtocolResponse(context, "initialize", initializeResponse);
+    await client.notify("initialized");
+
+    const threadId = await openCodexThread(context, state, client);
+    await context.updateTask({
+      session: {
+        kind: "codex-app-server",
+        state: "idle",
+        threadId,
+        startedAt,
+        updatedAt: now(),
+      },
+    });
+    await appendAgentEvent(context, "session.idle", compactData({ threadId }));
+
+    const terminal = await sessionClosed.promise;
+    await Promise.all(pendingNotificationWrites);
+
+    const terminalError =
+      terminal.status === "cancelled" ? (state.cancelReason ?? terminal.error) : terminal.error;
+    return await context.markTerminal(
+      terminal.status,
+      {
+        exitCode: terminal.exitCode ?? null,
+        ...(terminalError ? { error: terminalError } : {}),
+        session: {
+          kind: "codex-app-server",
+          state: "closed",
+          threadId,
+          startedAt,
+          updatedAt: now(),
+        },
+      },
+      {
+        ...(terminalError ? { error: terminalError } : {}),
+        ...(terminal.signal ? { signal: terminal.signal } : {}),
+      },
+    );
+  } catch (error) {
+    const status = state.cancelRequested ? "cancelled" : state.timedOut ? "timed_out" : "failed";
+    const message = state.cancelRequested
+      ? (state.cancelReason ?? "Interrupted.")
+      : errorMessage(error);
+    await context.appendStderr(`${message}\n`).catch(() => undefined);
+    return await context.markTerminal(
+      status,
+      {
+        exitCode: null,
+        error: message,
+        session: {
+          kind: "codex-app-server",
+          state: "closed",
+          ...(state.threadId ? { threadId: state.threadId } : {}),
+          startedAt: context.task.startedAt ?? context.task.createdAt,
+          updatedAt: now(),
+        },
+      },
+      { error: message },
+    );
+  } finally {
+    subscription.unsubscribe();
+    if (timeout) {
+      clearTimeout(timeout);
+    }
+    if (heartbeat) {
+      clearInterval(heartbeat);
+    }
+    const close = await client.close().catch((error: unknown) => {
+      void context.appendStderr(`${errorMessage(error)}\n`).catch(() => undefined);
+      return undefined;
+    });
+    if (close?.stderr) {
+      await context.appendStderr(close.stderr).catch(() => undefined);
+      await context.appendCombined(close.stderr).catch(() => undefined);
+    }
+  }
+}
+
+async function openCodexThread(
+  context: TaskExecutionContext,
+  state: CodexExecutorState,
+  client: JsonRpcStdioClient,
+): Promise<string> {
+  if (context.input.plan.resume) {
+    if (context.input.plan.resume.provider !== "codex") {
+      throw new Error(
+        `Codex app-server resume plan used unsupported provider "${context.input.plan.resume.provider}".`,
+      );
+    }
+
+    const resumeThreadId = context.input.plan.resume.threadId?.trim();
+    if (!resumeThreadId) {
+      throw new Error("Codex app-server resume plan did not include provider.threadId.");
+    }
+
+    const threadResponse = await client.request("thread/resume", {
+      threadId: resumeThreadId,
+      cwd: context.input.plan.cwd,
+      ...(context.input.model ? { model: context.input.model } : {}),
+      excludeTurns: true,
+    });
+    await appendProtocolResponse(context, "thread/resume", threadResponse);
+    const threadId = extractThreadId(threadResponse);
+    if (!threadId) {
+      throw new Error("Codex app-server thread/resume response did not include thread.id.");
+    }
+    if (threadId !== resumeThreadId) {
+      throw new Error(
+        `Codex app-server resumed thread "${threadId}" but Orchestrator requested "${resumeThreadId}".`,
+      );
+    }
+
+    state.threadId = threadId;
+    await context.updateProvider({
+      provider: "codex",
+      protocol: "jsonrpc",
+      transport: "stdio",
+      threadId,
+    });
+    await appendAgentEvent(context, "thread.resumed", compactData({ threadId }));
+    return threadId;
+  }
+
+  const threadResponse = await client.request("thread/start", {
+    cwd: context.input.plan.cwd,
+    ...(context.input.model ? { model: context.input.model } : {}),
+    ephemeral: context.input.plan.protocolExecutionMode !== "session",
+  });
+  await appendProtocolResponse(context, "thread/start", threadResponse);
+  const threadId = extractThreadId(threadResponse);
+  if (!threadId) {
+    throw new Error("Codex app-server thread/start response did not include thread.id.");
+  }
+  state.threadId = threadId;
+  await context.updateProvider({
+    provider: "codex",
+    protocol: "jsonrpc",
+    transport: "stdio",
+    threadId,
+  });
+  await appendAgentEvent(context, "thread.started", compactData({ threadId }));
+  return threadId;
 }
 
 async function handleServerRequest(

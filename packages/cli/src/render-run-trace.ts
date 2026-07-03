@@ -80,6 +80,11 @@ function renderToolCall(event: Extract<RunStreamEvent, { kind: "tool.call" }>): 
       const taskId = stringFromUnknown(input?.taskId) ?? "agent";
       return `reading logs for ${shortId(taskId)}\n`;
     }
+    case "send_agent_message": {
+      const taskId = stringFromUnknown(input?.taskId) ?? "agent";
+      const message = summarizeText(stringFromUnknown(input?.message));
+      return `sending message to ${shortId(taskId)}${message ? `: ${message}` : ""}\n`;
+    }
     case "interrupt_agent": {
       const taskId = stringFromUnknown(input?.taskId) ?? "agent";
       return `interrupting ${shortId(taskId)}\n`;
@@ -123,6 +128,8 @@ function renderToolResult(event: Extract<RunStreamEvent, { kind: "tool.result" }
     }
     case "interrupt_agent":
       return "interrupted agent\n";
+    case "send_agent_message":
+      return "sent message\n";
     default:
       return `${toolPastTense(event.toolName)} done\n`;
   }
@@ -167,6 +174,8 @@ function toolPastTense(toolName: string): string {
       return "read logs";
     case "interrupt_agent":
       return "interrupt";
+    case "send_agent_message":
+      return "send message";
     default:
       return toolName;
   }

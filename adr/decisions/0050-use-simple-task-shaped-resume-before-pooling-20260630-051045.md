@@ -6,6 +6,11 @@ Date: 2026-06-30
 
 Accepted
 
+Follow-up: ADR 0052 narrows the `codex-app-server` part of this decision.
+App-server resume can be implemented now by making new app-server threads
+durable, while pooling, steering, goals, and public protocol runtime config
+remain deferred.
+
 ## Context
 
 Recent research covered two related questions:

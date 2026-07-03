@@ -50,6 +50,7 @@ export type LaunchOptions = {
   timeoutMs?: number;
   maxOutputBytes?: number;
   wait: boolean;
+  session: boolean;
   compact: boolean;
   brief: boolean;
   allowDisabledRuntime: boolean;
@@ -118,12 +119,13 @@ function singleLaunchRequest(options: LaunchOptions): NormalizedLaunchRequest {
   if (!options.runtime) {
     throw new CliError("launch requires a runtime.");
   }
-  if (!options.task) {
+  if (!options.task && !options.session) {
     throw new CliError("launch requires task instructions.");
   }
   return {
     runtime: options.runtime,
-    task: options.task,
+    ...(options.task ? { task: options.task } : {}),
+    ...(options.session ? { session: true } : {}),
     workspaceRoot: options.workspaceRoot,
     cwd: resolveLaunchCwd(options.cwd, options.workspaceRoot),
     ...(options.name ? { name: options.name } : {}),
@@ -152,10 +154,13 @@ function buildCliLaunchTaskInput(
   registry: RuntimeRegistry,
 ): LaunchTaskInput {
   const runtime = getRuntimeConfig(request.runtime, registry);
+  const defaultTimeoutMs = request.session ? undefined : runtime?.defaults.timeoutMs;
+  const timeoutMs = request.timeoutMs ?? defaultTimeoutMs;
   const plan = buildAgentLaunchPlan(
     {
       runtime: request.runtime,
-      task: request.task,
+      ...(request.task ? { task: request.task } : {}),
+      ...(request.session ? { session: true } : {}),
       cwd: request.cwd,
       model: request.model,
       outputMode: request.outputMode,
@@ -178,7 +183,7 @@ function buildCliLaunchTaskInput(
     },
     plan,
     ...(request.labels ? { labels: request.labels } : {}),
-    timeoutMs: request.timeoutMs ?? runtime?.defaults.timeoutMs,
+    ...(timeoutMs !== undefined ? { timeoutMs } : {}),
     maxOutputBytes: request.maxOutputBytes ?? runtime?.defaults.maxOutputBytes,
   };
   validateLaunchTaskInput(launchInput);

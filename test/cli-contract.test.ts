@@ -14,6 +14,18 @@ import {
 } from "./cli-support.ts";
 
 const execFileAsync = promisify(execFile);
+const hostCorepackHome =
+  process.env.COREPACK_HOME ??
+  (process.env.HOME ? `${process.env.HOME}/.cache/node/corepack` : undefined);
+
+function isolatedCliEnv(workspaceRoot: string): NodeJS.ProcessEnv {
+  return {
+    ...process.env,
+    ...(hostCorepackHome ? { COREPACK_HOME: hostCorepackHome } : {}),
+    HOME: workspaceRoot,
+    XDG_CONFIG_HOME: `${workspaceRoot}/.config`,
+  };
+}
 
 test("workspace CLI bin invokes the packaged entrypoint", async () => {
   await withTempWorkspace(async (workspaceRoot) => {
@@ -23,11 +35,7 @@ test("workspace CLI bin invokes the packaged entrypoint", async () => {
       {
         cwd: repoRoot,
         timeout: PACKAGE_CLI_TIMEOUT_MS,
-        env: {
-          ...process.env,
-          HOME: workspaceRoot,
-          XDG_CONFIG_HOME: `${workspaceRoot}/.config`,
-        },
+        env: isolatedCliEnv(workspaceRoot),
       },
     );
 
@@ -103,11 +111,7 @@ test("CLI help teaches agents the job-control contract", async () => {
       {
         cwd: repoRoot,
         timeout: PACKAGE_CLI_TIMEOUT_MS,
-        env: {
-          ...process.env,
-          HOME: workspaceRoot,
-          XDG_CONFIG_HOME: `${workspaceRoot}/.config`,
-        },
+        env: isolatedCliEnv(workspaceRoot),
       },
     );
 
@@ -196,11 +200,7 @@ test("CLI JSON help exposes a machine-readable agent contract", async () => {
       {
         cwd: repoRoot,
         timeout: PACKAGE_CLI_TIMEOUT_MS,
-        env: {
-          ...process.env,
-          HOME: workspaceRoot,
-          XDG_CONFIG_HOME: `${workspaceRoot}/.config`,
-        },
+        env: isolatedCliEnv(workspaceRoot),
       },
     );
     const help = JSON.parse(result.stdout.toString()) as {
@@ -599,11 +599,7 @@ test("CLI compact JSON help exposes a small agent command contract", async () =>
       {
         cwd: repoRoot,
         timeout: PACKAGE_CLI_TIMEOUT_MS,
-        env: {
-          ...process.env,
-          HOME: workspaceRoot,
-          XDG_CONFIG_HOME: `${workspaceRoot}/.config`,
-        },
+        env: isolatedCliEnv(workspaceRoot),
       },
     );
     assertOneJsonLine(result.stdout.toString());
@@ -708,11 +704,7 @@ test("CLI compact JSON help exposes a small agent command contract", async () =>
       {
         cwd: "/tmp",
         timeout: PACKAGE_CLI_TIMEOUT_MS,
-        env: {
-          ...process.env,
-          HOME: workspaceRoot,
-          XDG_CONFIG_HOME: `${workspaceRoot}/.config`,
-        },
+        env: isolatedCliEnv(workspaceRoot),
       },
     );
     const fullHelp = JSON.parse(full.stdout) as { runtimes: { id: string }[] };
@@ -912,11 +904,7 @@ test("CLI compact doctor reports small portable runtime readiness", async () => 
       {
         cwd: "/tmp",
         timeout: PACKAGE_CLI_TIMEOUT_MS,
-        env: {
-          ...process.env,
-          HOME: workspaceRoot,
-          XDG_CONFIG_HOME: `${workspaceRoot}/.config`,
-        },
+        env: isolatedCliEnv(workspaceRoot),
       },
     );
     const fullReport = JSON.parse(full.stdout) as { runtimes: { id: string }[] };
@@ -1147,11 +1135,7 @@ test("CLI compact config discovery preserves explicit config and portable follow
       {
         cwd: "/tmp",
         timeout: PACKAGE_CLI_TIMEOUT_MS,
-        env: {
-          ...process.env,
-          HOME: workspaceRoot,
-          XDG_CONFIG_HOME: `${workspaceRoot}/.config`,
-        },
+        env: isolatedCliEnv(workspaceRoot),
       },
     );
     assertOneJsonLine(read.stdout.toString());

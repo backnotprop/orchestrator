@@ -4,6 +4,7 @@ import type {
   TaskEvent,
   TaskPaths,
   TaskProviderMetadata,
+  TaskSendMessageFailureReason,
   TaskStatus,
   TaskUsage,
 } from "../types.ts";
@@ -34,8 +35,30 @@ export type TaskExecutionContext = {
 export type TaskExecutionHandle = {
   completed: Promise<AgentTaskRecord>;
   interrupt(reason: string, signal?: NodeJS.Signals): Promise<void> | void;
+  sendMessage?(input: TaskSendMessageInput): Promise<TaskSendMessageResult>;
 };
 
 export type TaskExecutor = {
   start(context: TaskExecutionContext): TaskExecutionHandle;
 };
+
+export type TaskSendMessageInput = {
+  text: string;
+  clientMessageId?: string;
+  timeoutMs?: number;
+};
+
+export type TaskSendMessageResult = {
+  status: "accepted";
+  provider?: TaskProviderMetadata;
+};
+
+export class TaskSendMessageError extends Error {
+  readonly reason: TaskSendMessageFailureReason;
+
+  constructor(reason: TaskSendMessageFailureReason, message: string) {
+    super(message);
+    this.name = "TaskSendMessageError";
+    this.reason = reason;
+  }
+}

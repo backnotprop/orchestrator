@@ -13,6 +13,7 @@ import { createOrchestratorAgentTools } from "@backnotprop/orchestrator-agent/to
 import type { AgentLaunchPlan } from "@backnotprop/orchestrator-core/runtime";
 import {
   launchTask,
+  interruptTask,
   isTerminalTaskStatus,
   listTasks,
   readTaskEvents,
@@ -260,6 +261,7 @@ test("parent agent tools manage a background Orchestrator task", async () => {
         "read_agent",
         "read_agent_events",
         "read_agent_logs",
+        "send_agent_message",
         "interrupt_agent",
       ],
     );
@@ -723,6 +725,37 @@ test("read_agent includes latest normalized usage when available", async () => {
   });
 });
 
+test("send_agent_message rejects runtimes without running-message support", async () => {
+  await withTempWorkspace(async (workspaceRoot) => {
+    const handle = await launchTask({
+      workspaceRoot,
+      plan: shellPlan("sleep 2", workspaceRoot),
+    });
+    const tools = createOrchestratorAgentTools({ workspaceRoot });
+
+    try {
+      await assert.rejects(
+        executeTool<ToolDetails>(getTool(tools, "send_agent_message"), {
+          taskId: handle.task.taskId.slice(0, 8),
+          message: "Focus on failing tests first.",
+        }),
+        (error: unknown) =>
+          error instanceof Error &&
+          "reason" in error &&
+          error.reason === "unsupported" &&
+          /does not accept messages/.test(error.message),
+      );
+    } finally {
+      await interruptTask({
+        workspaceRoot,
+        taskId: handle.task.taskId,
+        reason: "test cleanup",
+      }).catch(() => undefined);
+      await handle.completed.catch(() => undefined);
+    }
+  });
+});
+
 test("read_agent event fallback keeps final task usage over later session usage", async () => {
   await withTempWorkspace(async (workspaceRoot) => {
     const fixturePath = join(workspaceRoot, "custom-agent.jsonl");
@@ -997,6 +1030,7 @@ test("parent AI session starts with only Orchestrator tools enabled", async () =
         "read_agent",
         "read_agent_events",
         "read_agent_logs",
+        "send_agent_message",
         "interrupt_agent",
       ]);
       assert.ok(created.session.sessionId);
@@ -1048,6 +1082,22 @@ test("launch_agent metadata teaches shell versus model runtime choice", async ()
   });
 });
 
+test("send_agent_message metadata teaches active-task use", async () => {
+  await withTempWorkspace(async (workspaceRoot) => {
+    const sendAgentMessage = getTool(
+      createOrchestratorAgentTools({ workspaceRoot }),
+      "send_agent_message",
+    );
+    const promptGuidelines = sendAgentMessage.promptGuidelines;
+
+    assert.match(sendAgentMessage.description, /follow-up message/);
+    assert.ok(promptGuidelines);
+    assert.ok(promptGuidelines.some((guideline) => guideline.includes("active tasks")));
+    assert.ok(promptGuidelines.some((guideline) => guideline.includes("read_agent for results")));
+    assert.ok(promptGuidelines.some((guideline) => guideline.includes("already finished")));
+  });
+});
+
 test("parent AI session ignores unsafe Pi tool overrides", async () => {
   await withTempWorkspace(async (workspaceRoot) => {
     const created = await createOrchestratorParentSession({
@@ -1068,6 +1118,7 @@ test("parent AI session ignores unsafe Pi tool overrides", async () => {
         "read_agent",
         "read_agent_events",
         "read_agent_logs",
+        "send_agent_message",
         "interrupt_agent",
       ]);
       assert.equal(created.session.getToolDefinition("bash"), undefined);

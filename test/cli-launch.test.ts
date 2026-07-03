@@ -226,6 +226,28 @@ test("CLI launch --json --compact returns a small agent control summary", async 
       assert.match(parsed.error.hint ?? "", /launch --json --compact --brief/);
     }
 
+    try {
+      await runCli(workspaceRoot, [
+        "launch",
+        "codex-app-server",
+        "--workspace",
+        workspaceRoot,
+        "--session",
+        "--wait",
+        "--json",
+      ]);
+      assert.fail("Expected launch --session --wait to fail.");
+    } catch (error) {
+      const stderr = error instanceof Error && "stderr" in error ? String(error.stderr) : "";
+      const parsed = JSON.parse(stderr) as {
+        error: { message: string; reason?: string; input?: string; hint?: string };
+      };
+      assert.match(parsed.error.message, /launch --session does not support --wait/);
+      assert.equal(parsed.error.reason, "incompatible_options");
+      assert.equal(parsed.error.input, "--wait");
+      assert.match(parsed.error.hint ?? "", /Start the session in the background/);
+    }
+
     const launch = await runCli(workspaceRoot, [
       "launch",
       "shell",

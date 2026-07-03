@@ -2,10 +2,21 @@ import { randomUUID } from "node:crypto";
 import { appendFile, readFile, stat, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import type { AgentLaunchPlan } from "../runtime/index.ts";
+import {
+  requestDetachedTaskMessage,
+  startTaskControlLoop,
+  TaskControlRequestError,
+  type TaskControlResponse,
+  type TaskControlLoop,
+} from "./control.ts";
 import { observeTaskState } from "./observation.ts";
 import { CodexAppServerTaskExecutor } from "./executors/protocol/codex-app-server.ts";
 import { killPidGroup, ProcessTaskExecutor } from "./executors/process.ts";
-import type { TaskExecutionHandle, TaskExecutor } from "./executors/types.ts";
+import {
+  TaskSendMessageError,
+  type TaskExecutionHandle,
+  type TaskExecutor,
+} from "./executors/types.ts";
 import { isTerminalTaskStatus } from "./types.ts";
 import { selectTaskUsage } from "./usage.ts";
 import type {
@@ -16,9 +27,12 @@ import type {
   LaunchTaskHandle,
   LaunchTaskInput,
   ReadTaskOutputInput,
+  SendTaskMessageInput,
+  SendTaskMessageResult,
   TaskObservedState,
   TaskEvent,
   TaskProviderMetadata,
+  TaskSendMessageFailureReason,
   TaskStoreOptions,
   TaskStatus,
   TaskUsage,
@@ -46,6 +60,7 @@ import {
 type RunningTask = {
   handle: TaskExecutionHandle;
   appendEvent: (type: TaskEvent["type"], data?: Record<string, unknown>) => Promise<TaskEvent>;
+  controlLoop: TaskControlLoop;
 };
 
 const runningTasks = new Map<string, RunningTask>();
@@ -279,12 +294,22 @@ export async function launchTask(input: LaunchTaskInput): Promise<LaunchTaskHand
     writeResult,
     markTerminal,
   });
+  const controlLoop = input.plan.canSteerRunning
+    ? startTaskControlLoop({
+        taskId,
+        paths,
+        handle: execution,
+        appendEvent,
+      })
+    : { stop() {} };
   const completed = execution.completed.finally(() => {
+    controlLoop.stop();
     runningTasks.delete(taskId);
   });
   runningTasks.set(taskId, {
     handle: execution,
     appendEvent,
+    controlLoop,
   });
 
   return {
@@ -297,6 +322,163 @@ export async function readTaskOutput(input: ReadTaskOutputInput): Promise<string
   const task = await readTaskRecord(input, input.taskId);
   const maxBytes = input.maxBytes ?? 200_000;
   return readTail(task.paths.resultMd, maxBytes);
+}
+
+export async function sendTaskMessage(input: SendTaskMessageInput): Promise<SendTaskMessageResult> {
+  const text = input.text.trim();
+  if (!text) {
+    throw new TaskSupervisorSafetyError("send requires a non-empty message.", {
+      reason: "invalid_request",
+      input: input.taskId,
+      hint: "Pass the message as the final quoted argument.",
+    });
+  }
+
+  const taskId = await resolveTaskId(input, input.taskId);
+  const task = await readTaskRecord(input, taskId);
+  if (isTerminalTaskStatus(task.status)) {
+    throw new TaskSupervisorSafetyError(`Task "${shortId(task.taskId)}" has already finished.`, {
+      reason: "not_running",
+      input: task.taskId,
+      hint: `Use orchestrator resume ${shortId(task.taskId)} "message" when the runtime supports resume, or launch a new task.`,
+    });
+  }
+  if (!task.launchPlan.canSteerRunning) {
+    throw new TaskSupervisorSafetyError(
+      `Task "${shortId(task.taskId)}" uses runtime "${task.runtime}", which does not accept messages while running.`,
+      {
+        reason: "unsupported",
+        input: task.taskId,
+        hint: "Use read, logs, events, interrupt, resume, or launch a new task instead.",
+      },
+    );
+  }
+
+  const observation = await observeTaskState(input, task);
+  if (!observation.actionable) {
+    throw new TaskSupervisorSafetyError(
+      `Task "${shortId(task.taskId)}" is ${observation.state}; Orchestrator cannot send it a message safely.`,
+      {
+        reason: sendFailureReasonForObservedState(observation.state),
+        input: task.taskId,
+        hint: "Use read, logs, and events to inspect the task before retrying.",
+      },
+    );
+  }
+
+  const running = runningTasks.get(task.taskId);
+  const result = running
+    ? await sendMessageToRunningHandle(task, running.handle, {
+        text,
+        ...(input.clientMessageId ? { clientMessageId: input.clientMessageId } : {}),
+        ...(input.timeoutMs !== undefined ? { timeoutMs: input.timeoutMs } : {}),
+      })
+    : await requestDetachedTaskMessage({
+        paths: task.paths,
+        taskId: task.taskId,
+        text,
+        ...(input.clientMessageId ? { clientMessageId: input.clientMessageId } : {}),
+        ...(input.timeoutMs !== undefined ? { timeoutMs: input.timeoutMs } : {}),
+      });
+
+  if (result.status === "failed") {
+    throw new TaskControlRequestError(
+      result.error?.reason ?? "provider_rejected",
+      result.error?.message ?? "Task rejected the message.",
+      {
+        input: task.taskId,
+        hint: hintForSendFailure(result.error?.reason ?? "provider_rejected", task.taskId),
+      },
+    );
+  }
+
+  return {
+    task: await readTaskRecord(input, task.taskId),
+    status: "accepted",
+    ...(result.provider ? { provider: result.provider } : {}),
+  };
+}
+
+async function sendMessageToRunningHandle(
+  task: AgentTaskRecord,
+  handle: TaskExecutionHandle,
+  input: { text: string; clientMessageId?: string; timeoutMs?: number },
+): Promise<TaskControlResponse> {
+  if (!handle.sendMessage) {
+    return sendMessageFailedResponse(task, {
+      reason: "unsupported",
+      message: "This task runtime does not accept messages while running.",
+    });
+  }
+
+  try {
+    const result = await handle.sendMessage(input);
+    return {
+      schemaVersion: 1,
+      requestId: "in-process",
+      taskId: task.taskId,
+      kind: "send_message",
+      status: "accepted",
+      createdAt: now(),
+      completedAt: now(),
+      ...(result.provider ? { provider: result.provider } : {}),
+    };
+  } catch (error: unknown) {
+    return sendMessageFailedResponse(task, {
+      reason: error instanceof TaskSendMessageError ? error.reason : "provider_rejected",
+      message: formatError(error),
+    });
+  }
+}
+
+function sendMessageFailedResponse(
+  task: AgentTaskRecord,
+  error: { reason: TaskSendMessageFailureReason; message: string },
+): TaskControlResponse {
+  return {
+    schemaVersion: 1,
+    requestId: "in-process",
+    taskId: task.taskId,
+    kind: "send_message",
+    status: "failed",
+    createdAt: now(),
+    completedAt: now(),
+    error,
+  };
+}
+
+function sendFailureReasonForObservedState(state: TaskObservedState): TaskSendMessageFailureReason {
+  switch (state) {
+    case "stale":
+    case "orphaned":
+    case "lost":
+      return state;
+    default:
+      return "not_running";
+  }
+}
+
+function hintForSendFailure(reason: TaskSendMessageFailureReason, taskId: string): string {
+  switch (reason) {
+    case "not_running":
+      return `Use orchestrator resume ${shortId(taskId)} "message" when the runtime supports resume, or launch a new task.`;
+    case "not_ready":
+      return "Wait for the task to start its provider turn, then retry.";
+    case "unsupported":
+      return "Use read, logs, events, interrupt, resume, or launch a new task instead.";
+    case "timeout":
+      return "Use events, logs, or ps to inspect the running task, then retry if it is still active.";
+    case "stale":
+    case "orphaned":
+    case "lost":
+      return "Use read, logs, and events to inspect the task before retrying.";
+    case "turn_mismatch":
+      return "Use events and logs to inspect the provider turn before retrying.";
+    case "invalid_request":
+      return "Pass a non-empty message as the final quoted argument.";
+    case "provider_rejected":
+      return "Use events and logs to inspect why the provider rejected the message.";
+  }
 }
 
 export async function interruptTask(input: InterruptTaskInput): Promise<AgentTaskRecord> {

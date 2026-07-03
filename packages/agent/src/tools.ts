@@ -18,6 +18,7 @@ import {
   readTaskRecord,
   resolveTaskId,
   selectTaskUsage,
+  sendTaskMessage,
   taskDisplayState,
   waitForTask,
   usageWithUpdatedAt,
@@ -29,6 +30,7 @@ import {
   type TaskEvent,
   type TaskDisplayState,
   type TaskObservation,
+  type TaskProviderMetadata,
   type TaskUsage,
   type TaskStatus,
   type WaitForTaskProgress,
@@ -156,6 +158,12 @@ type InterruptAgentDetails = {
   failed?: Array<{ taskId: string; error: string }>;
 };
 
+type SendAgentMessageDetails = {
+  task: TaskSummary;
+  status: "accepted";
+  provider?: TaskProviderMetadata;
+};
+
 const StatusSchema = Type.Union([
   Type.Literal("queued"),
   Type.Literal("starting"),
@@ -183,6 +191,7 @@ export function createOrchestratorAgentTools(
     createReadAgentTool(toolContext),
     createReadAgentEventsTool(toolContext),
     createReadAgentLogsTool(toolContext),
+    createSendAgentMessageTool(toolContext),
     createInterruptAgentTool(toolContext),
   ];
 
@@ -478,6 +487,42 @@ function createReadAgentLogsTool(context: ToolContext): OrchestratorParentTool {
       });
 
       return jsonResult<ReadAgentLogsDetails>(logs);
+    },
+  });
+}
+
+function createSendAgentMessageTool(context: ToolContext): OrchestratorParentTool {
+  return defineTool({
+    name: "send_agent_message",
+    label: "Send agent message",
+    description: "Send a follow-up message to a running Orchestrator agent task.",
+    promptSnippet:
+      "send_agent_message sends a follow-up instruction to a running task when its runtime supports it.",
+    promptGuidelines: [
+      "Use send_agent_message only for active tasks that should receive a new instruction while they are still running.",
+      "Use read_agent for results.",
+      "Use launch_agent or resume from the CLI when the task has already finished.",
+      "If send_agent_message returns not_ready, wait briefly or inspect events before retrying.",
+    ],
+    parameters: Type.Object({
+      taskId: Type.String(),
+      message: Type.String(),
+      timeoutMs: Type.Optional(Type.Number()),
+    }),
+    executionMode: "sequential",
+    async execute(_toolCallId, params) {
+      const result = await sendTaskMessage({
+        ...storeOptions(context),
+        taskId: params.taskId,
+        text: params.message,
+        ...(params.timeoutMs !== undefined ? { timeoutMs: params.timeoutMs } : {}),
+      });
+
+      return jsonResult<SendAgentMessageDetails>({
+        task: await summarizeStoredTask(context, result.task),
+        status: result.status,
+        ...(result.provider ? { provider: result.provider } : {}),
+      });
     },
   });
 }

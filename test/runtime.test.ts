@@ -144,8 +144,56 @@ test("codex-app-server plan uses protocol execution without putting prompt in ar
     pathHint: "transcript.jsonl",
   });
   assert.equal(plan.interrupt, "api");
+  assert.equal(plan.protocolExecutionMode, "turn");
   assert.equal(plan.taskForProtocol, sampleTask);
   assert.equal(plan.taskForSdkOrHttp, undefined);
+});
+
+test("codex-app-server session plan starts protocol without task text", () => {
+  const plan = buildAgentLaunchPlan({
+    runtime: "codex-app-server",
+    cwd: sampleCwd,
+    session: true,
+  });
+
+  assert.equal(plan.executionKind, "protocol");
+  assert.equal(plan.protocolExecutionMode, "session");
+  assert.deepEqual(plan.args, ["app-server", "--listen", "stdio://"]);
+  assert.equal(plan.taskForProtocol, undefined);
+  assert.equal(plan.taskForSdkOrHttp, undefined);
+});
+
+test("session launch is only supported for taskless persistent protocol runtimes", () => {
+  assert.throws(
+    () =>
+      buildAgentLaunchPlan({
+        runtime: "codex-app-server",
+        task: sampleTask,
+        cwd: sampleCwd,
+        session: true,
+      }),
+    (error: unknown) =>
+      error instanceof LaunchPlanError && error.reason === "unsupported_session_task",
+  );
+
+  assert.throws(
+    () =>
+      buildAgentLaunchPlan({
+        runtime: "codex",
+        cwd: sampleCwd,
+        session: true,
+      }),
+    (error: unknown) => error instanceof LaunchPlanError && error.reason === "unsupported_session",
+  );
+
+  assert.throws(
+    () =>
+      buildAgentLaunchPlan({
+        runtime: "codex-app-server",
+        cwd: sampleCwd,
+      }),
+    /Task instructions must not be empty/,
+  );
 });
 
 test("model hints are mapped by runtime config when supported", () => {
@@ -693,6 +741,19 @@ test("resume launch plans use explicit provider handles", () => {
     "continue codex",
   ]);
   assert.deepEqual(codex.resume, { provider: "codex", threadId: "thread-123" });
+  assert.equal(codex.taskForProtocol, undefined);
+
+  const codexAppServer = buildAgentResumeLaunchPlan({
+    runtime: "codex-app-server",
+    task: "continue codex app-server",
+    cwd: sampleCwd,
+    model: "gpt-5.4-mini",
+    provider: { threadId: "thread-123" },
+  });
+  assert.equal(codexAppServer.executionKind, "protocol");
+  assert.deepEqual(codexAppServer.args, ["app-server", "--listen", "stdio://"]);
+  assert.deepEqual(codexAppServer.resume, { provider: "codex", threadId: "thread-123" });
+  assert.equal(codexAppServer.taskForProtocol, "continue codex app-server");
 
   const claude = buildAgentResumeLaunchPlan({
     runtime: "claude-code",
@@ -713,6 +774,7 @@ test("resume launch plans use explicit provider handles", () => {
     "continue claude",
   ]);
   assert.deepEqual(claude.resume, { provider: "claude-code", sessionId: "session-123" });
+  assert.equal(claude.taskForProtocol, undefined);
 });
 
 test("resume launch plans reject unsupported runtimes and missing provider handles", () => {
@@ -731,6 +793,18 @@ test("resume launch plans reject unsupported runtimes and missing provider handl
     () =>
       buildAgentResumeLaunchPlan({
         runtime: "codex",
+        task: sampleTask,
+        cwd: sampleCwd,
+        provider: {},
+      }),
+    (error: unknown) =>
+      error instanceof LaunchPlanError && error.reason === "missing_resume_provider_id",
+  );
+
+  assert.throws(
+    () =>
+      buildAgentResumeLaunchPlan({
+        runtime: "codex-app-server",
         task: sampleTask,
         cwd: sampleCwd,
         provider: {},

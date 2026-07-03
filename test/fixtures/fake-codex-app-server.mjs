@@ -2,9 +2,10 @@ import readline from "node:readline";
 
 const mode = process.env.FAKE_CODEX_APP_SERVER_MODE ?? "success";
 const rl = readline.createInterface({ input: process.stdin });
-let threadId = "thread-fake-1";
-let turnId = "turn-fake-1";
+let threadId = process.env.FAKE_CODEX_APP_SERVER_THREAD_ID ?? "thread-fake-1";
+let turnId;
 let approvalSent = false;
+let resumeRequested = false;
 
 process.on("SIGTERM", () => {
   process.stderr.write("fake codex app-server got sigterm\n");
@@ -150,21 +151,51 @@ rl.on("line", (line) => {
       break;
     case "initialized":
       break;
-    case "thread/start":
+    case "thread/start": {
+      const ephemeral = message.params?.ephemeral === true;
       respond(message.id, {
         thread: {
           id: threadId,
           cwd: message.params?.cwd,
+          path: `/tmp/fake-codex/${threadId}`,
+          status: "idle",
+          ephemeral,
         },
       });
       notify("thread/started", { threadId });
+      break;
+    }
+    case "thread/read":
+      respond(message.id, {
+        thread: {
+          id: threadId,
+          cwd: message.params?.cwd,
+          path: `/tmp/fake-codex/${threadId}`,
+          status: turnId ? "busy" : "idle",
+          ephemeral: false,
+        },
+      });
+      break;
+    case "thread/resume":
+      resumeRequested = true;
+      threadId = message.params?.threadId ?? threadId;
+      respond(message.id, {
+        thread: {
+          id: threadId,
+          cwd: message.params?.cwd,
+          path: `/tmp/fake-codex/${threadId}`,
+          status: "idle",
+          ephemeral: false,
+        },
+      });
+      notify("thread/resumed", { threadId });
       break;
     case "turn/start":
       if (mode === "slow-turn-start") {
         // Leave the turn/start request pending so tests can interrupt before a turn id exists.
         break;
       }
-      turnId = "turn-fake-1";
+      turnId = resumeRequested ? "turn-fake-resumed-1" : "turn-fake-1";
       respond(message.id, {
         turn: {
           id: turnId,
@@ -190,6 +221,8 @@ rl.on("line", (line) => {
         finishEmpty();
       } else if (mode === "hang") {
         // Wait for turn/interrupt.
+      } else if (mode === "steer-delay" || mode === "steer-turn-mismatch") {
+        // Wait for turn/steer or turn/interrupt.
       } else if (mode === "usage-hang") {
         sendTokenUsage();
         // Keep the turn active so ps --watch can observe live usage.
@@ -211,6 +244,34 @@ rl.on("line", (line) => {
       }
       respond(message.id, { ok: true });
       finishInterrupted();
+      break;
+    case "turn/steer":
+      if (!turnId) {
+        respondError(message.id, "no active turn");
+        break;
+      }
+      if (mode === "steer-delay") {
+        break;
+      }
+      if (mode === "steer-turn-mismatch") {
+        respond(message.id, {
+          turn: {
+            id: "turn-fake-other",
+            status: "inProgress",
+          },
+        });
+        break;
+      }
+      if (message.params?.expectedTurnId !== turnId) {
+        respondError(message.id, "expected turn id mismatch");
+        break;
+      }
+      respond(message.id, {
+        turn: {
+          id: turnId,
+          status: "inProgress",
+        },
+      });
       break;
     default:
       respondError(message.id, `unknown method ${message.method}`);

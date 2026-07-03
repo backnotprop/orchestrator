@@ -21,6 +21,7 @@ export function parseLaunchOptions(args: readonly string[]): LaunchOptions {
   let timeoutMs: number | undefined;
   let maxOutputBytes: number | undefined;
   let wait = false;
+  let session = false;
   let compact = false;
   let brief = false;
   let allowDisabledRuntime = false;
@@ -69,6 +70,9 @@ export function parseLaunchOptions(args: readonly string[]): LaunchOptions {
       case "--wait":
         wait = true;
         break;
+      case "--session":
+        session = true;
+        break;
       case "--compact":
         compact = true;
         break;
@@ -103,6 +107,20 @@ export function parseLaunchOptions(args: readonly string[]): LaunchOptions {
       hint: "Use the returned commands.waitPreview.args to wait for the launched tasks.",
     });
   }
+  if (session && wait) {
+    throw new CliError("launch --session does not support --wait.", {
+      reason: "incompatible_options",
+      input: "--wait",
+      hint: "Start the session in the background, then use ps, events, or interrupt.",
+    });
+  }
+  if (file && session) {
+    throw new CliError("launch -f does not support --session yet.", {
+      reason: "incompatible_options",
+      input: "--session",
+      hint: "Start persistent sessions one at a time with launch <runtime> --session.",
+    });
+  }
   if (file && name) {
     throw new CliError("launch -f does not support --name.", {
       reason: "incompatible_options",
@@ -123,8 +141,15 @@ export function parseLaunchOptions(args: readonly string[]): LaunchOptions {
   }
 
   const task = taskParts.join(" ").trim();
-  if (!file && !task) {
+  if (!file && !task && !session) {
     throw new CliError("launch requires task instructions.");
+  }
+  if (!file && task && session) {
+    throw new CliError("launch --session does not accept task instructions yet.", {
+      reason: "incompatible_options",
+      input: "--session",
+      hint: "Start the session first, then send work with orchestrator send.",
+    });
   }
   requireJsonForCompact("launch", compact, common.json);
   if (brief && !compact) {
@@ -147,6 +172,7 @@ export function parseLaunchOptions(args: readonly string[]): LaunchOptions {
     ...(timeoutMs ? { timeoutMs } : {}),
     ...(maxOutputBytes ? { maxOutputBytes } : {}),
     wait,
+    session,
     compact,
     brief,
     allowDisabledRuntime,

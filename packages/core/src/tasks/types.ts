@@ -61,6 +61,53 @@ export type TaskProviderMetadata = {
   connectionId?: string;
 };
 
+export type TaskSessionState =
+  | "starting"
+  | "idle"
+  | "turn_running"
+  | "goal_running"
+  | "stopping"
+  | "closed";
+
+export type TaskSession = {
+  kind: "codex-app-server" | (string & {});
+  state: TaskSessionState;
+  threadId?: string;
+  currentTurnId?: string;
+  currentOperationId?: string;
+  startedAt: string;
+  updatedAt: string;
+};
+
+export type TaskOperationKind = "turn" | "goal";
+export type TaskOperationStatus =
+  | "starting"
+  | "running"
+  | "succeeded"
+  | "failed"
+  | "interrupted"
+  | "paused"
+  | "blocked"
+  | "usage_limited"
+  | "budget_limited"
+  | "complete";
+
+export type TaskOperation = {
+  operationId: string;
+  kind: TaskOperationKind;
+  status: TaskOperationStatus;
+  threadId?: string;
+  turnId?: string;
+  goalId?: string;
+  objective?: string;
+  input?: string;
+  result?: string;
+  usage?: TaskUsage;
+  startedAt: string;
+  finishedAt?: string;
+  error?: string;
+};
+
 export type TaskUsage = {
   inputTokens?: number;
   outputTokens?: number;
@@ -150,6 +197,9 @@ export type AgentTaskRecord = {
   parent?: TaskParent;
   resume?: TaskResumeMetadata;
   provider?: TaskProviderMetadata;
+  session?: TaskSession;
+  currentOperation?: TaskOperation;
+  lastOperation?: TaskOperation;
   storeScope?: TaskStoreScope;
   location?: TaskLocation;
   labels?: Record<string, string>;
@@ -340,4 +390,29 @@ export type InterruptTasksResult = {
   interrupted: AgentTaskRecord[];
   skipped: InterruptTasksSkipped[];
   failed: InterruptTasksFailed[];
+};
+
+export type TaskSendMessageFailureReason =
+  | "unsupported"
+  | "not_running"
+  | "not_ready"
+  | "provider_rejected"
+  | "turn_mismatch"
+  | "invalid_request"
+  | "timeout"
+  | "stale"
+  | "orphaned"
+  | "lost";
+
+export type SendTaskMessageInput = TaskStoreOptions & {
+  taskId: string;
+  text: string;
+  timeoutMs?: number;
+  clientMessageId?: string;
+};
+
+export type SendTaskMessageResult = {
+  task: AgentTaskRecord;
+  status: "accepted";
+  provider?: TaskProviderMetadata;
 };

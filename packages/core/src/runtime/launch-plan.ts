@@ -5,6 +5,7 @@ import type {
   BuildAgentResumeLaunchPlanInput,
   HeadlessAgentRuntimeConfig,
   OutputTransport,
+  ProtocolExecutionMode,
   RuntimeRegistry,
 } from "./types.ts";
 
@@ -26,9 +27,11 @@ export function buildAgentLaunchPlan(
   input: BuildAgentLaunchPlanInput,
   registry: RuntimeRegistry = BUILT_IN_AGENT_RUNTIMES,
 ): AgentLaunchPlan {
-  validateLaunchInput(input);
-
   const runtime = getRuntimeOrThrow(input.runtime, registry);
+  const executionKind = runtime.executionKind ?? "process";
+  const protocolExecutionMode: ProtocolExecutionMode | undefined =
+    executionKind === "protocol" ? (input.session ? "session" : "turn") : undefined;
+  validateLaunchInput(input, runtime, protocolExecutionMode);
 
   if (!runtime.enabled && !input.allowDisabledRuntime) {
     throw new LaunchPlanError(
@@ -53,32 +56,33 @@ export function buildAgentLaunchPlan(
       ? applyArgTemplate({
           template: argsBeforeTask,
           runtime,
-          task: input.task,
+          task: taskText(input),
           model: input.model,
         })
       : applyTaskTransport({
           argsBeforeTask,
           runtime,
-          task: input.task,
+          task: taskText(input),
           promptFilePath: input.promptFilePath,
         });
 
   const stdin =
     runtime.launch.prompt.kind === "stdin"
-      ? { input: input.task, closeAfterWrite: runtime.launch.prompt.closeAfterWrite }
+      ? { input: taskText(input), closeAfterWrite: runtime.launch.prompt.closeAfterWrite }
       : undefined;
 
-  const executionKind = runtime.executionKind ?? "process";
   const taskForSdkOrHttp =
     executionKind !== "protocol" &&
     (runtime.launch.prompt.kind === "sdk" || runtime.launch.prompt.kind === "http")
-      ? input.task
+      ? taskText(input)
       : undefined;
-  const taskForProtocol = executionKind === "protocol" ? input.task : undefined;
+  const taskForProtocol =
+    executionKind === "protocol" && protocolExecutionMode === "turn" ? taskText(input) : undefined;
 
   return {
     runtime: runtime.id,
     executionKind,
+    ...(protocolExecutionMode ? { protocolExecutionMode } : {}),
     displayName: runtime.displayName,
     executable: runtime.launch.executable,
     args,
@@ -107,7 +111,7 @@ export function buildAgentResumeLaunchPlan(
   input: BuildAgentResumeLaunchPlanInput,
   registry: RuntimeRegistry = BUILT_IN_AGENT_RUNTIMES,
 ): AgentLaunchPlan {
-  validateLaunchInput(input);
+  validateResumeLaunchInput(input);
 
   const runtime = getRuntimeOrThrow(input.runtime, registry);
 
@@ -133,18 +137,63 @@ export function buildAgentResumeLaunchPlan(
   switch (runtime.id) {
     case "codex":
       return buildCodexResumePlan(input, runtime);
+    case "codex-app-server":
+      return buildCodexAppServerResumePlan(input, runtime);
     case "claude-code":
       return buildClaudeCodeResumePlan(input, runtime);
     default:
       throw new LaunchPlanError(`Runtime "${input.runtime}" does not support provider resume.`, {
         reason: "unsupported_resume",
         input: input.runtime,
-        hint: "This release supports provider resume for codex and claude-code only.",
+        hint: "This release supports provider resume for codex, codex-app-server, and claude-code only.",
       });
   }
 }
 
-function validateLaunchInput(input: BuildAgentLaunchPlanInput): void {
+function validateLaunchInput(
+  input: BuildAgentLaunchPlanInput,
+  runtime: HeadlessAgentRuntimeConfig,
+  protocolExecutionMode: ProtocolExecutionMode | undefined,
+): void {
+  if (input.cwd.trim().length === 0) {
+    throw new LaunchPlanError("cwd must not be empty.");
+  }
+
+  if (input.session && protocolExecutionMode !== "session") {
+    throw new LaunchPlanError(`Runtime "${input.runtime}" does not support persistent sessions.`, {
+      reason: "unsupported_session",
+      input: input.runtime,
+      hint: "Use --session only with a protocol runtime that supports persistent sessions.",
+    });
+  }
+
+  if (protocolExecutionMode === "session") {
+    if (runtime.executionKind !== "protocol" || !runtime.capabilities.supportsPersistentSession) {
+      throw new LaunchPlanError(
+        `Runtime "${input.runtime}" does not support persistent sessions.`,
+        {
+          reason: "unsupported_session",
+          input: input.runtime,
+          hint: "Use --session only with a protocol runtime that supports persistent sessions.",
+        },
+      );
+    }
+    if (taskText(input).trim().length > 0) {
+      throw new LaunchPlanError("Session launch does not accept task instructions yet.", {
+        reason: "unsupported_session_task",
+        input: input.runtime,
+        hint: "Start the session first, then send work with orchestrator send.",
+      });
+    }
+    return;
+  }
+
+  if (taskText(input).trim().length === 0) {
+    throw new LaunchPlanError("Task instructions must not be empty.");
+  }
+}
+
+function validateResumeLaunchInput(input: BuildAgentResumeLaunchPlanInput): void {
   if (input.task.trim().length === 0) {
     throw new LaunchPlanError("Task instructions must not be empty.");
   }
@@ -152,6 +201,10 @@ function validateLaunchInput(input: BuildAgentLaunchPlanInput): void {
   if (input.cwd.trim().length === 0) {
     throw new LaunchPlanError("cwd must not be empty.");
   }
+}
+
+function taskText(input: Pick<BuildAgentLaunchPlanInput, "task">): string {
+  return input.task ?? "";
 }
 
 function buildCodexResumePlan(
@@ -180,6 +233,32 @@ function buildCodexResumePlan(
       threadId,
       input.task,
     ],
+    resume: {
+      provider: "codex",
+      threadId,
+    },
+  });
+}
+
+function buildCodexAppServerResumePlan(
+  input: BuildAgentResumeLaunchPlanInput,
+  runtime: HeadlessAgentRuntimeConfig,
+): AgentLaunchPlan {
+  const threadId = input.provider.threadId?.trim();
+  if (!threadId) {
+    throw new LaunchPlanError(`Runtime "${runtime.id}" resume requires provider.threadId.`, {
+      reason: "missing_resume_provider_id",
+      input: runtime.id,
+      hint: "Resume a Codex app-server task only after its task record has provider.threadId from thread.started.",
+    });
+  }
+
+  const outputMode = resolveOutputMode(runtime, input.outputMode);
+  return baseResumePlan({
+    input,
+    runtime,
+    outputMode,
+    args: [...runtime.launch.baseArgs, ...modelArgs(runtime, input.model), ...outputMode.extraArgs],
     resume: {
       provider: "codex",
       threadId,
@@ -227,9 +306,20 @@ function baseResumePlan(args: {
   args: string[];
   resume: NonNullable<AgentLaunchPlan["resume"]>;
 }): AgentLaunchPlan {
+  const executionKind = args.runtime.executionKind ?? "process";
+  const protocolExecutionMode: ProtocolExecutionMode | undefined =
+    executionKind === "protocol" ? "turn" : undefined;
+  const taskForSdkOrHttp =
+    executionKind !== "protocol" &&
+    (args.runtime.launch.prompt.kind === "sdk" || args.runtime.launch.prompt.kind === "http")
+      ? args.input.task
+      : undefined;
+  const taskForProtocol = executionKind === "protocol" ? args.input.task : undefined;
+
   return {
     runtime: args.runtime.id,
-    executionKind: args.runtime.executionKind ?? "process",
+    executionKind,
+    ...(protocolExecutionMode ? { protocolExecutionMode } : {}),
     displayName: args.runtime.displayName,
     executable: args.runtime.launch.executable,
     args: args.args,
@@ -249,6 +339,8 @@ function baseResumePlan(args: {
       acceptsShellCommand: args.runtime.safety?.acceptsShellCommand ?? false,
     },
     resume: args.resume,
+    ...(taskForSdkOrHttp ? { taskForSdkOrHttp } : {}),
+    ...(taskForProtocol ? { taskForProtocol } : {}),
   };
 }
 

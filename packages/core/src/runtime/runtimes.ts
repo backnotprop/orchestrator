@@ -126,19 +126,22 @@ export const CODEX_APP_SERVER_RUNTIME = {
     cwdPolicy: "workspace",
   },
   resume: {
-    supported: false,
+    supported: true,
   },
   control: {
     interrupt: "api",
-    steerRunning: false,
+    steerRunning: true,
   },
   capabilities: {
     supportsStreaming: true,
-    supportsRunningSteer: false,
-    supportsResume: false,
+    supportsRunningSteer: true,
+    supportsResume: true,
     supportsStructuredEvents: true,
     supportsWorktree: true,
     handlesOwnAuth: true,
+    supportsPersistentSession: true,
+    supportsSessionTurns: true,
+    supportsSessionGoals: true,
   },
   defaults: {
     timeoutMs: 900_000,

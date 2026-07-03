@@ -226,10 +226,11 @@ The CLI package is `@backnotprop/orchestrator-cli`. The reusable runtime package
 - `help --json --compact`: get the small command contract for agents/scripts; use `help --json` when you need the full contract
 - `run`: start the parent AI agent; add `--background` to manage it like a task, `--trace-tools` to see tool calls live, or `--stream-json` for a full JSONL stream
 - `launch`: start one agent in the background; add `--json --compact` for a small machine-readable result, or use `launch -f agents.json --json --compact --brief` to start several agents from one manifest
-- `resume`: start a new task that resumes a finished Codex or Claude Code provider session
+- `resume`: start a new task that resumes a finished Codex, Codex app-server, or Claude Code provider session
   Resume needs stored provider metadata. Keep the default runtime output mode
   when you want reliable results, provider ids, token usage, or resume.
   Provider text modes are mainly diagnostic or provider-specific.
+- `send`: send a follow-up message to an active task when its runtime supports running messages
 - `list`: see known tasks in a simple task list
 - `ps`: see grouped agent work in the current workspace
 - `ps -A`: see grouped agent work across all workspaces
@@ -274,7 +275,9 @@ First-class targets:
 
 `codex` is the stable headless Codex runtime backed by `codex exec`.
 `codex-app-server` is the experimental protocol runtime backed by
-`codex app-server --listen stdio://`.
+`codex app-server --listen stdio://`. It supports provider-thread resume for
+tasks with stored `provider.threadId` and running messages through
+`orchestrator send`.
 
 The runtime layer is generic, but the first release is focused on Claude Code
 and Codex. `shell` is also enabled as a local-command runtime for research,

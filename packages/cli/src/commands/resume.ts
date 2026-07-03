@@ -146,9 +146,17 @@ function sameProviderSession(task: AgentTaskRecord, plan: AgentLaunchPlan): bool
     return false;
   }
   if (plan.resume.provider === "codex") {
-    return task.runtime === "codex" && task.provider?.threadId === plan.resume.threadId;
+    if (!plan.resume.threadId) {
+      return false;
+    }
+    return task.provider?.provider === "codex" && task.provider.threadId === plan.resume.threadId;
   }
-  return task.runtime === "claude-code" && task.provider?.sessionId === plan.resume.sessionId;
+  if (!plan.resume.sessionId) {
+    return false;
+  }
+  return (
+    task.provider?.provider === "claude-code" && task.provider.sessionId === plan.resume.sessionId
+  );
 }
 
 function resumeProviderMetadata(
