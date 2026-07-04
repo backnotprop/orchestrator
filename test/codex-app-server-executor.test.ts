@@ -1405,11 +1405,11 @@ test("CLI goal start --wait can run a native codex-app-server goal", async () =>
       const goal = await runCli(
         workspaceRoot,
         [
+          "--workspace",
+          workspaceRoot,
           "goal",
           "start",
           task.taskId.slice(0, 8),
-          "--workspace",
-          workspaceRoot,
           "--wait",
           "--token-budget",
           "1000",

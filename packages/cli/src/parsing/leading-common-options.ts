@@ -30,5 +30,10 @@ export function normalizeLeadingCommonOptions(argv: readonly string[]): string[]
     return ["help", ...leading];
   }
 
-  return [argv[index], ...leading, ...argv.slice(index + 1)];
+  const command = argv[index];
+  if (command === "goal" && argv[index + 1] === "start") {
+    return [command, "start", ...leading, ...argv.slice(index + 2)];
+  }
+
+  return [command, ...leading, ...argv.slice(index + 1)];
 }
