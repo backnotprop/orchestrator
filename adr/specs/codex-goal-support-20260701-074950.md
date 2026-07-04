@@ -1,10 +1,10 @@
 # Spec: Codex Goal Support
 
-Status: Refined by
-`adr/specs/codex-app-server-persistent-session-operations-20260701-092650.md`.
+Status: Superseded for first implementation by
+`adr/specs/codex-app-server-goal-start-operation-20260704-122339.md`.
 This file describes useful low-level goal state controls, but the primary
 product UX is now persistent Codex app-server sessions with normal turn
-operations and goal operations.
+operations and `goal start`.
 
 ## Intent
 

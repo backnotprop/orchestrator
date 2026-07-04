@@ -7,6 +7,7 @@ export {
   listTasks,
   readTaskOutput,
   sendTaskMessage,
+  startTaskGoal,
   validateLaunchTaskInput,
 } from "./supervisor.ts";
 export {
@@ -93,8 +94,12 @@ export type {
   ReadTaskOutputInput,
   SendTaskMessageInput,
   SendTaskMessageResult,
+  StartTaskGoalInput,
+  StartTaskGoalResult,
   TaskEvent,
   TaskDisplayState,
+  TaskGoal,
+  TaskGoalStatus,
   TaskHeartbeat,
   TaskLocation,
   TaskObservation,

@@ -103,6 +103,8 @@ orchestrator ps -A --json --compact --active --brief
 orchestrator launch codex --name "inspect store" --model gpt-5.4-mini --json --compact --brief "Inspect the task store."
 orchestrator launch -f agents.json --json --compact --brief
 orchestrator resume <task-id|prefix> --json --compact "Continue from the prior result."
+orchestrator send <task-id|prefix> --wait --json --compact "Focus on failing tests first."
+orchestrator goal start <task-id|prefix> --wait --json --compact "Improve performance across the app by 10%."
 orchestrator watch <task-id|prefix>
 orchestrator read <task-id|prefix>... --wait --json --compact
 orchestrator logs <task-id|prefix> --follow
@@ -230,7 +232,7 @@ The CLI package is `@backnotprop/orchestrator-cli`. The reusable runtime package
   Resume needs stored provider metadata. Keep the default runtime output mode
   when you want reliable results, provider ids, token usage, or resume.
   Provider text modes are mainly diagnostic or provider-specific.
-- `send`: send a follow-up message to an active task when its runtime supports running messages
+- `send`: send work or a follow-up message to a running task or session when its runtime supports messages; add `--wait` when you need the operation result
 - `list`: see known tasks in a simple task list
 - `ps`: see grouped agent work in the current workspace
 - `ps -A`: see grouped agent work across all workspaces
@@ -276,8 +278,9 @@ First-class targets:
 `codex` is the stable headless Codex runtime backed by `codex exec`.
 `codex-app-server` is the experimental protocol runtime backed by
 `codex app-server --listen stdio://`. It supports provider-thread resume for
-tasks with stored `provider.threadId` and running messages through
-`orchestrator send`.
+tasks with stored `provider.threadId`, running messages through
+`orchestrator send`, and native Codex goals through `orchestrator goal start`
+on persistent sessions.
 
 The runtime layer is generic, but the first release is focused on Claude Code
 and Codex. `shell` is also enabled as a local-command runtime for research,

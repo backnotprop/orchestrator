@@ -6,6 +6,10 @@ Make `codex-app-server` able to run as a persistent managed Codex session. The
 same session should accept normal work, run a Codex goal, wait for that goal,
 return to idle, and accept more work.
 
+The first implementation slice was repeated normal work inside a persistent
+session. Native Codex goals are added after that session turn model is correct,
+through `adr/specs/codex-app-server-goal-start-operation-20260704-122339.md`.
+
 ## User-Facing Shape
 
 Direct CLI:
@@ -34,8 +38,25 @@ send_agent_message({ taskId, message: "Summarize what changed.", wait: true });
 - The task remains `running` while the session is alive.
 - Work inside the session is tracked as operations.
 - A session can be idle between operations.
+- A completed turn completes the current operation, not the whole session task.
 - A goal operation requires an idle persisted Codex thread.
 - `interrupt <task-id>` stops the whole session.
+
+## First Implementation Slice
+
+Build normal session turns first:
+
+- idle session plus `send` starts `turn/start`.
+- active regular turn plus `send` uses `turn/steer`.
+- `send --wait` waits for the operation result.
+- `send_agent_message({ wait: true })` mirrors CLI `send --wait`.
+- `turn/completed` clears the active turn id, finishes the operation, stores it
+  as the latest operation, and returns the session to `idle`.
+- the persistent session task remains `running` until interrupted or the
+  app-server exits.
+
+Do not implement `goal start` in this first slice. The follow-up goal-start
+slice uses the session state and operation model established here.
 
 ## Runtime Capability
 
@@ -86,13 +107,21 @@ An initial prompt may still be supported later, but the core session use case is
 Add optional session metadata:
 
 ```ts
-type TaskSessionState = "starting" | "idle" | "turn_running" | "goal_running" | "stopping";
+type TaskSessionState =
+  | "starting"
+  | "idle"
+  | "turn_running"
+  | "goal_running"
+  | "stopping"
+  | "closed";
 
 type TaskSession = {
   kind: "codex-app-server";
   state: TaskSessionState;
   threadId?: string;
+  currentTurnId?: string;
   currentOperationId?: string;
+  startedAt: string;
   updatedAt: string;
 };
 ```
@@ -158,22 +187,30 @@ The executor needs internal state for:
 - latest goal state.
 - pending operation waiters.
 
+In session mode, `turn/completed` must not settle the whole task. It settles the
+current operation, writes the operation result, clears `currentTurnId` and
+`currentOperationId`, and returns the session to `idle`.
+
 ## Control Requests
 
-Extend file-backed task control beyond `send_message`.
-
-Add request kinds:
+For the first slice, extend file-backed `send_message` so it can wait for the
+operation result:
 
 ```ts
-type TaskControlRequest =
-  | { kind: "send_message"; input: { text: string; wait?: boolean; timeoutMs?: number } }
-  | { kind: "goal_start"; input: { objective: string; wait?: boolean; timeoutMs?: number } }
-  | { kind: "goal_wait"; input: { operationId?: string; timeoutMs?: number } }
-  | { kind: "goal_get" };
+type TaskControlRequest = {
+  kind: "send_message";
+  input: {
+    text: string;
+    wait?: boolean;
+    timeoutMs?: number;
+  };
+};
 ```
 
 For same-process tasks, the supervisor calls the live handle directly. For
 detached tasks, the CLI writes control requests into the task control directory.
+
+Goal-specific control requests come in the later native-goal slice.
 
 ## Send Semantics
 
@@ -183,11 +220,16 @@ For session tasks, `send` should do the useful thing:
 - if a normal turn is active, steer with `turn/steer`.
 - if a goal turn is active, either steer safely or fail with a clear message.
 - if `--wait` is passed, wait for that operation's result.
+- when the turn completes, return the session to `idle` instead of completing
+  the task.
 
 For non-session tasks, keep the existing meaning: send a follow-up message to an
 active running task when supported.
 
 ## Goal Start Semantics
+
+Focused implementation spec:
+`adr/specs/codex-app-server-goal-start-operation-20260704-122339.md`.
 
 `goal start` should require:
 
@@ -279,18 +321,24 @@ Update tools around the session model:
 
 ## Tests
 
-Add fake app-server coverage for:
+Add fake app-server coverage for the first slice:
 
 - session launch opens a persisted thread and remains idle.
 - `send --wait` starts a turn from idle and returns result.
 - `send` during active turn uses `turn/steer`.
+- completed turns return the session to idle.
+- a second `send --wait` reuses the same provider thread.
+- `send_agent_message({ wait: true })` mirrors CLI behavior.
+- compact JSON exposes session and operation metadata.
+- interrupt stops the whole session.
+- unsupported runtimes fail clearly.
+
+Add later fake app-server coverage for the native-goal slice:
+
 - `goal start --wait` sets active goal and waits until terminal goal status.
 - terminal goal statuses finish the operation.
 - provider rejection for ephemeral threads or disabled goals is clear.
 - `ps` shows idle, turn running, and goal running states.
-- compact JSON exposes session and operation metadata.
-- interrupt stops the whole session.
-- unsupported runtimes fail clearly.
 
 Add opt-in live smoke only after fake-server coverage is solid:
 
@@ -302,9 +350,10 @@ RUN_CODEX_APP_SERVER_SESSION_SMOKE=1 pnpm test
 
 1. Add task session and operation types, with no user-visible behavior change.
 2. Add `--session` launch mode for `codex-app-server` and keep it idle.
-3. Make `send --wait` work against idle sessions.
-4. Add `goal start` and `goal wait`.
-5. Update `ps`, events, compact JSON, help, docs, and parent tools.
+3. Make `send --wait` work against idle sessions and repeated normal turns.
+4. Update `ps`, events, compact JSON, help, docs, and parent tools for session
+   send.
+5. Add `goal start` and goal wait behavior.
 6. Add live smoke and document provider limits.
 
 ## Non-Goals
@@ -328,6 +377,7 @@ operations remain useful, but they are not the main implementation path.
 - `adr/research/SPIKE-codex-app-server-persistent-session-operations-20260701-092650.md`
 - `adr/research/synthesis-codex-app-server-persistent-session-operations-20260701-092650.md`
 - `adr/research/SPIKE-codex-goals-support-20260701-072738.md`
+- `adr/specs/codex-app-server-goal-start-operation-20260704-122339.md`
 - `adr/specs/codex-goal-support-20260701-074950.md`
 - `adr/decisions/0052-enable-task-shaped-resume-for-codex-app-server-20260630-163334.md`
 - `adr/decisions/0053-send-messages-to-running-codex-app-server-tasks-20260630-234839.md`

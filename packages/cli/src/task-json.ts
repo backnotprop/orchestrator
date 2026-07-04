@@ -12,8 +12,11 @@ import {
   type TaskLocation,
   type TaskEvent,
   type TaskDisplayState,
+  type TaskGoal,
   type TaskObservation,
+  type TaskOperation,
   type TaskStatus,
+  type TaskSession,
 } from "@backnotprop/orchestrator-core";
 
 export type TailRead = {
@@ -38,6 +41,10 @@ export type TaskCommandSummary = {
   stopReason?: string;
   stopSignal?: NodeJS.Signals;
   location?: TaskLocation;
+  session?: TaskSession;
+  goal?: TaskGoal;
+  currentOperation?: TaskOperation;
+  lastOperation?: TaskOperation;
   commands: AgentTaskControlTaskCommands;
   stop?: AgentTaskControlStopTarget;
 };
@@ -69,6 +76,10 @@ export function taskCommandSummary(
     ...(task.stopReason ? { stopReason: task.stopReason } : {}),
     ...(task.stopSignal ? { stopSignal: task.stopSignal } : {}),
     ...(task.location ? { location: task.location } : {}),
+    ...(task.session ? { session: task.session } : {}),
+    ...(task.goal ? { goal: task.goal } : {}),
+    ...(task.currentOperation ? { currentOperation: task.currentOperation } : {}),
+    ...(task.lastOperation ? { lastOperation: task.lastOperation } : {}),
     commands: taskControlCommands(id, options.stopArgsSuffix ?? []),
     ...(observation.actionable
       ? { stop: taskStopTarget(task, id, options.stopArgsSuffix ?? []) }

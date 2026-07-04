@@ -6,6 +6,7 @@ import { commandRunTask } from "./background-task.ts";
 import { formatError, unknownCommandError, wantsJsonError } from "./cli-errors.ts";
 import { cliErrorJsonWithRecovery } from "./cli-error-recovery.ts";
 import { commandDoctor } from "./commands/doctor.ts";
+import { commandGoalStart } from "./commands/goal.ts";
 import { buildCliHelpText, commandHelp } from "./commands/help.ts";
 import { commandInterrupt } from "./commands/interrupt.ts";
 import { commandLaunch } from "./commands/launch.ts";
@@ -17,6 +18,7 @@ import { commandSend } from "./commands/send.ts";
 import { commandEvents, commandLogs, commandRead } from "./commands/task-inspection.ts";
 import { commandWatch } from "./commands/watch.ts";
 import { parseDoctorOptions } from "./parsing/doctor.ts";
+import { parseGoalOptions } from "./parsing/goal.ts";
 import { parseHelpOptions } from "./parsing/help.ts";
 import { parseInternalRunTaskOptions } from "./parsing/internal.ts";
 import { parseInterruptOptions } from "./parsing/interrupt.ts";
@@ -50,6 +52,9 @@ export async function main(argv: readonly string[] = process.argv.slice(2)): Pro
         return 0;
       case "send":
         await commandSend(parseSendOptions(rest));
+        return 0;
+      case "goal":
+        await commandGoalStart(parseGoalOptions(rest));
         return 0;
       case "list":
         await commandList(parseListOptions(rest));

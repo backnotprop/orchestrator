@@ -22,8 +22,10 @@ The app-server runtime should feel like any other runtime through the CLI:
 orchestrator ps
 orchestrator ps --json --compact
 orchestrator resume <task-id> "Continue from the prior task."
-orchestrator send <task-id> "Focus on failing tests first."
 orchestrator launch codex-app-server --session --name "codex session"
+orchestrator send <task-id> --wait "Focus on failing tests first."
+orchestrator goal start <task-id> --wait "Improve performance across the app by 10%."
+orchestrator send <task-id> --wait "Summarize what changed."
 orchestrator events <task-id> --agent-only
 orchestrator logs <task-id>
 orchestrator interrupt <task-id>
@@ -38,13 +40,17 @@ Resume uses the stored Codex `provider.threadId`. Each resume creates a new
 Orchestrator task linked to the source task, while Codex app-server continues
 the provider thread internally.
 
-`send` uses the live task runner. It only works while the app-server task is
-still active, and it only means the running task accepted the message. Use
-`read`, `watch`, or `events` to see what happens next.
-
 `launch --session` starts an idle persisted app-server thread that can be
-managed like a normal Orchestrator task. Sending new work into an idle session
-and Codex goal operations are still separate follow-up slices.
+managed like a normal Orchestrator task. `send` can give work to an idle
+session, or add a follow-up instruction while a regular turn is already
+running. Use `send --wait` when you need the operation result before moving on.
+`goal start` starts a native Codex goal operation on that running session. Use
+`goal start --wait` when Orchestrator should wait for Codex to report a terminal
+goal state before moving on.
+
+Each completed turn leaves the session running and returns it to idle. `read`
+returns the latest completed operation result. Completed goal operations also
+return the session to idle. `interrupt` stops the whole session.
 
 ## Live Smoke
 
@@ -64,7 +70,7 @@ live provider emits usage for that run.
 - Protocol details may still change upstream.
 - Usage timing is provider controlled; usage may arrive during a turn, at the end, or not at all.
 - Older app-server tasks created before durable threads may fail to resume.
-- Idle session launch exists; idle-session work and goal operations are still follow-up work.
+- Native goal support currently starts goals on idle persistent sessions.
 - There is no app-server pooling yet.
 - There is no public protocol custom-agent config yet.
-- Goals and broader long-running thread control are out of scope for this runtime pass.
+- `goal get`, `goal set`, and `goal clear` are not public CLI commands yet.

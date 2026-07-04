@@ -3,6 +3,7 @@ import { appendFile, readFile, stat, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import type { AgentLaunchPlan } from "../runtime/index.ts";
 import {
+  requestDetachedTaskGoalStart,
   requestDetachedTaskMessage,
   startTaskControlLoop,
   TaskControlRequestError,
@@ -29,6 +30,8 @@ import type {
   ReadTaskOutputInput,
   SendTaskMessageInput,
   SendTaskMessageResult,
+  StartTaskGoalInput,
+  StartTaskGoalResult,
   TaskObservedState,
   TaskEvent,
   TaskProviderMetadata,
@@ -372,6 +375,7 @@ export async function sendTaskMessage(input: SendTaskMessageInput): Promise<Send
         text,
         ...(input.clientMessageId ? { clientMessageId: input.clientMessageId } : {}),
         ...(input.timeoutMs !== undefined ? { timeoutMs: input.timeoutMs } : {}),
+        ...(input.wait !== undefined ? { wait: input.wait } : {}),
       })
     : await requestDetachedTaskMessage({
         paths: task.paths,
@@ -379,6 +383,7 @@ export async function sendTaskMessage(input: SendTaskMessageInput): Promise<Send
         text,
         ...(input.clientMessageId ? { clientMessageId: input.clientMessageId } : {}),
         ...(input.timeoutMs !== undefined ? { timeoutMs: input.timeoutMs } : {}),
+        ...(input.wait !== undefined ? { wait: input.wait } : {}),
       });
 
   if (result.status === "failed") {
@@ -394,15 +399,101 @@ export async function sendTaskMessage(input: SendTaskMessageInput): Promise<Send
 
   return {
     task: await readTaskRecord(input, task.taskId),
-    status: "accepted",
+    status: result.status,
     ...(result.provider ? { provider: result.provider } : {}),
+    ...(result.operation ? { operation: result.operation } : {}),
+  };
+}
+
+export async function startTaskGoal(input: StartTaskGoalInput): Promise<StartTaskGoalResult> {
+  const goal = input.goal.trim();
+  if (!goal) {
+    throw new TaskSupervisorSafetyError("goal start requires a non-empty goal.", {
+      reason: "invalid_request",
+      input: input.taskId,
+      hint: "Pass the goal as the final quoted argument.",
+    });
+  }
+
+  const taskId = await resolveTaskId(input, input.taskId);
+  const task = await readTaskRecord(input, taskId);
+  if (isTerminalTaskStatus(task.status)) {
+    throw new TaskSupervisorSafetyError(`Task "${shortId(task.taskId)}" has already finished.`, {
+      reason: "not_running",
+      input: task.taskId,
+      hint: "Start a new codex-app-server --session task before starting a goal.",
+    });
+  }
+  if (
+    task.runtime !== "codex-app-server" ||
+    task.launchPlan.protocolExecutionMode !== "session" ||
+    !task.launchPlan.canSteerRunning
+  ) {
+    throw new TaskSupervisorSafetyError(
+      `Task "${shortId(task.taskId)}" does not support native goals.`,
+      {
+        reason: "unsupported",
+        input: task.taskId,
+        hint: "Use goal start only with a running codex-app-server --session task.",
+      },
+    );
+  }
+
+  const observation = await observeTaskState(input, task);
+  if (!observation.actionable) {
+    throw new TaskSupervisorSafetyError(
+      `Task "${shortId(task.taskId)}" is ${observation.state}; Orchestrator cannot start a goal safely.`,
+      {
+        reason: sendFailureReasonForObservedState(observation.state),
+        input: task.taskId,
+        hint: "Use read, logs, and events to inspect the task before retrying.",
+      },
+    );
+  }
+
+  const running = runningTasks.get(task.taskId);
+  const result = running
+    ? await startGoalOnRunningHandle(task, running.handle, {
+        goal,
+        ...(input.clientMessageId ? { clientMessageId: input.clientMessageId } : {}),
+        ...(input.timeoutMs !== undefined ? { timeoutMs: input.timeoutMs } : {}),
+        ...(input.wait !== undefined ? { wait: input.wait } : {}),
+        ...(input.tokenBudget !== undefined ? { tokenBudget: input.tokenBudget } : {}),
+      })
+    : await requestDetachedTaskGoalStart({
+        paths: task.paths,
+        taskId: task.taskId,
+        goal,
+        ...(input.clientMessageId ? { clientMessageId: input.clientMessageId } : {}),
+        ...(input.timeoutMs !== undefined ? { timeoutMs: input.timeoutMs } : {}),
+        ...(input.wait !== undefined ? { wait: input.wait } : {}),
+        ...(input.tokenBudget !== undefined ? { tokenBudget: input.tokenBudget } : {}),
+      });
+
+  if (result.status === "failed") {
+    throw new TaskControlRequestError(
+      result.error?.reason ?? "provider_rejected",
+      result.error?.message ?? "Task rejected the goal.",
+      {
+        input: task.taskId,
+        hint: hintForGoalFailure(result.error?.reason ?? "provider_rejected", task.taskId),
+      },
+    );
+  }
+
+  return {
+    task: await readTaskRecord(input, task.taskId),
+    status: result.status,
+    ...(result.provider ? { provider: result.provider } : {}),
+    ...(result.goal ? { goal: result.goal } : {}),
+    ...(result.operation ? { operation: result.operation } : {}),
   };
 }
 
 async function sendMessageToRunningHandle(
   task: AgentTaskRecord,
   handle: TaskExecutionHandle,
-  input: { text: string; clientMessageId?: string; timeoutMs?: number },
+  input: { text: string; clientMessageId?: string; timeoutMs?: number; wait?: boolean },
 ): Promise<TaskControlResponse> {
   if (!handle.sendMessage) {
     return sendMessageFailedResponse(task, {
@@ -418,10 +509,11 @@ async function sendMessageToRunningHandle(
       requestId: "in-process",
       taskId: task.taskId,
       kind: "send_message",
-      status: "accepted",
+      status: result.status,
       createdAt: now(),
       completedAt: now(),
       ...(result.provider ? { provider: result.provider } : {}),
+      ...(result.operation ? { operation: result.operation } : {}),
     };
   } catch (error: unknown) {
     return sendMessageFailedResponse(task, {
@@ -440,6 +532,62 @@ function sendMessageFailedResponse(
     requestId: "in-process",
     taskId: task.taskId,
     kind: "send_message",
+    status: "failed",
+    createdAt: now(),
+    completedAt: now(),
+    error,
+  };
+}
+
+async function startGoalOnRunningHandle(
+  task: AgentTaskRecord,
+  handle: TaskExecutionHandle,
+  input: {
+    goal: string;
+    clientMessageId?: string;
+    timeoutMs?: number;
+    wait?: boolean;
+    tokenBudget?: number;
+  },
+): Promise<TaskControlResponse> {
+  if (!handle.startGoal) {
+    return goalStartFailedResponse(task, {
+      reason: "unsupported",
+      message: "This task runtime does not support native goals while running.",
+    });
+  }
+
+  try {
+    const result = await handle.startGoal(input);
+    return {
+      schemaVersion: 1,
+      requestId: "in-process",
+      taskId: task.taskId,
+      kind: "goal_start",
+      status: result.status,
+      createdAt: now(),
+      completedAt: now(),
+      ...(result.provider ? { provider: result.provider } : {}),
+      ...(result.goal ? { goal: result.goal } : {}),
+      ...(result.operation ? { operation: result.operation } : {}),
+    };
+  } catch (error: unknown) {
+    return goalStartFailedResponse(task, {
+      reason: error instanceof TaskSendMessageError ? error.reason : "provider_rejected",
+      message: formatError(error),
+    });
+  }
+}
+
+function goalStartFailedResponse(
+  task: AgentTaskRecord,
+  error: { reason: TaskSendMessageFailureReason; message: string },
+): TaskControlResponse {
+  return {
+    schemaVersion: 1,
+    requestId: "in-process",
+    taskId: task.taskId,
+    kind: "goal_start",
     status: "failed",
     createdAt: now(),
     completedAt: now(),
@@ -478,6 +626,29 @@ function hintForSendFailure(reason: TaskSendMessageFailureReason, taskId: string
       return "Pass a non-empty message as the final quoted argument.";
     case "provider_rejected":
       return "Use events and logs to inspect why the provider rejected the message.";
+  }
+}
+
+function hintForGoalFailure(reason: TaskSendMessageFailureReason, taskId: string): string {
+  switch (reason) {
+    case "not_running":
+      return `Start a new codex-app-server --session task before starting a goal. Last task: ${shortId(taskId)}.`;
+    case "not_ready":
+      return "Wait for the codex-app-server session to become idle, then retry.";
+    case "unsupported":
+      return "Use goal start only with a running codex-app-server --session task.";
+    case "timeout":
+      return "Use events, logs, or ps to inspect the running goal, then retry if it is still active.";
+    case "stale":
+    case "orphaned":
+    case "lost":
+      return "Use read, logs, and events to inspect the task before retrying.";
+    case "turn_mismatch":
+      return "Use events and logs to inspect the provider turn before retrying.";
+    case "invalid_request":
+      return "Pass a non-empty goal as the final quoted argument.";
+    case "provider_rejected":
+      return "Use events and logs to inspect why the provider rejected the goal.";
   }
 }
 

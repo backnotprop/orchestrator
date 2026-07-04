@@ -10,7 +10,12 @@ import {
   type ParentToolTraceEvent,
 } from "@backnotprop/orchestrator-agent";
 import { createOrchestratorAgentTools } from "@backnotprop/orchestrator-agent/tools";
-import type { AgentLaunchPlan } from "@backnotprop/orchestrator-core/runtime";
+import {
+  CODEX_APP_SERVER_RUNTIME,
+  buildAgentLaunchPlan,
+  type AgentLaunchPlan,
+  type HeadlessAgentRuntimeConfig,
+} from "@backnotprop/orchestrator-core/runtime";
 import {
   launchTask,
   interruptTask,
@@ -30,6 +35,10 @@ type TestToolResult<T> = {
 
 type ToolDetails = {
   taskId?: string;
+  status?: string;
+  provider?: { provider?: string; threadId?: string; turnId?: string };
+  goal?: { status?: string; objective?: string; tokenBudget?: number };
+  operation?: { kind?: string; status?: string; turnId?: string; result?: string };
   task?: {
     taskId: string;
     runtime: string;
@@ -99,6 +108,9 @@ type ToolDetails = {
 };
 
 const fixturesDir = fileURLToPath(new URL("./fixtures/", import.meta.url));
+const fakeAppServerPath = fileURLToPath(
+  new URL("./fixtures/fake-codex-app-server.mjs", import.meta.url),
+);
 
 async function withTempWorkspace<T>(fn: (workspaceRoot: string) => Promise<T>): Promise<T> {
   const workspaceRoot = await realpath(await mkdtemp(join(tmpdir(), "orchestrator-agent-tools-")));
@@ -174,6 +186,29 @@ function orchestratorPlan(command: string, cwd: string): AgentLaunchPlan {
     runtime: "orchestrator",
     displayName: "Orchestrator",
   };
+}
+
+function codexAppServerSessionPlan(cwd: string): AgentLaunchPlan {
+  const runtime: HeadlessAgentRuntimeConfig = {
+    ...CODEX_APP_SERVER_RUNTIME,
+    launch: {
+      ...CODEX_APP_SERVER_RUNTIME.launch,
+      executable: process.execPath,
+      baseArgs: [fakeAppServerPath],
+    },
+  };
+
+  return buildAgentLaunchPlan(
+    {
+      runtime: "codex-app-server",
+      cwd,
+      model: "fake-model",
+      session: true,
+    },
+    {
+      "codex-app-server": runtime,
+    },
+  );
 }
 
 function quoteShellArg(value: string): string {
@@ -262,6 +297,7 @@ test("parent agent tools manage a background Orchestrator task", async () => {
         "read_agent_events",
         "read_agent_logs",
         "send_agent_message",
+        "start_agent_goal",
         "interrupt_agent",
       ],
     );
@@ -756,6 +792,65 @@ test("send_agent_message rejects runtimes without running-message support", asyn
   });
 });
 
+test("start_agent_goal can run a native codex-app-server goal", async () => {
+  await withTempWorkspace(async (workspaceRoot) => {
+    const handle = await launchTask({
+      workspaceRoot,
+      plan: codexAppServerSessionPlan(workspaceRoot),
+      name: "goal tool session",
+      model: "fake-model",
+      timeoutMs: 10_000,
+    });
+
+    try {
+      await waitForTaskState(
+        workspaceRoot,
+        handle.task.taskId,
+        (task) => task.status === "running" && task.session?.state === "idle",
+        "idle session",
+      );
+
+      const tools = createOrchestratorAgentTools({ workspaceRoot });
+      const started = await executeTool<ToolDetails>(getTool(tools, "start_agent_goal"), {
+        taskId: handle.task.taskId.slice(0, 8),
+        goal: "Improve performance by 10%.",
+        wait: true,
+        timeoutMs: 5_000,
+        tokenBudget: 1000,
+      });
+
+      assert.equal(started.details.status, "completed");
+      assert.equal(started.details.provider?.threadId, "thread-fake-1");
+      assert.equal(started.details.provider?.turnId, "turn-fake-goal-1");
+      assert.equal(started.details.goal?.status, "complete");
+      assert.equal(started.details.goal?.objective, "Improve performance by 10%.");
+      assert.equal(started.details.goal?.tokenBudget, 1000);
+      assert.equal(started.details.operation?.kind, "goal");
+      assert.equal(started.details.operation?.status, "complete");
+      assert.equal(started.details.operation?.result, "Goal complete from fake Codex.");
+
+      const events = await readTaskEvents({ workspaceRoot, taskId: handle.task.taskId });
+      const kinds = events.flatMap((event) =>
+        event.type === "agent_event" && typeof event.data.kind === "string"
+          ? [event.data.kind]
+          : [],
+      );
+      assert.ok(kinds.includes("protocol.goal.requested"));
+      assert.ok(kinds.includes("goal.updated"));
+      assert.ok(kinds.includes("operation.completed"));
+    } finally {
+      await interruptTask({
+        workspaceRoot,
+        taskId: handle.task.taskId,
+        reason: "test cleanup",
+      }).catch(() => undefined);
+    }
+
+    const completed = await handle.completed;
+    assert.equal(completed.status, "cancelled");
+  });
+});
+
 test("read_agent event fallback keeps final task usage over later session usage", async () => {
   await withTempWorkspace(async (workspaceRoot) => {
     const fixturePath = join(workspaceRoot, "custom-agent.jsonl");
@@ -1031,6 +1126,7 @@ test("parent AI session starts with only Orchestrator tools enabled", async () =
         "read_agent_events",
         "read_agent_logs",
         "send_agent_message",
+        "start_agent_goal",
         "interrupt_agent",
       ]);
       assert.ok(created.session.sessionId);
@@ -1082,7 +1178,7 @@ test("launch_agent metadata teaches shell versus model runtime choice", async ()
   });
 });
 
-test("send_agent_message metadata teaches active-task use", async () => {
+test("send_agent_message metadata teaches running task and session use", async () => {
   await withTempWorkspace(async (workspaceRoot) => {
     const sendAgentMessage = getTool(
       createOrchestratorAgentTools({ workspaceRoot }),
@@ -1090,10 +1186,15 @@ test("send_agent_message metadata teaches active-task use", async () => {
     );
     const promptGuidelines = sendAgentMessage.promptGuidelines;
 
-    assert.match(sendAgentMessage.description, /follow-up message/);
+    assert.match(sendAgentMessage.description, /task or session/);
     assert.ok(promptGuidelines);
-    assert.ok(promptGuidelines.some((guideline) => guideline.includes("active tasks")));
-    assert.ok(promptGuidelines.some((guideline) => guideline.includes("read_agent for results")));
+    assert.ok(
+      promptGuidelines.some((guideline) => guideline.includes("running tasks or sessions")),
+    );
+    assert.ok(promptGuidelines.some((guideline) => guideline.includes("wait: true")));
+    assert.ok(
+      promptGuidelines.some((guideline) => guideline.includes("read_agent for finished results")),
+    );
     assert.ok(promptGuidelines.some((guideline) => guideline.includes("already finished")));
   });
 });
@@ -1119,6 +1220,7 @@ test("parent AI session ignores unsafe Pi tool overrides", async () => {
         "read_agent_events",
         "read_agent_logs",
         "send_agent_message",
+        "start_agent_goal",
         "interrupt_agent",
       ]);
       assert.equal(created.session.getToolDefinition("bash"), undefined);

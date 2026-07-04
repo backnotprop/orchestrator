@@ -4,8 +4,10 @@ import type {
   TaskEvent,
   TaskPaths,
   TaskProviderMetadata,
+  TaskOperation,
   TaskSendMessageFailureReason,
   TaskStatus,
+  TaskGoal,
   TaskUsage,
 } from "../types.ts";
 
@@ -36,6 +38,7 @@ export type TaskExecutionHandle = {
   completed: Promise<AgentTaskRecord>;
   interrupt(reason: string, signal?: NodeJS.Signals): Promise<void> | void;
   sendMessage?(input: TaskSendMessageInput): Promise<TaskSendMessageResult>;
+  startGoal?(input: TaskStartGoalInput): Promise<TaskStartGoalResult>;
 };
 
 export type TaskExecutor = {
@@ -46,11 +49,28 @@ export type TaskSendMessageInput = {
   text: string;
   clientMessageId?: string;
   timeoutMs?: number;
+  wait?: boolean;
 };
 
 export type TaskSendMessageResult = {
-  status: "accepted";
+  status: "accepted" | "running" | "completed";
   provider?: TaskProviderMetadata;
+  operation?: TaskOperation;
+};
+
+export type TaskStartGoalInput = {
+  goal: string;
+  clientMessageId?: string;
+  timeoutMs?: number;
+  wait?: boolean;
+  tokenBudget?: number;
+};
+
+export type TaskStartGoalResult = {
+  status: "accepted" | "running" | "completed";
+  provider?: TaskProviderMetadata;
+  goal?: TaskGoal;
+  operation?: TaskOperation;
 };
 
 export class TaskSendMessageError extends Error {

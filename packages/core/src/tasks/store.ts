@@ -316,6 +316,7 @@ export async function updateTaskStatus(
       | "supervision"
       | "provider"
       | "session"
+      | "goal"
       | "currentOperation"
       | "lastOperation"
     >

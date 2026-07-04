@@ -23,6 +23,9 @@ This is the canonical ADR workspace.
 - [Parent launch_agent runtime guidance](specs/parent-launch-agent-runtime-guidance-20260630-111352.md)
 - [Codex app-server resume](specs/codex-app-server-resume-20260630-163105.md)
 - [Send messages to running Codex app-server tasks](specs/codex-app-server-steering-20260630-232736.md)
+- [Codex app-server persistent sessions and goal operations](specs/codex-app-server-persistent-session-operations-20260701-092650.md)
+- [Parent-agent session control language](specs/parent-agent-session-control-language-20260703-203248.md)
+- [Codex app-server goal start operation](specs/codex-app-server-goal-start-operation-20260704-122339.md)
 
 ## Intent Notes
 
@@ -85,3 +88,5 @@ This is the canonical ADR workspace.
 - [51. Persist parent events for background runs](decisions/0051-persist-parent-events-for-background-runs-20260630-104204.md)
 - [52. Enable task-shaped resume for Codex app-server](decisions/0052-enable-task-shaped-resume-for-codex-app-server-20260630-163334.md)
 - [53. Send messages to running Codex app-server tasks through file-backed control requests](decisions/0053-send-messages-to-running-codex-app-server-tasks-20260630-234839.md)
+- [54. Use persistent Codex app-server sessions for goal work](decisions/0054-use-persistent-codex-app-server-sessions-for-goal-work-20260701-104716.md)
+- [55. Hide provider turn mechanics behind session operations](decisions/0055-hide-provider-turn-mechanics-behind-session-operations-20260704-094016.md)

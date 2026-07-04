@@ -19,6 +19,7 @@ import {
   resolveTaskId,
   selectTaskUsage,
   sendTaskMessage,
+  startTaskGoal,
   taskDisplayState,
   waitForTask,
   usageWithUpdatedAt,
@@ -29,7 +30,9 @@ import {
   type LogStream,
   type TaskEvent,
   type TaskDisplayState,
+  type TaskGoal,
   type TaskObservation,
+  type TaskOperation,
   type TaskProviderMetadata,
   type TaskUsage,
   type TaskStatus,
@@ -120,6 +123,10 @@ type TaskSummary = {
   stopSignal?: NodeJS.Signals;
   pid?: number;
   taskDir: string;
+  session?: AgentTaskRecord["session"];
+  goal?: TaskGoal;
+  currentOperation?: TaskOperation;
+  lastOperation?: TaskOperation;
 };
 
 type LaunchAgentDetails = {
@@ -160,8 +167,17 @@ type InterruptAgentDetails = {
 
 type SendAgentMessageDetails = {
   task: TaskSummary;
-  status: "accepted";
+  status: "accepted" | "running" | "completed";
   provider?: TaskProviderMetadata;
+  operation?: TaskOperation;
+};
+
+type StartAgentGoalDetails = {
+  task: TaskSummary;
+  status: "accepted" | "running" | "completed";
+  provider?: TaskProviderMetadata;
+  goal?: TaskGoal;
+  operation?: TaskOperation;
 };
 
 const StatusSchema = Type.Union([
@@ -192,6 +208,7 @@ export function createOrchestratorAgentTools(
     createReadAgentEventsTool(toolContext),
     createReadAgentLogsTool(toolContext),
     createSendAgentMessageTool(toolContext),
+    createStartAgentGoalTool(toolContext),
     createInterruptAgentTool(toolContext),
   ];
 
@@ -495,12 +512,14 @@ function createSendAgentMessageTool(context: ToolContext): OrchestratorParentToo
   return defineTool({
     name: "send_agent_message",
     label: "Send agent message",
-    description: "Send a follow-up message to a running Orchestrator agent task.",
+    description:
+      "Send work or a follow-up message to a running Orchestrator agent task or session.",
     promptSnippet:
-      "send_agent_message sends a follow-up instruction to a running task when its runtime supports it.",
+      "send_agent_message sends work or a follow-up instruction to a running task or session when its runtime supports it.",
     promptGuidelines: [
-      "Use send_agent_message only for active tasks that should receive a new instruction while they are still running.",
-      "Use read_agent for results.",
+      "Use send_agent_message for running tasks or sessions that should receive new work or a follow-up instruction.",
+      "Use wait: true when you need the operation result before answering.",
+      "Use read_agent for finished results.",
       "Use launch_agent or resume from the CLI when the task has already finished.",
       "If send_agent_message returns not_ready, wait briefly or inspect events before retrying.",
     ],
@@ -508,6 +527,7 @@ function createSendAgentMessageTool(context: ToolContext): OrchestratorParentToo
       taskId: Type.String(),
       message: Type.String(),
       timeoutMs: Type.Optional(Type.Number()),
+      wait: Type.Optional(Type.Boolean()),
     }),
     executionMode: "sequential",
     async execute(_toolCallId, params) {
@@ -516,12 +536,57 @@ function createSendAgentMessageTool(context: ToolContext): OrchestratorParentToo
         taskId: params.taskId,
         text: params.message,
         ...(params.timeoutMs !== undefined ? { timeoutMs: params.timeoutMs } : {}),
+        ...(params.wait !== undefined ? { wait: params.wait } : {}),
       });
 
       return jsonResult<SendAgentMessageDetails>({
         task: await summarizeStoredTask(context, result.task),
         status: result.status,
         ...(result.provider ? { provider: result.provider } : {}),
+        ...(result.operation ? { operation: result.operation } : {}),
+      });
+    },
+  });
+}
+
+function createStartAgentGoalTool(context: ToolContext): OrchestratorParentTool {
+  return defineTool({
+    name: "start_agent_goal",
+    label: "Start agent goal",
+    description: "Start a native provider-backed goal on a supported running agent session.",
+    promptSnippet:
+      "start_agent_goal starts a native provider-backed goal on a supported running session.",
+    promptGuidelines: [
+      "Use start_agent_goal only for supported running sessions, such as codex-app-server sessions.",
+      "Use send_agent_message for normal work before or after the goal.",
+      "Use wait: true when you need the goal result before answering.",
+      "Do not simulate native provider goals by sending ordinary prompt text.",
+      "If start_agent_goal returns not_ready, inspect events or wait for the session to become idle before retrying.",
+    ],
+    parameters: Type.Object({
+      taskId: Type.String(),
+      goal: Type.String(),
+      timeoutMs: Type.Optional(Type.Number()),
+      wait: Type.Optional(Type.Boolean()),
+      tokenBudget: Type.Optional(Type.Number()),
+    }),
+    executionMode: "sequential",
+    async execute(_toolCallId, params) {
+      const result = await startTaskGoal({
+        ...storeOptions(context),
+        taskId: params.taskId,
+        goal: params.goal,
+        ...(params.timeoutMs !== undefined ? { timeoutMs: params.timeoutMs } : {}),
+        ...(params.wait !== undefined ? { wait: params.wait } : {}),
+        ...(params.tokenBudget !== undefined ? { tokenBudget: params.tokenBudget } : {}),
+      });
+
+      return jsonResult<StartAgentGoalDetails>({
+        task: await summarizeStoredTask(context, result.task),
+        status: result.status,
+        ...(result.provider ? { provider: result.provider } : {}),
+        ...(result.goal ? { goal: result.goal } : {}),
+        ...(result.operation ? { operation: result.operation } : {}),
       });
     },
   });
@@ -717,6 +782,10 @@ function summarizeTask(task: AgentTaskRecord, observation?: TaskObservation): Ta
     ...(task.stopReason ? { stopReason: task.stopReason } : {}),
     ...(task.stopSignal ? { stopSignal: task.stopSignal } : {}),
     ...(task.pid ? { pid: task.pid } : {}),
+    ...(task.session ? { session: task.session } : {}),
+    ...(task.goal ? { goal: task.goal } : {}),
+    ...(task.currentOperation ? { currentOperation: task.currentOperation } : {}),
+    ...(task.lastOperation ? { lastOperation: task.lastOperation } : {}),
     taskDir: task.paths.taskDir,
   };
 }

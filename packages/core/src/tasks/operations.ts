@@ -11,8 +11,11 @@ import type {
   AgentTaskRecord,
   TaskEvent,
   TaskDisplayState,
+  TaskGoal,
   TaskLocation,
   TaskObservation,
+  TaskOperation,
+  TaskSession,
   TaskStatus,
   TaskStoreOptions,
   TaskUsage,
@@ -61,6 +64,10 @@ export type AgentTaskRow = {
   parentTaskId?: string;
   parentSessionId?: string;
   parentToolCallId?: string;
+  session?: TaskSession;
+  goal?: TaskGoal;
+  currentOperation?: TaskOperation;
+  lastOperation?: TaskOperation;
   taskDir: string;
 };
 
@@ -199,6 +206,10 @@ export type AgentTaskControlTask = {
   last?: string;
   durationMs?: number;
   location?: TaskLocation;
+  session?: TaskSession;
+  goal?: TaskGoal;
+  currentOperation?: TaskOperation;
+  lastOperation?: TaskOperation;
   commands?: AgentTaskControlTaskCommands;
   stop?: AgentTaskControlStopTarget;
 };
@@ -464,6 +475,10 @@ async function buildAgentTaskRow(
     ...(task.parent?.parentTaskId ? { parentTaskId: task.parent.parentTaskId } : {}),
     ...(task.parent?.parentSessionId ? { parentSessionId: task.parent.parentSessionId } : {}),
     ...(task.parent?.parentToolCallId ? { parentToolCallId: task.parent.parentToolCallId } : {}),
+    ...(task.session ? { session: task.session } : {}),
+    ...(task.goal ? { goal: task.goal } : {}),
+    ...(task.currentOperation ? { currentOperation: task.currentOperation } : {}),
+    ...(task.lastOperation ? { lastOperation: task.lastOperation } : {}),
     taskDir: task.paths.taskDir,
   };
 }
@@ -607,6 +622,10 @@ function compactTask(
     ...optionalLast(row),
     ...(row.durationMs !== undefined ? { durationMs: row.durationMs } : {}),
     ...(row.location ? { location: row.location } : {}),
+    ...(row.session ? { session: row.session } : {}),
+    ...(row.goal ? { goal: row.goal } : {}),
+    ...(row.currentOperation ? { currentOperation: row.currentOperation } : {}),
+    ...(row.lastOperation ? { lastOperation: row.lastOperation } : {}),
     ...(options.brief ? {} : { commands: taskControlCommands(id) }),
     ...(isStoppableRow(row) ? { stop: compactTaskStopTarget(row, id) } : {}),
   };

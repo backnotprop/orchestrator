@@ -1,11 +1,24 @@
+import { randomUUID } from "node:crypto";
 import { captureProcessIdentity } from "../../observation.ts";
 import { readTaskRecord, writeTaskHeartbeat } from "../../store.ts";
-import type { AgentTaskRecord, TaskStatus, TaskUsage } from "../../types.ts";
+import type {
+  AgentTaskRecord,
+  TaskGoal,
+  TaskGoalStatus,
+  TaskOperation,
+  TaskOperationStatus,
+  TaskStatus,
+  TaskUsage,
+} from "../../types.ts";
 import {
   TaskSendMessageError,
   type TaskExecutionContext,
   type TaskExecutionHandle,
   type TaskExecutor,
+  type TaskSendMessageInput,
+  type TaskSendMessageResult,
+  type TaskStartGoalInput,
+  type TaskStartGoalResult,
 } from "../types.ts";
 import {
   JsonRpcStdioClientError,
@@ -29,6 +42,8 @@ type CodexExecutorState = {
   client?: JsonRpcStdioClient;
   threadId?: string;
   turnId?: string;
+  sessionStartedAt?: string;
+  currentSessionOperation?: CodexSessionOperationState;
   cancelRequested: boolean;
   cancelReason?: string;
   timedOut: boolean;
@@ -41,6 +56,24 @@ type CodexTerminalResult = {
   error?: string;
   exitCode?: number | null;
   signal?: NodeJS.Signals | null;
+};
+
+type Deferred<T> = {
+  promise: Promise<T>;
+  resolve(value: T): void;
+  reject(error: unknown): void;
+};
+
+type CodexSessionOperationState = {
+  operation: TaskOperation;
+  goal?: TaskGoal;
+  finalAnswer?: string;
+  deltaBuffer: string;
+  lastUsage?: TaskUsage;
+  started?: Deferred<string>;
+  completed: Deferred<TaskOperation>;
+  terminal: Deferred<CodexTerminalResult>;
+  settled: boolean;
 };
 
 export class CodexAppServerTaskExecutor implements TaskExecutor {
@@ -68,84 +101,32 @@ export class CodexAppServerTaskExecutor implements TaskExecutor {
             "Codex app-server is not running for this task.",
           );
         }
-        if (!state.threadId || !state.turnId) {
+
+        if (state.currentSessionOperation?.operation.kind === "goal") {
           throw new TaskSendMessageError(
             "not_ready",
-            "Codex app-server has not started a turn for this task yet.",
+            "Codex app-server session is running a goal. Wait for the goal operation before sending normal work.",
           );
         }
 
-        await appendAgentEvent(
-          context,
-          "protocol.message.requested",
-          compactData({
-            threadId: state.threadId,
-            turnId: state.turnId,
-            bytes: Buffer.byteLength(text),
-            clientMessageId: input.clientMessageId,
-          }),
-        );
-
-        try {
-          const response = await client.request(
-            "turn/steer",
-            {
-              threadId: state.threadId,
-              expectedTurnId: state.turnId,
-              input: [{ type: "text", text }],
-              ...(input.clientMessageId ? { clientUserMessageId: input.clientMessageId } : {}),
-            },
-            { timeoutMs: input.timeoutMs ?? SEND_MESSAGE_TIMEOUT_MS },
-          );
-          await appendProtocolResponse(context, "turn/steer", response);
-          const responseTurnId = extractTurnId(response);
-          if (!responseTurnId) {
-            throw new TaskSendMessageError(
-              "provider_rejected",
-              "Codex app-server turn/steer response did not include turn.id.",
-            );
-          }
-          if (responseTurnId !== state.turnId) {
-            throw new TaskSendMessageError(
-              "turn_mismatch",
-              `Codex app-server accepted message for turn "${responseTurnId}" while Orchestrator expected "${state.turnId}".`,
-            );
-          }
-
-          await appendAgentEvent(
-            context,
-            "protocol.message.sent",
-            compactData({
-              threadId: state.threadId,
-              turnId: state.turnId,
-              clientMessageId: input.clientMessageId,
-            }),
-          );
-          return {
-            status: "accepted",
-            provider: {
-              provider: "codex",
-              protocol: "jsonrpc",
-              transport: "stdio",
-              threadId: state.threadId,
-              turnId: state.turnId,
-            },
-          };
-        } catch (error: unknown) {
-          await appendAgentEvent(
-            context,
-            "protocol.message.failed",
-            compactData({
-              threadId: state.threadId,
-              turnId: state.turnId,
-              error: errorMessage(error),
-            }),
-          );
-          if (error instanceof TaskSendMessageError) {
-            throw error;
-          }
-          throw new TaskSendMessageError("provider_rejected", errorMessage(error));
+        return context.input.plan.protocolExecutionMode === "session" && !state.turnId
+          ? await startSessionTurn(context, state, client, input, text)
+          : await steerActiveTurn(context, state, client, input, text);
+      },
+      async startGoal(input) {
+        const goal = input.goal.trim();
+        if (!goal) {
+          throw new TaskSendMessageError("invalid_request", "Goal must not be empty.");
         }
+        const client = state.client;
+        if (!client) {
+          throw new TaskSendMessageError(
+            "not_running",
+            "Codex app-server is not running for this task.",
+          );
+        }
+
+        return await startSessionGoal(context, state, client, input, goal);
       },
       async interrupt(reason: string, signal: NodeJS.Signals = "SIGTERM"): Promise<void> {
         state.cancelRequested = true;
@@ -213,6 +194,847 @@ export class CodexAppServerTaskExecutor implements TaskExecutor {
       },
     };
   }
+}
+
+async function startSessionGoal(
+  context: TaskExecutionContext,
+  state: CodexExecutorState,
+  client: JsonRpcStdioClient,
+  input: TaskStartGoalInput,
+  objective: string,
+): Promise<TaskStartGoalResult> {
+  if (context.input.plan.protocolExecutionMode !== "session") {
+    throw new TaskSendMessageError(
+      "unsupported",
+      "Codex goals require a persistent codex-app-server session.",
+    );
+  }
+
+  const threadId = state.threadId;
+  if (!threadId) {
+    throw new TaskSendMessageError(
+      "not_ready",
+      "Codex app-server session has not opened a provider thread yet.",
+    );
+  }
+  if (state.turnId || (state.currentSessionOperation && !state.currentSessionOperation.settled)) {
+    throw new TaskSendMessageError(
+      "not_ready",
+      "Codex app-server session is already running an operation.",
+    );
+  }
+
+  const threadResponse = await client.request(
+    "thread/read",
+    { threadId },
+    { timeoutMs: input.timeoutMs ?? SEND_MESSAGE_TIMEOUT_MS },
+  );
+  await appendProtocolResponse(context, "thread/read", threadResponse);
+  assertThreadCanStartGoal(threadResponse, threadId);
+
+  const existingGoalResponse = await client.request(
+    "thread/goal/get",
+    { threadId },
+    { timeoutMs: input.timeoutMs ?? SEND_MESSAGE_TIMEOUT_MS },
+  );
+  await appendProtocolResponse(context, "thread/goal/get", existingGoalResponse);
+  const existingGoal = extractGoal(existingGoalResponse);
+  if (existingGoal && !isTerminalGoalStatus(existingGoal.status)) {
+    throw new TaskSendMessageError(
+      "not_ready",
+      `Codex app-server thread already has an unfinished goal: ${existingGoal.status}.`,
+    );
+  }
+  if (existingGoal) {
+    const clearResponse = await client.request(
+      "thread/goal/clear",
+      { threadId },
+      { timeoutMs: input.timeoutMs ?? SEND_MESSAGE_TIMEOUT_MS },
+    );
+    await appendProtocolResponse(context, "thread/goal/clear", clearResponse);
+  }
+
+  const operation = createSessionGoalOperation(threadId, objective);
+  const operationState: CodexSessionOperationState = {
+    operation,
+    deltaBuffer: "",
+    started: deferred<string>(),
+    completed: deferred<TaskOperation>(),
+    terminal: deferred<CodexTerminalResult>(),
+    settled: false,
+  };
+  state.currentSessionOperation = operationState;
+  state.turnCompleted = operationState.terminal.promise;
+  state.terminalSettled = () => operationState.settled;
+
+  await context.updateTask({
+    session: sessionRecord(state, "goal_running", {
+      currentOperationId: operation.operationId,
+    }),
+    currentOperation: operation,
+  });
+  await appendAgentEvent(
+    context,
+    "operation.started",
+    compactData({
+      operationId: operation.operationId,
+      operationKind: operation.kind,
+      threadId,
+    }),
+  );
+  await appendAgentEvent(
+    context,
+    "protocol.goal.requested",
+    compactData({
+      threadId,
+      operationId: operation.operationId,
+      bytes: Buffer.byteLength(objective),
+      tokenBudget: input.tokenBudget,
+      clientMessageId: input.clientMessageId,
+    }),
+  );
+
+  try {
+    const response = await client.request(
+      "thread/goal/set",
+      {
+        threadId,
+        objective,
+        status: "active",
+        ...(input.tokenBudget !== undefined ? { tokenBudget: input.tokenBudget } : {}),
+      },
+      { timeoutMs: input.timeoutMs ?? SEND_MESSAGE_TIMEOUT_MS },
+    );
+    await appendProtocolResponse(context, "thread/goal/set", response);
+    const goal = extractGoal(response);
+    if (!goal) {
+      throw new TaskSendMessageError(
+        "provider_rejected",
+        "Codex app-server thread/goal/set response did not include goal state.",
+      );
+    }
+    // Notifications can arrive immediately after the provider response and may
+    // already have advanced the goal to a terminal state. Do not let the
+    // response's accepted goal snapshot overwrite newer notification state.
+    if (!operationState.settled && isTerminalGoalStatus(goal.status)) {
+      await settleGoalOperation(context, state, operationState, goal);
+    } else if (!operationState.settled) {
+      operationState.goal = goal;
+      operationState.operation = {
+        ...operationState.operation,
+        status: "running",
+      };
+      await context.updateTask({
+        goal,
+        session: sessionRecord(state, "goal_running", {
+          currentOperationId: operation.operationId,
+        }),
+        currentOperation: operationState.operation,
+      });
+    }
+    await appendAgentEvent(
+      context,
+      "protocol.goal.sent",
+      compactData({
+        threadId,
+        operationId: operation.operationId,
+        status: goal.status,
+      }),
+    );
+
+    if (operationState.settled) {
+      const completed = await operationState.completed.promise;
+      if (completed.turnId) {
+        await appendAgentEvent(
+          context,
+          "protocol.goal.started",
+          compactData({
+            threadId,
+            turnId: completed.turnId,
+            operationId: operation.operationId,
+          }),
+        );
+      }
+      return {
+        status: "completed",
+        provider: codexProvider(threadId, completed.turnId),
+        ...(operationState.goal ? { goal: operationState.goal } : {}),
+        operation: completed,
+      };
+    }
+
+    const turnId = await waitForGoalTurnStart(operationState, input.timeoutMs);
+    await appendAgentEvent(
+      context,
+      "protocol.goal.started",
+      compactData({
+        threadId,
+        turnId,
+        operationId: operation.operationId,
+      }),
+    );
+
+    if (operationState.settled) {
+      const completed = await operationState.completed.promise;
+      return {
+        status: "completed",
+        provider: codexProvider(threadId, completed.turnId ?? turnId),
+        ...(operationState.goal ? { goal: operationState.goal } : {}),
+        operation: completed,
+      };
+    }
+
+    if (input.wait) {
+      const completed = await waitForSessionOperation(operationState, input.timeoutMs);
+      return {
+        status: "completed",
+        provider: codexProvider(threadId, completed.turnId ?? turnId),
+        ...(operationState.goal ? { goal: operationState.goal } : {}),
+        operation: completed,
+      };
+    }
+
+    return {
+      status: "running",
+      provider: codexProvider(threadId, turnId),
+      ...(operationState.goal ? { goal: operationState.goal } : {}),
+      operation: operationState.operation,
+    };
+  } catch (error: unknown) {
+    if (
+      error instanceof TaskSendMessageError &&
+      error.reason === "timeout" &&
+      operationState.operation.status === "running"
+    ) {
+      throw error;
+    }
+    await failSessionOperation(context, state, operationState, error);
+    await appendAgentEvent(
+      context,
+      "protocol.goal.failed",
+      compactData({
+        threadId,
+        operationId: operation.operationId,
+        error: errorMessage(error),
+      }),
+    );
+    if (error instanceof TaskSendMessageError) {
+      throw error;
+    }
+    throw new TaskSendMessageError("provider_rejected", errorMessage(error));
+  }
+}
+
+async function startSessionTurn(
+  context: TaskExecutionContext,
+  state: CodexExecutorState,
+  client: JsonRpcStdioClient,
+  input: TaskSendMessageInput,
+  text: string,
+): Promise<TaskSendMessageResult> {
+  const threadId = state.threadId;
+  if (!threadId) {
+    throw new TaskSendMessageError(
+      "not_ready",
+      "Codex app-server session has not opened a provider thread yet.",
+    );
+  }
+  if (state.currentSessionOperation && !state.currentSessionOperation.settled) {
+    throw new TaskSendMessageError(
+      "not_ready",
+      "Codex app-server session is already running an operation.",
+    );
+  }
+
+  const operation = createSessionTurnOperation(threadId, text);
+  const operationState: CodexSessionOperationState = {
+    operation,
+    deltaBuffer: "",
+    completed: deferred<TaskOperation>(),
+    terminal: deferred<CodexTerminalResult>(),
+    settled: false,
+  };
+  state.currentSessionOperation = operationState;
+  state.turnCompleted = operationState.terminal.promise;
+  state.terminalSettled = () => operationState.settled;
+
+  await context.updateTask({
+    session: sessionRecord(state, "turn_running", {
+      currentOperationId: operation.operationId,
+    }),
+    currentOperation: operation,
+  });
+  await appendAgentEvent(
+    context,
+    "operation.started",
+    compactData({
+      operationId: operation.operationId,
+      operationKind: operation.kind,
+      threadId,
+    }),
+  );
+  await appendAgentEvent(
+    context,
+    "protocol.message.requested",
+    compactData({
+      threadId,
+      operationId: operation.operationId,
+      bytes: Buffer.byteLength(text),
+      clientMessageId: input.clientMessageId,
+    }),
+  );
+
+  try {
+    const response = await client.request(
+      "turn/start",
+      {
+        threadId,
+        input: [{ type: "text", text }],
+        ...(context.input.model ? { model: context.input.model } : {}),
+        ...(input.clientMessageId ? { clientUserMessageId: input.clientMessageId } : {}),
+      },
+      { timeoutMs: input.timeoutMs ?? SEND_MESSAGE_TIMEOUT_MS },
+    );
+    await appendProtocolResponse(context, "turn/start", response);
+    const turnId = extractTurnId(response);
+    if (!turnId) {
+      throw new TaskSendMessageError(
+        "provider_rejected",
+        "Codex app-server turn/start response did not include turn.id.",
+      );
+    }
+
+    if (!operationState.settled) {
+      state.turnId = turnId;
+      operationState.operation = {
+        ...operationState.operation,
+        status: "running",
+        turnId,
+      };
+      await context.updateProvider({ turnId });
+      if (!operationState.settled) {
+        await context.updateTask({
+          session: sessionRecord(state, "turn_running", {
+            currentTurnId: turnId,
+            currentOperationId: operation.operationId,
+          }),
+          currentOperation: operationState.operation,
+        });
+      }
+    } else {
+      await context.updateProvider({ turnId });
+    }
+    await appendAgentEvent(
+      context,
+      "protocol.message.sent",
+      compactData({
+        threadId,
+        turnId,
+        operationId: operation.operationId,
+        clientMessageId: input.clientMessageId,
+      }),
+    );
+
+    if (input.wait) {
+      const completed = await waitForSessionOperation(operationState, input.timeoutMs);
+      return {
+        status: "completed",
+        provider: codexProvider(threadId, completed.turnId ?? turnId),
+        operation: completed,
+      };
+    }
+
+    return {
+      status: "running",
+      provider: codexProvider(threadId, turnId),
+      operation: operationState.operation,
+    };
+  } catch (error: unknown) {
+    if (
+      error instanceof TaskSendMessageError &&
+      error.reason === "timeout" &&
+      operationState.operation.status === "running"
+    ) {
+      throw error;
+    }
+    await failSessionOperation(context, state, operationState, error);
+    await appendAgentEvent(
+      context,
+      "protocol.message.failed",
+      compactData({
+        threadId,
+        operationId: operation.operationId,
+        error: errorMessage(error),
+      }),
+    );
+    if (error instanceof TaskSendMessageError) {
+      throw error;
+    }
+    throw new TaskSendMessageError("provider_rejected", errorMessage(error));
+  }
+}
+
+async function steerActiveTurn(
+  context: TaskExecutionContext,
+  state: CodexExecutorState,
+  client: JsonRpcStdioClient,
+  input: TaskSendMessageInput,
+  text: string,
+): Promise<TaskSendMessageResult> {
+  if (!state.threadId || !state.turnId) {
+    throw new TaskSendMessageError(
+      "not_ready",
+      "Codex app-server has not started a turn for this task yet.",
+    );
+  }
+
+  await appendAgentEvent(
+    context,
+    "protocol.message.requested",
+    compactData({
+      threadId: state.threadId,
+      turnId: state.turnId,
+      bytes: Buffer.byteLength(text),
+      clientMessageId: input.clientMessageId,
+    }),
+  );
+
+  try {
+    const response = await client.request(
+      "turn/steer",
+      {
+        threadId: state.threadId,
+        expectedTurnId: state.turnId,
+        input: [{ type: "text", text }],
+        ...(input.clientMessageId ? { clientUserMessageId: input.clientMessageId } : {}),
+      },
+      { timeoutMs: input.timeoutMs ?? SEND_MESSAGE_TIMEOUT_MS },
+    );
+    await appendProtocolResponse(context, "turn/steer", response);
+    const responseTurnId = extractTurnId(response);
+    if (!responseTurnId) {
+      throw new TaskSendMessageError(
+        "provider_rejected",
+        "Codex app-server turn/steer response did not include turn.id.",
+      );
+    }
+    if (responseTurnId !== state.turnId) {
+      throw new TaskSendMessageError(
+        "turn_mismatch",
+        `Codex app-server accepted message for turn "${responseTurnId}" while Orchestrator expected "${state.turnId}".`,
+      );
+    }
+
+    await appendAgentEvent(
+      context,
+      "protocol.message.sent",
+      compactData({
+        threadId: state.threadId,
+        turnId: state.turnId,
+        clientMessageId: input.clientMessageId,
+      }),
+    );
+
+    if (input.wait && state.currentSessionOperation) {
+      const completed = await waitForSessionOperation(
+        state.currentSessionOperation,
+        input.timeoutMs,
+      );
+      return {
+        status: "completed",
+        provider: codexProvider(state.threadId, completed.turnId ?? responseTurnId),
+        operation: completed,
+      };
+    }
+
+    return {
+      status: "accepted",
+      provider: codexProvider(state.threadId, state.turnId),
+      ...(state.currentSessionOperation
+        ? { operation: state.currentSessionOperation.operation }
+        : {}),
+    };
+  } catch (error: unknown) {
+    if (error instanceof TaskSendMessageError && error.reason === "timeout") {
+      throw error;
+    }
+    await appendAgentEvent(
+      context,
+      "protocol.message.failed",
+      compactData({
+        threadId: state.threadId,
+        turnId: state.turnId,
+        error: errorMessage(error),
+      }),
+    );
+    if (error instanceof TaskSendMessageError) {
+      throw error;
+    }
+    throw new TaskSendMessageError("provider_rejected", errorMessage(error));
+  }
+}
+
+function createSessionTurnOperation(threadId: string, input: string): TaskOperation {
+  return {
+    operationId: randomUUID(),
+    kind: "turn",
+    status: "starting",
+    threadId,
+    input,
+    startedAt: now(),
+  };
+}
+
+function createSessionGoalOperation(threadId: string, objective: string): TaskOperation {
+  return {
+    operationId: randomUUID(),
+    kind: "goal",
+    status: "starting",
+    threadId,
+    objective,
+    startedAt: now(),
+  };
+}
+
+async function settleSessionOperation(
+  context: TaskExecutionContext,
+  state: CodexExecutorState,
+  terminal: CodexTerminalResult,
+): Promise<void> {
+  const operationState = state.currentSessionOperation;
+  if (!operationState || operationState.settled) {
+    return;
+  }
+
+  const result = operationState.finalAnswer ?? operationState.deltaBuffer;
+  const error =
+    terminal.status === "cancelled" ? (state.cancelReason ?? terminal.error) : terminal.error;
+  const usage = operationState.lastUsage
+    ? { ...operationState.lastUsage, final: true, updatedAt: now() }
+    : undefined;
+  const completed: TaskOperation = {
+    ...operationState.operation,
+    status: operationStatusForTerminal(terminal.status),
+    ...(result ? { result } : {}),
+    ...(usage ? { usage } : {}),
+    finishedAt: now(),
+    ...(error ? { error } : {}),
+  };
+
+  operationState.operation = completed;
+  operationState.settled = true;
+  state.currentSessionOperation = undefined;
+  state.turnId = undefined;
+  state.turnCompleted = undefined;
+  state.terminalSettled = undefined;
+
+  await context.writeResult(result);
+  if (usage) {
+    await context.updateUsage(usage);
+  }
+  await context.updateTask({
+    session: sessionRecord(state, "idle"),
+    currentOperation: undefined,
+    lastOperation: completed,
+  });
+  await appendAgentEvent(
+    context,
+    terminal.status === "succeeded" ? "operation.completed" : "operation.failed",
+    compactData({
+      operationId: completed.operationId,
+      operationKind: completed.kind,
+      threadId: completed.threadId,
+      turnId: completed.turnId,
+      status: completed.status,
+      error: completed.error,
+    }),
+  );
+  await appendAgentEvent(context, "session.idle", compactData({ threadId: state.threadId }));
+  operationState.terminal.resolve(terminal);
+  operationState.completed.resolve(completed);
+}
+
+async function settleGoalOperation(
+  context: TaskExecutionContext,
+  state: CodexExecutorState,
+  operationState: CodexSessionOperationState,
+  goal: TaskGoal,
+): Promise<void> {
+  if (operationState.settled) {
+    return;
+  }
+
+  const result = operationState.finalAnswer ?? `Goal ${goal.status}: ${goal.objective}`;
+  const usage = operationState.lastUsage
+    ? { ...operationState.lastUsage, final: true, updatedAt: now() }
+    : undefined;
+  const completed: TaskOperation = {
+    ...operationState.operation,
+    status: operationStatusForGoalStatus(goal.status),
+    objective: goal.objective,
+    ...(result ? { result } : {}),
+    ...(usage ? { usage } : {}),
+    finishedAt: now(),
+  };
+
+  operationState.goal = goal;
+  operationState.operation = completed;
+  operationState.settled = true;
+  state.currentSessionOperation = undefined;
+  state.turnId = undefined;
+  state.turnCompleted = undefined;
+  state.terminalSettled = undefined;
+
+  await context.writeResult(result);
+  if (usage) {
+    await context.updateUsage(usage);
+  }
+  await context.updateTask({
+    goal,
+    session: sessionRecord(state, "idle"),
+    currentOperation: undefined,
+    lastOperation: completed,
+  });
+  await appendAgentEvent(
+    context,
+    "operation.completed",
+    compactData({
+      operationId: completed.operationId,
+      operationKind: completed.kind,
+      threadId: completed.threadId,
+      turnId: completed.turnId,
+      status: completed.status,
+      goalStatus: goal.status,
+    }),
+  );
+  await appendAgentEvent(context, "session.idle", compactData({ threadId: state.threadId }));
+  operationState.terminal.resolve({ status: "succeeded", exitCode: 0 });
+  operationState.completed.resolve(completed);
+}
+
+async function observeGoalUpdated(
+  context: TaskExecutionContext,
+  state: CodexExecutorState,
+  goal: TaskGoal,
+): Promise<void> {
+  const operationState = state.currentSessionOperation;
+  if (!operationState || operationState.settled || operationState.operation.kind !== "goal") {
+    await context.updateTask({ goal });
+    return;
+  }
+
+  operationState.goal = goal;
+  operationState.operation = {
+    ...operationState.operation,
+    objective: goal.objective,
+    status: operationStatusForGoalStatus(goal.status),
+  };
+
+  if (isTerminalGoalStatus(goal.status) && !state.turnId) {
+    await settleGoalOperation(context, state, operationState, goal);
+    return;
+  }
+
+  await context.updateTask({
+    goal,
+    session: sessionRecord(state, "goal_running", {
+      ...(state.turnId ? { currentTurnId: state.turnId } : {}),
+      currentOperationId: operationState.operation.operationId,
+    }),
+    currentOperation: operationState.operation,
+  });
+}
+
+async function observeGoalCleared(
+  context: TaskExecutionContext,
+  state: CodexExecutorState,
+  threadId: string | undefined,
+): Promise<void> {
+  const operationState = state.currentSessionOperation;
+  if (!operationState || operationState.settled || operationState.operation.kind !== "goal") {
+    await context.updateTask({ goal: undefined });
+    return;
+  }
+
+  await failSessionOperation(
+    context,
+    state,
+    operationState,
+    new TaskSendMessageError(
+      "provider_rejected",
+      `Codex app-server goal was cleared${threadId ? ` for thread "${threadId}"` : ""}.`,
+    ),
+  );
+}
+
+async function observeGoalTurnCompleted(
+  context: TaskExecutionContext,
+  state: CodexExecutorState,
+  terminal: CodexTerminalResult,
+): Promise<void> {
+  const operationState = state.currentSessionOperation;
+  if (!operationState || operationState.settled || operationState.operation.kind !== "goal") {
+    return;
+  }
+
+  if (terminal.status !== "succeeded") {
+    await settleSessionOperation(context, state, terminal);
+    return;
+  }
+
+  state.turnId = undefined;
+  operationState.operation = {
+    ...operationState.operation,
+    status: operationState.goal
+      ? operationStatusForGoalStatus(operationState.goal.status)
+      : "running",
+  };
+
+  if (operationState.goal && isTerminalGoalStatus(operationState.goal.status)) {
+    await settleGoalOperation(context, state, operationState, operationState.goal);
+    return;
+  }
+
+  await context.updateTask({
+    session: sessionRecord(state, "goal_running", {
+      currentOperationId: operationState.operation.operationId,
+    }),
+    currentOperation: operationState.operation,
+  });
+}
+
+async function failSessionOperation(
+  context: TaskExecutionContext,
+  state: CodexExecutorState,
+  operationState: CodexSessionOperationState,
+  error: unknown,
+): Promise<void> {
+  if (operationState.settled) {
+    return;
+  }
+  const message = errorMessage(error);
+  const failed: TaskOperation = {
+    ...operationState.operation,
+    status: "failed",
+    error: message,
+    finishedAt: now(),
+  };
+  operationState.operation = failed;
+  operationState.settled = true;
+  state.currentSessionOperation = undefined;
+  state.turnId = undefined;
+  state.turnCompleted = undefined;
+  state.terminalSettled = undefined;
+  await context.updateTask({
+    session: sessionRecord(state, "idle"),
+    currentOperation: undefined,
+    lastOperation: failed,
+  });
+  await appendAgentEvent(
+    context,
+    "operation.failed",
+    compactData({
+      operationId: failed.operationId,
+      operationKind: failed.kind,
+      threadId: failed.threadId,
+      turnId: failed.turnId,
+      status: failed.status,
+      error: failed.error,
+    }),
+  );
+  operationState.terminal.resolve({ status: "failed", error: message, exitCode: null });
+  operationState.completed.resolve(failed);
+}
+
+async function waitForSessionOperation(
+  operationState: CodexSessionOperationState,
+  timeoutMs: number | undefined,
+): Promise<TaskOperation> {
+  if (timeoutMs === undefined) {
+    return await operationState.completed.promise;
+  }
+  return await Promise.race([
+    operationState.completed.promise,
+    delay(timeoutMs).then(() => {
+      throw new TaskSendMessageError(
+        "timeout",
+        `Timed out waiting for operation "${operationState.operation.operationId}" to complete.`,
+      );
+    }),
+  ]);
+}
+
+async function waitForGoalTurnStart(
+  operationState: CodexSessionOperationState,
+  timeoutMs: number | undefined,
+): Promise<string> {
+  if (!operationState.started) {
+    throw new TaskSendMessageError(
+      "provider_rejected",
+      `Goal operation "${operationState.operation.operationId}" cannot observe provider turn start.`,
+    );
+  }
+
+  const wait = operationState.started.promise;
+  if (timeoutMs === undefined) {
+    return await wait;
+  }
+
+  return await Promise.race([
+    wait,
+    delay(timeoutMs).then(() => {
+      throw new TaskSendMessageError(
+        "timeout",
+        `Timed out waiting for goal operation "${operationState.operation.operationId}" to start.`,
+      );
+    }),
+  ]);
+}
+
+function operationStatusForTerminal(status: TaskStatus): TaskOperationStatus {
+  switch (status) {
+    case "succeeded":
+      return "succeeded";
+    case "cancelled":
+      return "interrupted";
+    case "failed":
+    case "timed_out":
+      return "failed";
+    case "queued":
+    case "starting":
+    case "running":
+      return "running";
+  }
+}
+
+function operationStatusForGoalStatus(status: TaskGoalStatus): TaskOperationStatus {
+  return status === "active" ? "running" : status;
+}
+
+function sessionRecord(
+  state: CodexExecutorState,
+  sessionState: "starting" | "idle" | "turn_running" | "goal_running" | "stopping" | "closed",
+  details: { currentTurnId?: string; currentOperationId?: string } = {},
+) {
+  return {
+    kind: "codex-app-server" as const,
+    state: sessionState,
+    ...(state.threadId ? { threadId: state.threadId } : {}),
+    ...(details.currentTurnId ? { currentTurnId: details.currentTurnId } : {}),
+    ...(details.currentOperationId ? { currentOperationId: details.currentOperationId } : {}),
+    startedAt: state.sessionStartedAt ?? now(),
+    updatedAt: now(),
+  };
+}
+
+function codexProvider(threadId: string, turnId?: string) {
+  return {
+    provider: "codex" as const,
+    protocol: "jsonrpc" as const,
+    transport: "stdio" as const,
+    threadId,
+    ...(turnId ? { turnId } : {}),
+  };
 }
 
 async function runCodexAppServerTask(
@@ -464,12 +1286,79 @@ async function runCodexAppServerSession(
         state.threadId = state.threadId ?? threadId;
       },
       setTurnId: (turnId) => {
-        state.turnId = state.turnId ?? turnId;
+        const operationState = state.currentSessionOperation;
+        if (!operationState || operationState.settled) {
+          return;
+        }
+        state.turnId = turnId;
+        if (!operationState.operation.turnId) {
+          operationState.operation = {
+            ...operationState.operation,
+            status: "running",
+            turnId,
+          };
+        }
+        operationState.started?.resolve(turnId);
       },
-      appendDelta: () => {},
-      setFinalAnswer: () => {},
-      setLastUsage: () => {},
-      settleTurn: settleSession,
+      appendDelta: (delta) => {
+        const operationState = state.currentSessionOperation;
+        if (operationState && !operationState.settled) {
+          operationState.deltaBuffer += delta;
+        }
+      },
+      setFinalAnswer: (text) => {
+        const operationState = state.currentSessionOperation;
+        if (operationState && !operationState.settled) {
+          operationState.finalAnswer = text;
+        }
+      },
+      setLastUsage: (usage) => {
+        const operationState = state.currentSessionOperation;
+        if (operationState && !operationState.settled) {
+          operationState.lastUsage = usage;
+        }
+      },
+      onTurnStarted: async (threadId, turnId) => {
+        const operationState = state.currentSessionOperation;
+        if (!operationState || operationState.settled) {
+          return;
+        }
+        await context.updateProvider({ turnId });
+        await context.updateTask({
+          session: sessionRecord(
+            state,
+            operationState.operation.kind === "goal" ? "goal_running" : "turn_running",
+            {
+              currentTurnId: turnId,
+              currentOperationId: operationState.operation.operationId,
+            },
+          ),
+          currentOperation: operationState.operation,
+        });
+        await appendAgentEvent(
+          context,
+          "operation.turn.started",
+          compactData({
+            operationId: operationState.operation.operationId,
+            operationKind: operationState.operation.kind,
+            threadId,
+            turnId,
+          }),
+        );
+      },
+      setGoal: async (goal) => {
+        await observeGoalUpdated(context, state, goal);
+      },
+      clearGoal: async (threadId) => {
+        await observeGoalCleared(context, state, threadId);
+      },
+      settleTurn: async (terminal) => {
+        if (state.currentSessionOperation?.operation.kind === "goal") {
+          await observeGoalTurnCompleted(context, state, terminal);
+          return;
+        }
+        await settleSessionOperation(context, state, terminal);
+      },
     });
     pendingNotificationWrites.add(write);
     write.finally(() => pendingNotificationWrites.delete(write));
@@ -493,15 +1382,11 @@ async function runCodexAppServerSession(
 
   try {
     const startedAt = now();
+    state.sessionStartedAt = startedAt;
     await context.setStatus("running", {
       startedAt,
       ...(client.pid ? { pid: client.pid } : {}),
-      session: {
-        kind: "codex-app-server",
-        state: "starting",
-        startedAt,
-        updatedAt: startedAt,
-      },
+      session: sessionRecord(state, "starting"),
     });
     await context.appendEvent("running", { pid: client.pid ?? null });
     heartbeat = await startHeartbeat(context, client.pid, startedAt);
@@ -537,13 +1422,7 @@ async function runCodexAppServerSession(
 
     const threadId = await openCodexThread(context, state, client);
     await context.updateTask({
-      session: {
-        kind: "codex-app-server",
-        state: "idle",
-        threadId,
-        startedAt,
-        updatedAt: now(),
-      },
+      session: sessionRecord(state, "idle"),
     });
     await appendAgentEvent(context, "session.idle", compactData({ threadId }));
 
@@ -706,10 +1585,13 @@ async function handleNotification(
   handlers: {
     setThreadId(threadId: string): void;
     setTurnId(turnId: string): void;
+    onTurnStarted?(threadId: string | undefined, turnId: string | undefined): Promise<void>;
     appendDelta(delta: string): void;
     setFinalAnswer(text: string): void;
     setLastUsage(usage: TaskUsage): void;
-    settleTurn(result: CodexTerminalResult): void;
+    setGoal?(goal: TaskGoal): Promise<void>;
+    clearGoal?(threadId: string | undefined): Promise<void>;
+    settleTurn(result: CodexTerminalResult): void | Promise<void>;
   },
 ): Promise<void> {
   const params = isRecord(notification.params) ? notification.params : {};
@@ -723,9 +1605,47 @@ async function handleNotification(
     handlers.setTurnId(turnId);
   }
 
+  // Capture state-bearing notifications before any async writes. The JSON-RPC
+  // transport dispatches notifications in order, but observers run concurrently;
+  // awaiting transcript/event writes before updating state can let turn/completed
+  // settle an operation before the final answer or usage has been recorded.
+  switch (notification.method) {
+    case "item/agentMessage/delta":
+    case "item/agent_message/delta": {
+      const delta = stringValue(params.delta) ?? "";
+      if (delta) {
+        handlers.appendDelta(delta);
+      }
+      break;
+    }
+    case "item/completed": {
+      const item = isRecord(params.item) ? params.item : undefined;
+      const itemType = item ? stringValue(item.type) : undefined;
+      const text = item ? stringValue(item.text) : undefined;
+      if (itemType === "agentMessage" && text !== undefined) {
+        handlers.setFinalAnswer(text);
+      }
+      break;
+    }
+    case "thread/tokenUsage/updated": {
+      const usage = usageFromParams(params);
+      if (usage) {
+        handlers.setLastUsage(usage);
+      }
+      break;
+    }
+    case "thread/goal/updated": {
+      const goal = goalFromParams(params);
+      if (goal && handlers.setGoal) {
+        await handlers.setGoal(goal);
+      }
+      break;
+    }
+  }
+
   const terminal = terminalResultForNotification(notification.method, params);
   if (terminal) {
-    handlers.settleTurn(terminal);
+    await handlers.settleTurn(terminal);
   }
 
   await context.appendTranscript(notification);
@@ -735,17 +1655,39 @@ async function handleNotification(
       await appendAgentEvent(context, "thread.started", compactData({ threadId }));
       return;
     case "turn/started":
+      if (handlers.onTurnStarted) {
+        await handlers.onTurnStarted(threadId, turnId);
+      }
       await appendAgentEvent(context, "turn.started", compactData({ threadId, turnId }));
       return;
+    case "thread/goal/updated": {
+      const goal = goalFromParams(params);
+      await appendAgentEvent(
+        context,
+        "goal.updated",
+        compactData({
+          threadId,
+          objective: goal?.objective,
+          status: goal?.status,
+          tokenBudget: goal?.tokenBudget,
+          tokensUsed: goal?.tokensUsed,
+          timeUsedSeconds: goal?.timeUsedSeconds,
+        }),
+      );
+      return;
+    }
+    case "thread/goal/cleared": {
+      if (handlers.clearGoal) {
+        await handlers.clearGoal(threadId);
+      }
+      await appendAgentEvent(context, "goal.cleared", compactData({ threadId }));
+      return;
+    }
     case "item/started":
       await appendAgentEvent(context, "agent.item.started", compactData({ threadId, turnId }));
       return;
     case "item/agentMessage/delta":
     case "item/agent_message/delta": {
-      const delta = stringValue(params.delta) ?? "";
-      if (delta) {
-        handlers.appendDelta(delta);
-      }
       await appendAgentEvent(context, "agent.message.delta", compactData({ threadId, turnId }));
       return;
     }
@@ -754,7 +1696,6 @@ async function handleNotification(
       const itemType = item ? stringValue(item.type) : undefined;
       const text = item ? stringValue(item.text) : undefined;
       if (itemType === "agentMessage" && text !== undefined) {
-        handlers.setFinalAnswer(text);
         await appendAgentEvent(context, "agent.message", compactData({ threadId, turnId, text }));
         return;
       }
@@ -774,7 +1715,6 @@ async function handleNotification(
     case "thread/tokenUsage/updated": {
       const usage = usageFromParams(params);
       if (usage) {
-        handlers.setLastUsage(usage);
         await context.updateUsage(usage);
       }
       await appendAgentEvent(context, "agent.usage", compactData({ threadId, turnId, usage }));
@@ -960,6 +1900,111 @@ function extractTurnId(response: unknown): string | undefined {
   return isRecord(response.turn) ? stringValue(response.turn.id) : undefined;
 }
 
+function extractGoal(response: unknown): TaskGoal | undefined {
+  if (!isRecord(response)) {
+    return undefined;
+  }
+  return isRecord(response.goal) ? codexGoalFromRecord(response.goal) : undefined;
+}
+
+function goalFromParams(params: Record<string, unknown>): TaskGoal | undefined {
+  return isRecord(params.goal) ? codexGoalFromRecord(params.goal) : undefined;
+}
+
+function codexGoalFromRecord(value: Record<string, unknown>): TaskGoal | undefined {
+  const threadId = stringValue(value.threadId) ?? stringValue(value.thread_id);
+  const objective = stringValue(value.objective);
+  const status = normalizeGoalStatus(value.status);
+  if (!threadId || !objective || !status) {
+    return undefined;
+  }
+
+  const goal: TaskGoal = {
+    provider: "codex",
+    threadId,
+    objective,
+    status,
+  };
+  assignNumber(goal, "tokenBudget", value.tokenBudget);
+  assignNumber(goal, "tokensUsed", value.tokensUsed);
+  assignNumber(goal, "timeUsedSeconds", value.timeUsedSeconds);
+  assignDateString(goal, "createdAt", value.createdAt);
+  assignDateString(goal, "updatedAt", value.updatedAt);
+  return goal;
+}
+
+function normalizeGoalStatus(value: unknown): TaskGoalStatus | undefined {
+  switch (value) {
+    case "active":
+    case "paused":
+    case "blocked":
+    case "complete":
+      return value;
+    case "usageLimited":
+    case "usage_limited":
+      return "usage_limited";
+    case "budgetLimited":
+    case "budget_limited":
+      return "budget_limited";
+    default:
+      return undefined;
+  }
+}
+
+function isTerminalGoalStatus(status: TaskGoalStatus): boolean {
+  return status !== "active";
+}
+
+function assertThreadCanStartGoal(response: unknown, threadId: string): void {
+  const thread = isRecord(response) && isRecord(response.thread) ? response.thread : undefined;
+  if (!thread) {
+    throw new TaskSendMessageError(
+      "provider_rejected",
+      "Codex app-server thread/read response did not include thread state.",
+    );
+  }
+
+  const responseThreadId = stringValue(thread.id);
+  if (responseThreadId && responseThreadId !== threadId) {
+    throw new TaskSendMessageError(
+      "turn_mismatch",
+      `Codex app-server read thread "${responseThreadId}" while Orchestrator expected "${threadId}".`,
+    );
+  }
+
+  const status = threadStatusLabel(thread.status);
+  if (status && status !== "idle") {
+    throw new TaskSendMessageError(
+      "not_ready",
+      `Codex app-server thread must be idle before starting a goal; current status is "${status}".`,
+    );
+  }
+
+  if (thread.ephemeral === true || thread.path === null) {
+    throw new TaskSendMessageError(
+      "unsupported",
+      "Codex app-server goals require a persisted provider thread.",
+    );
+  }
+}
+
+function threadStatusLabel(value: unknown): string | undefined {
+  if (typeof value === "string") {
+    return value;
+  }
+  if (!isRecord(value)) {
+    return undefined;
+  }
+  const direct = stringValue(value.status) ?? stringValue(value.type) ?? stringValue(value.kind);
+  if (direct) {
+    return direct;
+  }
+  const root = isRecord(value.root) ? value.root : undefined;
+  return root
+    ? (stringValue(root.status) ?? stringValue(root.type) ?? stringValue(root.kind))
+    : undefined;
+}
+
 function turnIdFromParams(params: Record<string, unknown>): string | undefined {
   if (isRecord(params.turn)) {
     return stringValue(params.turn.id);
@@ -994,6 +2039,20 @@ function assignNumber<T extends Record<string, unknown>>(
 ): void {
   if (typeof value === "number" && Number.isFinite(value)) {
     target[key] = value as T[keyof T];
+  }
+}
+
+function assignDateString<T extends Record<string, unknown>>(
+  target: T,
+  key: keyof T,
+  value: unknown,
+): void {
+  if (typeof value === "string" && value.trim()) {
+    target[key] = value as T[keyof T];
+    return;
+  }
+  if (typeof value === "number" && Number.isFinite(value)) {
+    target[key] = new Date(value).toISOString() as T[keyof T];
   }
 }
 
@@ -1034,11 +2093,7 @@ async function delay(ms: number): Promise<void> {
   await new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-function deferred<T>(): {
-  promise: Promise<T>;
-  resolve(value: T): void;
-  reject(error: unknown): void;
-} {
+function deferred<T>(): Deferred<T> {
   let resolve!: (value: T) => void;
   let reject!: (error: unknown) => void;
   const promise = new Promise<T>((promiseResolve, promiseReject) => {

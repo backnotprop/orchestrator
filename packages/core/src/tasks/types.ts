@@ -108,6 +108,26 @@ export type TaskOperation = {
   error?: string;
 };
 
+export type TaskGoalStatus =
+  | "active"
+  | "paused"
+  | "blocked"
+  | "usage_limited"
+  | "budget_limited"
+  | "complete";
+
+export type TaskGoal = {
+  provider: "codex";
+  threadId: string;
+  objective: string;
+  status: TaskGoalStatus;
+  tokenBudget?: number | null;
+  tokensUsed?: number;
+  timeUsedSeconds?: number;
+  createdAt?: string;
+  updatedAt?: string;
+};
+
 export type TaskUsage = {
   inputTokens?: number;
   outputTokens?: number;
@@ -198,6 +218,7 @@ export type AgentTaskRecord = {
   resume?: TaskResumeMetadata;
   provider?: TaskProviderMetadata;
   session?: TaskSession;
+  goal?: TaskGoal;
   currentOperation?: TaskOperation;
   lastOperation?: TaskOperation;
   storeScope?: TaskStoreScope;
@@ -409,10 +430,29 @@ export type SendTaskMessageInput = TaskStoreOptions & {
   text: string;
   timeoutMs?: number;
   clientMessageId?: string;
+  wait?: boolean;
 };
 
 export type SendTaskMessageResult = {
   task: AgentTaskRecord;
-  status: "accepted";
+  status: "accepted" | "running" | "completed";
   provider?: TaskProviderMetadata;
+  operation?: TaskOperation;
+};
+
+export type StartTaskGoalInput = TaskStoreOptions & {
+  taskId: string;
+  goal: string;
+  timeoutMs?: number;
+  clientMessageId?: string;
+  wait?: boolean;
+  tokenBudget?: number;
+};
+
+export type StartTaskGoalResult = {
+  task: AgentTaskRecord;
+  status: "accepted" | "running" | "completed";
+  provider?: TaskProviderMetadata;
+  goal?: TaskGoal;
+  operation?: TaskOperation;
 };

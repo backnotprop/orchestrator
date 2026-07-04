@@ -117,7 +117,8 @@ Usage:
   orchestrator launch <runtime> --session [--name <name>] [--model <model>] [--cwd <path>] [--json [--compact [--brief]]]
   orchestrator launch -f <manifest.json|-> --json [--compact [--brief]]
   orchestrator resume <task-id|prefix> [--name <name>] [--model <model>] [--wait] [--json [--compact [--brief]]] "<next task>"
-  orchestrator send <task-id|prefix> [--timeout-ms <ms>] [--json [--compact]] "<message>"
+  orchestrator send <task-id|prefix> [--wait] [--timeout-ms <ms>] [--json [--compact]] "<message>"
+  orchestrator goal start <task-id|prefix> [--wait] [--timeout-ms <ms>] [--token-budget <tokens>] [--json [--compact]] "<goal>"
   orchestrator list [--status <status>] [-A|--all-workspaces] [--json]
   orchestrator ps [--all] [-A|--all-workspaces] [--cwd <path>] [--watch] [--runtime <runtime>] [--status <status>] [--parent <run-id>] [--json [--compact [--active] [--brief]]]
   orchestrator read <task-id|prefix>... [--wait] [--timeout-ms <ms>] [--interval-ms <ms>] [--max-bytes <bytes>] [--json [--compact]]
@@ -159,17 +160,18 @@ Agent instructions:
   25. Use launch -f <manifest.json|-> --json --compact --brief to start several tasks in one call.
   26. Use launch --json --compact --brief when starting one task and only task id/status/stop is needed.
   27. Use resume only for true provider resume from a finished task whose runtime reports resumeSupported and has stored provider metadata. Keep the default runtime output mode when you want reliable results, provider ids, token usage, or resume.
-  28. Use send <task-id|prefix> "message" only for active tasks whose runtime reports runningMessagesSupported.
-  29. Use resume or launch a new task when the task is already finished.
-  30. When compact JSON returns stop.args, run those portable args to stop exactly the returned task, group, or selected active set.
-  31. Compact ps stop.args are scoped to the current view; parent/group stops may include children of that selected run.
-  32. When JSON output returns commands.*.args, pass those portable args to orchestrator for read/watch/logs/events follow-up.
-  33. Treat returned args as an argument vector. Do not join them into one shell string.
-  34. Use compact ps top-level commands.waitPreview.args to wait for every listed task with bounded output.
-  35. Use compact ps group commands.waitPreview.args to wait for one listed group with bounded output.
-  36. Use commands.readPreview, commands.waitPreview, or commands.logsPreview when another agent needs bounded output before deciding whether to fetch more.
-  37. Use watch to follow one task live. Use watch --agent-only --json for normalized agent event JSONL.
-  38. Use read for final agent answers. Use read <id> <id> --wait --json --compact to build your own multi-task wait call.
+  28. Use send <task-id|prefix> "message" for running tasks or sessions whose runtime reports runningMessagesSupported. Use --wait when you need the operation result.
+  29. Use goal start <task-id|prefix> for native provider goals on supported running sessions. Do not simulate provider goals by sending prompt text.
+  30. Use resume or launch a new task when the task is already finished.
+  31. When compact JSON returns stop.args, run those portable args to stop exactly the returned task, group, or selected active set.
+  32. Compact ps stop.args are scoped to the current view; parent/group stops may include children of that selected run.
+  33. When JSON output returns commands.*.args, pass those portable args to orchestrator for read/watch/logs/events follow-up.
+  34. Treat returned args as an argument vector. Do not join them into one shell string.
+  35. Use compact ps top-level commands.waitPreview.args to wait for every listed task with bounded output.
+  36. Use compact ps group commands.waitPreview.args to wait for one listed group with bounded output.
+  37. Use commands.readPreview, commands.waitPreview, or commands.logsPreview when another agent needs bounded output before deciding whether to fetch more.
+  38. Use watch to follow one task live. Use watch --agent-only --json for normalized agent event JSONL.
+  39. Use read for final agent answers. Use read <id> <id> --wait --json --compact to build your own multi-task wait call.
   39. If compact read returns active: true, use commands.waitPreview.args to wait with bounded output or commands.readPreview.args to poll again.
   40. If compact batch read times out, use its top-level commands.waitPreview.args to wait again or stop.args to stop still-active work safely.
   41. If compact read returns failed status, use commands.logsPreview.args for bounded raw logs or commands.events.args for the task timeline.
@@ -211,7 +213,8 @@ Resume options:
   --brief                     With --compact, omit follow-up command bundles.
 
 Send options:
-  --timeout-ms <ms>           How long to wait for the running task to accept the message.
+  --wait                      Wait for the operation result when the runtime supports it.
+  --timeout-ms <ms>           How long to wait for acceptance or the operation result.
   --compact                   With --json, print a small send result for agents/scripts.
 
 Ps options:
@@ -297,7 +300,7 @@ function buildCliHelpDocument(
       "Use launch --json --compact when software needs only the new task id and status.",
       "Use launch -f <manifest.json|-> --json --compact --brief when software needs to start several tasks in one call.",
       "Use resume <task-id|prefix> only for true provider resume from a finished task whose runtime reports resumeSupported and has stored provider metadata.",
-      "Use send <task-id|prefix> only for active tasks whose runtime reports runningMessagesSupported.",
+      "Use send <task-id|prefix> for running tasks or sessions whose runtime reports runningMessagesSupported. Use --wait when you need the operation result.",
       "Keep the default runtime output mode when you want reliable results, provider ids, token usage, or resume. Provider text modes are mainly diagnostic or provider-specific.",
       "Orchestrator uses one default machine store at ~/.orchestrator/tasks; workspace is project scope, and cwd is the agent process directory.",
       "Capture taskId from launch output. Task commands accept the full id or a unique prefix shown by ps/list from the same store.",
@@ -439,15 +442,32 @@ function buildCliHelpDocument(
       {
         name: "send",
         usage:
-          'orchestrator send <task-id|prefix> [--timeout-ms <ms>] [--json [--compact]] "<message>"',
+          'orchestrator send <task-id|prefix> [--wait] [--timeout-ms <ms>] [--json [--compact]] "<message>"',
         semantics:
-          "Sends a follow-up message to an active task when its runtime supports running messages.",
+          "Sends work or a follow-up message to a running task or session when its runtime supports messages.",
         options: [
           "--workspace <path>",
           "--orchestrator-dir <path>",
           "--config <path>",
           "--json",
+          "--wait",
           "--timeout-ms <ms>",
+          "--compact",
+        ],
+      },
+      {
+        name: "goal",
+        usage:
+          'orchestrator goal start <task-id|prefix> [--wait] [--timeout-ms <ms>] [--token-budget <tokens>] [--json [--compact]] "<goal>"',
+        semantics: "Starts a native provider-backed goal on a supported running session.",
+        options: [
+          "--workspace <path>",
+          "--orchestrator-dir <path>",
+          "--config <path>",
+          "--json",
+          "--wait",
+          "--timeout-ms <ms>",
+          "--token-budget <tokens>",
           "--compact",
         ],
       },
@@ -614,7 +634,7 @@ function buildCliHelpDocument(
           "Use compact ps top-level commands.waitPreview.args when software needs to wait for every listed child task.",
           "Use compact ps group commands.waitPreview.args when software needs to wait for only one parent group.",
           "Use watch, read, logs, events, and interrupt with a full task id or unique prefix to inspect or control one child task.",
-          "Use send <task-id|prefix> --json --compact to add a follow-up instruction only when a child task is active and its runtime supports running messages.",
+          "Use send <task-id|prefix> --json --compact to add work or a follow-up instruction when a child task or session is running and its runtime supports messages.",
           "Use read <id> <id> --wait --json --compact when software needs to build its own multi-task wait call.",
           "If compact batch read times out, use its top-level commands.waitPreview.args to wait again or stop.args to stop still-active child work safely.",
           "If compact read returns failed status, use commands.logsPreview.args for bounded raw logs or commands.events.args for the task timeline.",
@@ -631,7 +651,7 @@ function buildCliHelpDocument(
           "Add --brief to compact launch when one task only needs id/status/stop.",
           "Use launch -f <manifest.json|-> --json --compact --brief when several tasks should start from one manifest.",
           "Use resume <task-id|prefix> --json --compact only when you need true provider resume from a finished task whose runtime reports resumeSupported and has stored provider metadata.",
-          "Use send <task-id|prefix> --json --compact only when the listed task is active and its runtime supports running messages.",
+          "Use send <task-id|prefix> --json --compact when the listed task or session is running and its runtime supports messages.",
           "Keep the default runtime output mode when you want reliable results, provider ids, token usage, or resume. Provider text modes are mainly diagnostic or provider-specific.",
           "Extract taskId from launch output, or use the short id shown by ps/list when it is unique.",
           "Run list to see named tasks.",
@@ -772,7 +792,7 @@ function compactCliHelpDocument(
         ? ["Start many tasks with launch -f <manifest.json|-> --json --compact --brief."]
         : ["If runtimeIds is empty, do not call launch; add or enable an agent config first."]),
       "Resume finished resume-supported tasks with stored provider metadata by using resume <task-id|prefix> --json --compact.",
-      "Send follow-up instructions to active running-message-supported tasks with send <task-id|prefix> --json --compact.",
+      "Send work or follow-up instructions to running message-supported tasks or sessions with send <task-id|prefix> --json --compact.",
       "Keep the default runtime output mode when you want reliable results, provider ids, token usage, or resume.",
       "Find running tasks with ps --json --compact --active --brief.",
       "Narrow one parent run with ps --parent <run-id|prefix> --json --compact --brief.",
@@ -856,6 +876,9 @@ function buildCliExamples(registry: RuntimeRegistry): string[] {
   if (registry["codex-app-server"]?.enabled) {
     examples.push(
       'orchestrator launch codex-app-server --session --name "codex session" --json --compact',
+    );
+    examples.push(
+      'orchestrator goal start <task-id|prefix> --wait --json --compact "Improve performance across the app by 10%."',
     );
   }
 
