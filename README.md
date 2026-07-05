@@ -105,6 +105,9 @@ orchestrator launch -f agents.json --json --compact --brief
 orchestrator resume <task-id|prefix> --json --compact "Continue from the prior result."
 orchestrator send <task-id|prefix> --wait --json --compact "Focus on failing tests first."
 orchestrator goal start <task-id|prefix> --wait --json --compact "Improve performance across the app by 10%."
+orchestrator goal get <task-id|prefix> --json --compact
+orchestrator goal set <task-id|prefix> --status paused --json --compact
+orchestrator goal clear <task-id|prefix> --json --compact
 orchestrator watch <task-id|prefix>
 orchestrator read <task-id|prefix>... --wait --json --compact
 orchestrator logs <task-id|prefix> --follow
@@ -112,6 +115,10 @@ orchestrator events <task-id|prefix> --json --compact
 orchestrator interrupt <task-id|prefix> <task-id|prefix> --json --compact
 orchestrator interrupt <task-id|prefix>
 ```
+
+For persistent Codex sessions, `send`, and native Codex goals, use
+`codex-app-server`.
+[Codex App Server](doc/codex-app-server.md)
 
 Configure the parent agent in `~/.orchestrator/auth.json`.
 [Parent Agent Config](doc/parent-agent-config.md)
@@ -280,7 +287,9 @@ First-class targets:
 `codex app-server --listen stdio://`. It supports provider-thread resume for
 tasks with stored `provider.threadId`, running messages through
 `orchestrator send`, and native Codex goals through `orchestrator goal start`
-on persistent sessions.
+on persistent sessions. `orchestrator goal get`, `orchestrator goal set`, and
+`orchestrator goal clear` inspect or edit provider goal state without starting
+tracked goal work.
 
 The runtime layer is generic, but the first release is focused on Claude Code
 and Codex. `shell` is also enabled as a local-command runtime for research,

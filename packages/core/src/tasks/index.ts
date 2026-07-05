@@ -1,12 +1,15 @@
 export {
   TaskSupervisorSafetyError,
   TaskSupervisorError,
+  clearTaskGoal,
+  getTaskGoal,
   interruptTasks,
   interruptTask,
   launchTask,
   listTasks,
   readTaskOutput,
   sendTaskMessage,
+  setTaskGoal,
   startTaskGoal,
   validateLaunchTaskInput,
 } from "./supervisor.ts";
@@ -78,6 +81,10 @@ export {
 export { waitForTask } from "./wait.ts";
 export type {
   AgentTaskRecord,
+  ClearTaskGoalInput,
+  ClearTaskGoalResult,
+  GetTaskGoalInput,
+  GetTaskGoalResult,
   InterruptTaskInput,
   InterruptTasksFailed,
   InterruptTasksInput,
@@ -94,6 +101,9 @@ export type {
   ReadTaskOutputInput,
   SendTaskMessageInput,
   SendTaskMessageResult,
+  SetTaskGoalInput,
+  SetTaskGoalResult,
+  SettableTaskGoalStatus,
   StartTaskGoalInput,
   StartTaskGoalResult,
   TaskEvent,

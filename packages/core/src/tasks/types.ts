@@ -116,6 +116,8 @@ export type TaskGoalStatus =
   | "budget_limited"
   | "complete";
 
+export type SettableTaskGoalStatus = Exclude<TaskGoalStatus, "active">;
+
 export type TaskGoal = {
   provider: "codex";
   threadId: string;
@@ -455,4 +457,43 @@ export type StartTaskGoalResult = {
   provider?: TaskProviderMetadata;
   goal?: TaskGoal;
   operation?: TaskOperation;
+};
+
+export type GetTaskGoalInput = TaskStoreOptions & {
+  taskId: string;
+  timeoutMs?: number;
+};
+
+export type GetTaskGoalResult = {
+  task: AgentTaskRecord;
+  source: "provider" | "task";
+  provider?: TaskProviderMetadata;
+  goal?: TaskGoal;
+};
+
+export type SetTaskGoalInput = TaskStoreOptions & {
+  taskId: string;
+  objective?: string;
+  status?: SettableTaskGoalStatus;
+  tokenBudget?: number | null;
+  timeoutMs?: number;
+};
+
+export type SetTaskGoalResult = {
+  task: AgentTaskRecord;
+  source: "provider";
+  provider?: TaskProviderMetadata;
+  goal: TaskGoal;
+};
+
+export type ClearTaskGoalInput = TaskStoreOptions & {
+  taskId: string;
+  timeoutMs?: number;
+};
+
+export type ClearTaskGoalResult = {
+  task: AgentTaskRecord;
+  source: "provider";
+  provider?: TaskProviderMetadata;
+  cleared: boolean;
 };

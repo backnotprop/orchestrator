@@ -15,6 +15,8 @@ import {
   type TaskExecutionContext,
   type TaskExecutionHandle,
   type TaskExecutor,
+  type TaskGoalControlInput,
+  type TaskGoalControlResult,
   type TaskSendMessageInput,
   type TaskSendMessageResult,
   type TaskStartGoalInput,
@@ -128,6 +130,17 @@ export class CodexAppServerTaskExecutor implements TaskExecutor {
 
         return await startSessionGoal(context, state, client, input, goal);
       },
+      async controlGoal(input) {
+        const client = state.client;
+        if (!client) {
+          throw new TaskSendMessageError(
+            "not_running",
+            "Codex app-server is not running for this task.",
+          );
+        }
+
+        return await controlSessionGoal(context, state, client, input);
+      },
       async interrupt(reason: string, signal: NodeJS.Signals = "SIGTERM"): Promise<void> {
         state.cancelRequested = true;
         state.cancelReason = reason;
@@ -194,6 +207,119 @@ export class CodexAppServerTaskExecutor implements TaskExecutor {
       },
     };
   }
+}
+
+async function controlSessionGoal(
+  context: TaskExecutionContext,
+  state: CodexExecutorState,
+  client: JsonRpcStdioClient,
+  input: TaskGoalControlInput,
+): Promise<TaskGoalControlResult> {
+  const threadId = requireSessionGoalControlThread(context, state);
+  const timeoutMs = input.timeoutMs ?? SEND_MESSAGE_TIMEOUT_MS;
+
+  if (input.action === "get") {
+    const response = await client.request("thread/goal/get", { threadId }, { timeoutMs });
+    await appendProtocolResponse(context, "thread/goal/get", response);
+    const goal = extractGoal(response);
+    await context.updateTask(goal ? { goal } : { goal: undefined });
+    await appendAgentEvent(
+      context,
+      "protocol.goal.get",
+      compactData({ threadId, hasGoal: Boolean(goal) }),
+    );
+    return {
+      action: "get",
+      provider: codexProvider(threadId),
+      ...(goal ? { goal } : {}),
+    };
+  }
+
+  if (input.action === "clear") {
+    if (state.currentSessionOperation?.operation.kind === "goal") {
+      throw new TaskSendMessageError(
+        "not_ready",
+        "Codex app-server session is running a goal. Wait for the goal operation before clearing it.",
+      );
+    }
+
+    const response = await client.request("thread/goal/clear", { threadId }, { timeoutMs });
+    await appendProtocolResponse(context, "thread/goal/clear", response);
+    const cleared = extractGoalCleared(response);
+    if (cleared) {
+      await context.updateTask({ goal: undefined });
+    }
+    await appendAgentEvent(context, "protocol.goal.cleared", compactData({ threadId, cleared }));
+    return {
+      action: "clear",
+      provider: codexProvider(threadId),
+      cleared,
+    };
+  }
+
+  const callerStatus: unknown = input.status;
+  if (callerStatus === "active") {
+    throw new TaskSendMessageError(
+      "invalid_request",
+      "Use goal start when activating a goal so Orchestrator can track the work.",
+    );
+  }
+  const objective = input.objective?.trim();
+  const payload = {
+    threadId,
+    ...(objective ? { objective } : {}),
+    ...(input.status ? { status: codexGoalStatus(input.status) } : {}),
+    ...(Object.prototype.hasOwnProperty.call(input, "tokenBudget")
+      ? { tokenBudget: input.tokenBudget ?? null }
+      : {}),
+  };
+  const response = await client.request("thread/goal/set", payload, { timeoutMs });
+  await appendProtocolResponse(context, "thread/goal/set", response);
+  const goal = extractGoal(response);
+  if (!goal) {
+    throw new TaskSendMessageError(
+      "provider_rejected",
+      "Codex app-server thread/goal/set response did not include goal state.",
+    );
+  }
+
+  await context.updateTask({ goal });
+  await appendAgentEvent(
+    context,
+    "protocol.goal.set",
+    compactData({
+      threadId,
+      status: goal.status,
+      tokenBudget: goal.tokenBudget,
+    }),
+  );
+  return {
+    action: "set",
+    provider: codexProvider(threadId),
+    goal,
+  };
+}
+
+function requireSessionGoalControlThread(
+  context: TaskExecutionContext,
+  state: CodexExecutorState,
+): string {
+  if (context.input.plan.protocolExecutionMode !== "session") {
+    throw new TaskSendMessageError(
+      "unsupported",
+      "Codex goal control requires a persistent codex-app-server session.",
+    );
+  }
+
+  const threadId = state.threadId;
+  if (!threadId) {
+    throw new TaskSendMessageError(
+      "not_ready",
+      "Codex app-server session has not opened a provider thread yet.",
+    );
+  }
+
+  return threadId;
 }
 
 async function startSessionGoal(
@@ -946,6 +1072,19 @@ async function failSessionOperation(
   operationState.completed.resolve(failed);
 }
 
+async function settleCurrentSessionOperationForTerminal(
+  context: TaskExecutionContext,
+  state: CodexExecutorState,
+  terminal: CodexTerminalResult,
+): Promise<void> {
+  const operationState = state.currentSessionOperation;
+  if (!operationState || operationState.settled) {
+    return;
+  }
+
+  await settleSessionOperation(context, state, terminal);
+}
+
 async function waitForSessionOperation(
   operationState: CodexSessionOperationState,
   timeoutMs: number | undefined,
@@ -1431,6 +1570,7 @@ async function runCodexAppServerSession(
 
     const terminalError =
       terminal.status === "cancelled" ? (state.cancelReason ?? terminal.error) : terminal.error;
+    await settleCurrentSessionOperationForTerminal(context, state, terminal);
     return await context.markTerminal(
       terminal.status,
       {
@@ -1455,6 +1595,11 @@ async function runCodexAppServerSession(
       ? (state.cancelReason ?? "Interrupted.")
       : errorMessage(error);
     await context.appendStderr(`${message}\n`).catch(() => undefined);
+    await settleCurrentSessionOperationForTerminal(context, state, {
+      status,
+      exitCode: null,
+      error: message,
+    });
     return await context.markTerminal(
       status,
       {
@@ -1907,6 +2052,10 @@ function extractGoal(response: unknown): TaskGoal | undefined {
   return isRecord(response.goal) ? codexGoalFromRecord(response.goal) : undefined;
 }
 
+function extractGoalCleared(response: unknown): boolean {
+  return isRecord(response) && response.cleared === true;
+}
+
 function goalFromParams(params: Record<string, unknown>): TaskGoal | undefined {
   return isRecord(params.goal) ? codexGoalFromRecord(params.goal) : undefined;
 }
@@ -1925,7 +2074,7 @@ function codexGoalFromRecord(value: Record<string, unknown>): TaskGoal | undefin
     objective,
     status,
   };
-  assignNumber(goal, "tokenBudget", value.tokenBudget);
+  assignGoalTokenBudget(goal, value.tokenBudget);
   assignNumber(goal, "tokensUsed", value.tokensUsed);
   assignNumber(goal, "timeUsedSeconds", value.timeUsedSeconds);
   assignDateString(goal, "createdAt", value.createdAt);
@@ -1948,6 +2097,19 @@ function normalizeGoalStatus(value: unknown): TaskGoalStatus | undefined {
       return "budget_limited";
     default:
       return undefined;
+  }
+}
+
+function codexGoalStatus(status: Exclude<TaskGoalStatus, "active">): string {
+  switch (status) {
+    case "paused":
+    case "blocked":
+    case "complete":
+      return status;
+    case "usage_limited":
+      return "usageLimited";
+    case "budget_limited":
+      return "budgetLimited";
   }
 }
 
@@ -2042,6 +2204,14 @@ function assignNumber<T extends Record<string, unknown>>(
   }
 }
 
+function assignGoalTokenBudget(target: TaskGoal, value: unknown): void {
+  if (value === null) {
+    target.tokenBudget = null;
+    return;
+  }
+  assignNumber(target, "tokenBudget", value);
+}
+
 function assignDateString<T extends Record<string, unknown>>(
   target: T,
   key: keyof T,
@@ -2052,7 +2222,8 @@ function assignDateString<T extends Record<string, unknown>>(
     return;
   }
   if (typeof value === "number" && Number.isFinite(value)) {
-    target[key] = new Date(value).toISOString() as T[keyof T];
+    const millis = value < 1_000_000_000_000 ? value * 1000 : value;
+    target[key] = new Date(millis).toISOString() as T[keyof T];
   }
 }
 

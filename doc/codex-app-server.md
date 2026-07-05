@@ -22,14 +22,31 @@ The app-server runtime should feel like any other runtime through the CLI:
 orchestrator ps
 orchestrator ps --json --compact
 orchestrator resume <task-id> "Continue from the prior task."
-orchestrator launch codex-app-server --session --name "codex session"
-orchestrator send <task-id> --wait "Focus on failing tests first."
-orchestrator goal start <task-id> --wait "Improve performance across the app by 10%."
-orchestrator send <task-id> --wait "Summarize what changed."
+orchestrator launch codex-app-server --session --name "codex session" --json --compact --brief
+orchestrator send <task-id> --wait --json --compact "Focus on failing tests first."
+orchestrator goal start <task-id> --wait --json --compact "Improve performance across the app by 10%."
+orchestrator goal get <task-id> --json --compact
+orchestrator goal set <task-id> --status paused --json --compact
+orchestrator goal clear <task-id> --json --compact
+orchestrator send <task-id> --wait --json --compact "Summarize what changed."
 orchestrator events <task-id> --agent-only
 orchestrator logs <task-id>
-orchestrator interrupt <task-id>
+orchestrator interrupt <task-id> --json --compact --reason "session complete"
 ```
+
+For agents, the normal persistent-session recipe is:
+
+1. Launch `codex-app-server --session`.
+2. Capture the returned `taskId` or `id`.
+3. Use `send --wait` for normal work in that session.
+4. Use `goal start --wait` only for native Codex goals.
+5. Use `goal get`, `goal set`, or `goal clear` to inspect or edit provider goal
+   state without starting work.
+6. Use another `send --wait` for follow-up work after the goal completes.
+7. Interrupt the session when it is no longer needed.
+
+Do not simulate native goals by sending prompt text. If the next step depends on
+the result, use `--wait` and parse the compact JSON response.
 
 `events --agent-only` shows normalized Orchestrator events such as
 `thread.started`, `turn.started`, `agent.message`, `agent.usage`, and
@@ -46,7 +63,9 @@ session, or add a follow-up instruction while a regular turn is already
 running. Use `send --wait` when you need the operation result before moving on.
 `goal start` starts a native Codex goal operation on that running session. Use
 `goal start --wait` when Orchestrator should wait for Codex to report a terminal
-goal state before moving on.
+goal state before moving on. `goal get`, `goal set`, and `goal clear` inspect or
+edit provider goal state. `goal set --status active` is rejected; use
+`goal start` when Codex should actively work on a goal.
 
 Each completed turn leaves the session running and returns it to idle. `read`
 returns the latest completed operation result. Completed goal operations also
@@ -70,7 +89,6 @@ live provider emits usage for that run.
 - Protocol details may still change upstream.
 - Usage timing is provider controlled; usage may arrive during a turn, at the end, or not at all.
 - Older app-server tasks created before durable threads may fail to resume.
-- Native goal support currently starts goals on idle persistent sessions.
+- Native goal support starts goals on idle persistent sessions.
 - There is no app-server pooling yet.
 - There is no public protocol custom-agent config yet.
-- `goal get`, `goal set`, and `goal clear` are not public CLI commands yet.

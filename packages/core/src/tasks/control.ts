@@ -1,7 +1,11 @@
 import { randomUUID } from "node:crypto";
 import { mkdir, readdir, readFile, rename, stat, writeFile } from "node:fs/promises";
 import { basename, join } from "node:path";
-import type { TaskExecutionHandle } from "./executors/types.ts";
+import type {
+  TaskExecutionHandle,
+  TaskGoalControlAction,
+  TaskGoalControlInput,
+} from "./executors/types.ts";
 import { TaskSendMessageError } from "./executors/types.ts";
 import type {
   TaskGoal,
@@ -13,6 +17,7 @@ import type {
   TaskProviderMetadata,
   TaskSendMessageFailureReason,
   TaskUsage,
+  SettableTaskGoalStatus,
 } from "./types.ts";
 
 const CONTROL_SCHEMA_VERSION = 1;
@@ -53,6 +58,10 @@ export type TaskControlRequest = {
         tokenBudget?: number;
       };
     }
+  | {
+      kind: "goal_control";
+      input: TaskGoalControlInput;
+    }
 );
 
 export type TaskControlResponse = {
@@ -60,11 +69,13 @@ export type TaskControlResponse = {
   requestId: string;
   taskId: string;
   kind: TaskControlRequest["kind"];
+  goalAction?: TaskGoalControlAction;
   status: "accepted" | "running" | "completed" | "failed";
   createdAt: string;
   completedAt: string;
   provider?: TaskProviderMetadata;
   goal?: TaskGoal;
+  cleared?: boolean;
   operation?: TaskOperation;
   error?: {
     reason: TaskSendMessageFailureReason;
@@ -166,6 +177,35 @@ export async function requestDetachedTaskGoalStart(input: {
       ...(input.wait !== undefined ? { wait: input.wait } : {}),
       ...(input.tokenBudget !== undefined ? { tokenBudget: input.tokenBudget } : {}),
     },
+  };
+  const paths = getTaskControlPaths(input.paths);
+  await ensureControlDirs(paths);
+  await writeJsonAtomic(requestPath(paths, requestId), request);
+  return await waitForControlResponse({
+    paths,
+    taskId: input.taskId,
+    requestId,
+    timeoutMs,
+  });
+}
+
+export async function requestDetachedTaskGoalControl(input: {
+  paths: Pick<TaskPaths, "taskDir">;
+  taskId: string;
+  control: TaskGoalControlInput;
+  timeoutMs?: number;
+}): Promise<TaskControlResponse> {
+  const requestId = randomUUID();
+  const createdAt = now();
+  const timeoutMs = input.timeoutMs ?? DEFAULT_SEND_MESSAGE_TIMEOUT_MS;
+  const request: TaskControlRequest = {
+    schemaVersion: CONTROL_SCHEMA_VERSION,
+    requestId,
+    taskId: input.taskId,
+    createdAt,
+    expiresAt: new Date(Date.now() + timeoutMs).toISOString(),
+    kind: "goal_control",
+    input: input.control,
   };
   const paths = getTaskControlPaths(input.paths);
   await ensureControlDirs(paths);
@@ -283,6 +323,16 @@ async function handleFreshControlRequest(
     });
   }
 
+  if (request.kind === "goal_control") {
+    return await handleControlRequest(handle, {
+      ...request,
+      input: {
+        ...request.input,
+        timeoutMs,
+      } as TaskGoalControlInput,
+    });
+  }
+
   return await handleControlRequest(handle, {
     ...request,
     input: {
@@ -327,6 +377,49 @@ async function handleControlRequest(
         taskId: request.taskId,
         requestId: request.requestId,
         kind: request.kind,
+        reason,
+        message: errorMessage(error),
+        createdAt: request.createdAt,
+      });
+    }
+  }
+
+  if (request.kind === "goal_control") {
+    if (!handle.controlGoal) {
+      return failedResponse({
+        taskId: request.taskId,
+        requestId: request.requestId,
+        kind: request.kind,
+        goalAction: request.input.action,
+        reason: "unsupported",
+        message: "This task runtime does not support native goal state control while running.",
+      });
+    }
+
+    try {
+      const result = await handle.controlGoal(request.input);
+      return {
+        schemaVersion: CONTROL_SCHEMA_VERSION,
+        requestId: request.requestId,
+        taskId: request.taskId,
+        kind: request.kind,
+        goalAction: result.action,
+        status: "completed",
+        createdAt: request.createdAt,
+        completedAt: now(),
+        ...(result.provider ? { provider: result.provider } : {}),
+        ...(result.action === "get" && result.goal ? { goal: result.goal } : {}),
+        ...(result.action === "set" ? { goal: result.goal } : {}),
+        ...(result.action === "clear" ? { cleared: result.cleared } : {}),
+      };
+    } catch (error: unknown) {
+      const reason =
+        error instanceof TaskSendMessageError ? error.reason : ("provider_rejected" as const);
+      return failedResponse({
+        taskId: request.taskId,
+        requestId: request.requestId,
+        kind: request.kind,
+        goalAction: request.input.action,
         reason,
         message: errorMessage(error),
         createdAt: request.createdAt,
@@ -451,7 +544,11 @@ function parseControlRequest(
   if (stringValue(value.taskId) !== expectedTaskId) {
     return invalidRequest(requestId, "Task control request task id does not match this task.");
   }
-  if (value.kind !== "send_message" && value.kind !== "goal_start") {
+  if (
+    value.kind !== "send_message" &&
+    value.kind !== "goal_start" &&
+    value.kind !== "goal_control"
+  ) {
     return invalidRequest(requestId, "Task control request kind is unsupported.");
   }
   const input = isRecord(value.input) ? value.input : undefined;
@@ -483,6 +580,25 @@ function parseControlRequest(
           ...(wait !== undefined ? { wait } : {}),
           ...(tokenBudget !== undefined ? { tokenBudget } : {}),
         },
+      },
+    };
+  }
+
+  if (value.kind === "goal_control") {
+    const parsedInput = parseGoalControlInput(input, requestId);
+    if (!parsedInput.ok) {
+      return parsedInput;
+    }
+    return {
+      ok: true,
+      request: {
+        schemaVersion: CONTROL_SCHEMA_VERSION,
+        requestId,
+        taskId: expectedTaskId,
+        createdAt: stringValue(value.createdAt) ?? now(),
+        expiresAt: parseExpiresAt(value),
+        kind: "goal_control",
+        input: parsedInput.input,
       },
     };
   }
@@ -539,7 +655,11 @@ function parseControlResponse(
       "Task control response id does not match the request.",
     );
   }
-  if (value.kind !== "send_message" && value.kind !== "goal_start") {
+  if (
+    value.kind !== "send_message" &&
+    value.kind !== "goal_start" &&
+    value.kind !== "goal_control"
+  ) {
     throw new TaskControlRequestError(
       "invalid_request",
       "Task control response kind is unsupported.",
@@ -560,19 +680,75 @@ function parseControlResponse(
   const goal = isRecord(value.goal) ? parseGoal(value.goal) : undefined;
   const operation = isRecord(value.operation) ? parseOperation(value.operation) : undefined;
   const error = isRecord(value.error) ? parseResponseError(value.error) : undefined;
+  const goalAction = parseGoalControlAction(value.goalAction);
   return {
     schemaVersion: CONTROL_SCHEMA_VERSION,
     requestId: expectedRequestId,
     taskId: expectedTaskId,
     kind: value.kind,
+    ...(goalAction ? { goalAction } : {}),
     status: value.status,
     createdAt: stringValue(value.createdAt) ?? now(),
     completedAt: stringValue(value.completedAt) ?? now(),
     ...(provider ? { provider } : {}),
     ...(goal ? { goal } : {}),
+    ...(typeof value.cleared === "boolean" ? { cleared: value.cleared } : {}),
     ...(operation ? { operation } : {}),
     ...(error ? { error } : {}),
   };
+}
+
+function parseGoalControlInput(
+  input: Record<string, unknown>,
+  requestId: string,
+): { ok: true; input: TaskGoalControlInput } | { ok: false; requestId: string; message: string } {
+  const action = parseGoalControlAction(input.action);
+  if (!action) {
+    return invalidRequest(requestId, "Task goal control action is unsupported.");
+  }
+  const timeoutMs = numberValue(input.timeoutMs);
+  if (action === "get") {
+    return {
+      ok: true,
+      input: {
+        action,
+        ...(timeoutMs !== undefined ? { timeoutMs } : {}),
+      },
+    };
+  }
+  if (action === "clear") {
+    return {
+      ok: true,
+      input: {
+        action,
+        ...(timeoutMs !== undefined ? { timeoutMs } : {}),
+      },
+    };
+  }
+
+  const objective = stringValue(input.objective)?.trim();
+  const status = parseSettableGoalStatus(input.status);
+  if (input.status !== undefined && !status) {
+    return invalidRequest(requestId, "Task goal control status is unsupported.");
+  }
+  const tokenBudget = numberOrNullValue(input.tokenBudget);
+  if (!objective && status === undefined && tokenBudget === undefined) {
+    return invalidRequest(requestId, "Task goal control set requires a change.");
+  }
+  return {
+    ok: true,
+    input: {
+      action,
+      ...(objective ? { objective } : {}),
+      ...(status ? { status } : {}),
+      ...(tokenBudget !== undefined ? { tokenBudget } : {}),
+      ...(timeoutMs !== undefined ? { timeoutMs } : {}),
+    },
+  };
+}
+
+function parseGoalControlAction(value: unknown): TaskGoalControlAction | undefined {
+  return value === "get" || value === "set" || value === "clear" ? value : undefined;
 }
 
 function parseGoal(value: Record<string, unknown>): TaskGoal | undefined {
@@ -587,7 +763,7 @@ function parseGoal(value: Record<string, unknown>): TaskGoal | undefined {
     threadId,
     objective,
     status,
-    ...optionalGoalNumber(value, "tokenBudget"),
+    ...optionalGoalTokenBudget(value),
     ...optionalGoalNumber(value, "tokensUsed"),
     ...optionalGoalNumber(value, "timeUsedSeconds"),
     ...optionalString(value, "createdAt"),
@@ -598,6 +774,19 @@ function parseGoal(value: Record<string, unknown>): TaskGoal | undefined {
 function parseGoalStatus(value: unknown): TaskGoal["status"] | undefined {
   switch (value) {
     case "active":
+    case "paused":
+    case "blocked":
+    case "usage_limited":
+    case "budget_limited":
+    case "complete":
+      return value;
+    default:
+      return undefined;
+  }
+}
+
+function parseSettableGoalStatus(value: unknown): SettableTaskGoalStatus | undefined {
+  switch (value) {
     case "paused":
     case "blocked":
     case "usage_limited":
@@ -733,6 +922,11 @@ function optionalGoalNumber(
   return number === undefined ? {} : { [key]: number };
 }
 
+function optionalGoalTokenBudget(value: Record<string, unknown>): Partial<TaskGoal> {
+  const tokenBudget = numberOrNullValue(value.tokenBudget);
+  return tokenBudget === undefined ? {} : { tokenBudget };
+}
+
 function parseFailureReason(value: unknown): TaskSendMessageFailureReason {
   switch (value) {
     case "unsupported":
@@ -778,6 +972,7 @@ function failedResponse(input: {
   taskId: string;
   requestId: string;
   kind?: TaskControlRequest["kind"];
+  goalAction?: TaskGoalControlAction;
   reason: TaskSendMessageFailureReason;
   message: string;
   createdAt?: string;
@@ -787,6 +982,7 @@ function failedResponse(input: {
     requestId: input.requestId,
     taskId: input.taskId,
     kind: input.kind ?? "send_message",
+    ...(input.goalAction ? { goalAction: input.goalAction } : {}),
     status: "failed",
     createdAt: input.createdAt ?? now(),
     completedAt: now(),
@@ -888,6 +1084,13 @@ function stringValue(value: unknown): string | undefined {
 
 function numberValue(value: unknown): number | undefined {
   return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : undefined;
+}
+
+function numberOrNullValue(value: unknown): number | null | undefined {
+  if (value === null) {
+    return null;
+  }
+  return numberValue(value);
 }
 
 function booleanValue(value: unknown): boolean | undefined {

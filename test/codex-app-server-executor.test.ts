@@ -12,6 +12,8 @@ import {
   type HeadlessAgentRuntimeConfig,
 } from "@backnotprop/orchestrator-core/runtime";
 import {
+  clearTaskGoal,
+  getTaskGoal,
   interruptTask,
   launchTask,
   readTaskEvents,
@@ -19,6 +21,7 @@ import {
   readTaskOutput,
   readTaskRecord,
   sendTaskMessage,
+  setTaskGoal,
   startTaskGoal,
 } from "@backnotprop/orchestrator-core/tasks";
 import {
@@ -361,6 +364,141 @@ test("codex app-server session goal start waits for native goal completion", asy
   }, "orchestrator-codex-app-server-session-goal-start-");
 });
 
+test("codex app-server session goal get set and clear control provider goal state", async () => {
+  await withTempWorkspace(async (workspaceRoot) => {
+    const handle = await launchTask({
+      workspaceRoot,
+      plan: codexAppServerSessionPlan(workspaceRoot, {
+        FAKE_CODEX_APP_SERVER_GOAL_TIMESTAMP_UNIT: "seconds",
+      }),
+      name: "goal control app-server session",
+      model: "fake-model",
+      timeoutMs: 10_000,
+    });
+
+    try {
+      await waitFor(async () => {
+        const task = await readTaskRecord({ workspaceRoot }, handle.task.taskId);
+        return task.status === "running" && task.session?.state === "idle";
+      }, 5_000);
+
+      const empty = await getTaskGoal({
+        workspaceRoot,
+        taskId: handle.task.taskId.slice(0, 8),
+        timeoutMs: 5_000,
+      });
+      assert.equal(empty.source, "provider");
+      assert.equal(empty.goal, undefined);
+
+      const paused = await setTaskGoal({
+        workspaceRoot,
+        taskId: handle.task.taskId.slice(0, 8),
+        objective: "Pause performance work.",
+        status: "paused",
+        tokenBudget: 1000,
+        timeoutMs: 5_000,
+      });
+      assert.equal(paused.source, "provider");
+      assert.equal(paused.goal.status, "paused");
+      assert.equal(paused.goal.objective, "Pause performance work.");
+      assert.equal(paused.goal.tokenBudget, 1000);
+      assert.equal(paused.goal.tokensUsed, 15);
+      assert.match(paused.goal.createdAt ?? "", /^\d{4}-/);
+
+      const fresh = await getTaskGoal({
+        workspaceRoot,
+        taskId: handle.task.taskId,
+        timeoutMs: 5_000,
+      });
+      assert.equal(fresh.source, "provider");
+      assert.equal(fresh.goal?.status, "paused");
+
+      const cleared = await clearTaskGoal({
+        workspaceRoot,
+        taskId: handle.task.taskId,
+        timeoutMs: 5_000,
+      });
+      assert.equal(cleared.source, "provider");
+      assert.equal(cleared.cleared, true);
+
+      const emptyAgain = await getTaskGoal({
+        workspaceRoot,
+        taskId: handle.task.taskId,
+        timeoutMs: 5_000,
+      });
+      assert.equal(emptyAgain.goal, undefined);
+
+      const task = await readTaskRecord({ workspaceRoot }, handle.task.taskId);
+      assert.equal(task.goal, undefined);
+      assert.equal(task.session?.state, "idle");
+
+      const transcript = await readFile(task.paths.transcriptJsonl, "utf8");
+      assert.match(transcript, /"method":"thread\/goal\/get"/);
+      assert.match(transcript, /"method":"thread\/goal\/set"/);
+      assert.match(transcript, /"method":"thread\/goal\/clear"/);
+
+      const kinds = await agentEventKinds(workspaceRoot, handle.task.taskId);
+      assert.ok(kinds.includes("protocol.goal.get"));
+      assert.ok(kinds.includes("protocol.goal.set"));
+      assert.ok(kinds.includes("protocol.goal.cleared"));
+      assert.ok(kinds.includes("goal.updated"));
+      assert.ok(kinds.includes("goal.cleared"));
+    } finally {
+      await interruptTask({
+        workspaceRoot,
+        taskId: handle.task.taskId,
+        reason: "test cleanup",
+      }).catch(() => undefined);
+    }
+
+    const completed = await handle.completed;
+    assert.equal(completed.status, "cancelled");
+  }, "orchestrator-codex-app-server-session-goal-control-");
+});
+
+test("codex app-server session goal set rejects active status", async () => {
+  await withTempWorkspace(async (workspaceRoot) => {
+    const handle = await launchTask({
+      workspaceRoot,
+      plan: codexAppServerSessionPlan(workspaceRoot),
+      name: "active set app-server session",
+      model: "fake-model",
+      timeoutMs: 10_000,
+    });
+
+    try {
+      await waitFor(async () => {
+        const task = await readTaskRecord({ workspaceRoot }, handle.task.taskId);
+        return task.status === "running" && task.session?.state === "idle";
+      }, 5_000);
+
+      await assert.rejects(
+        setTaskGoal({
+          workspaceRoot,
+          taskId: handle.task.taskId,
+          // SAFETY: This test exercises the runtime guard for malformed JS callers.
+          status: "active" as never,
+          timeoutMs: 5_000,
+        }),
+        (error: unknown) =>
+          error instanceof Error &&
+          "reason" in error &&
+          error.reason === "invalid_request" &&
+          /goal set cannot activate/.test(error.message),
+      );
+    } finally {
+      await interruptTask({
+        workspaceRoot,
+        taskId: handle.task.taskId,
+        reason: "test cleanup",
+      }).catch(() => undefined);
+    }
+
+    const completed = await handle.completed;
+    assert.equal(completed.status, "cancelled");
+  }, "orchestrator-codex-app-server-session-goal-set-active-");
+});
+
 test("codex app-server session goal start accepts a terminal goal before turn start", async () => {
   await withTempWorkspace(async (workspaceRoot) => {
     const handle = await launchTask({
@@ -502,6 +640,19 @@ test("codex app-server session goal start without wait records a running operati
       assert.equal(goal.operation?.kind, "goal");
       assert.equal(goal.operation?.status, "running");
       assert.equal(goal.operation?.turnId, "turn-fake-goal-1");
+
+      await assert.rejects(
+        clearTaskGoal({
+          workspaceRoot,
+          taskId: handle.task.taskId,
+          timeoutMs: 5_000,
+        }),
+        (error: unknown) =>
+          error instanceof Error &&
+          "reason" in error &&
+          error.reason === "not_ready" &&
+          /running a goal/.test(error.message),
+      );
 
       const task = await readTaskRecord({ workspaceRoot }, handle.task.taskId);
       assert.ok(task.session?.state === "goal_running" || task.session?.state === "idle");
@@ -805,7 +956,60 @@ test("codex app-server session send steers an active session turn", async () => 
 
     const completed = await handle.completed;
     assert.equal(completed.status, "cancelled");
+    assert.equal(completed.session?.state, "closed");
+    assert.equal(completed.currentOperation, undefined);
+    assert.equal(completed.lastOperation?.kind, "turn");
+    assert.equal(completed.lastOperation?.status, "interrupted");
   }, "orchestrator-codex-app-server-session-steer-");
+});
+
+test("codex app-server session interrupt settles a running goal operation", async () => {
+  await withTempWorkspace(async (workspaceRoot) => {
+    const handle = await launchTask({
+      workspaceRoot,
+      plan: codexAppServerSessionPlan(workspaceRoot, {
+        FAKE_CODEX_APP_SERVER_MODE: "goal-hang",
+      }),
+      name: "hanging goal app-server session",
+      model: "fake-model",
+      timeoutMs: 10_000,
+    });
+
+    await waitFor(async () => {
+      const task = await readTaskRecord({ workspaceRoot }, handle.task.taskId);
+      return task.status === "running" && task.session?.state === "idle";
+    }, 5_000);
+
+    const started = await startTaskGoal({
+      workspaceRoot,
+      taskId: handle.task.taskId,
+      goal: "Keep the goal running.",
+      timeoutMs: 5_000,
+    });
+    assert.equal(started.status, "running");
+    assert.equal(started.operation?.kind, "goal");
+    assert.equal(started.operation?.status, "running");
+
+    await waitFor(async () => {
+      const task = await readTaskRecord({ workspaceRoot }, handle.task.taskId);
+      return task.session?.state === "goal_running" && task.currentOperation?.kind === "goal";
+    }, 5_000);
+
+    await interruptTask({
+      workspaceRoot,
+      taskId: handle.task.taskId,
+      reason: "stop hanging goal",
+    });
+
+    const completed = await handle.completed;
+    assert.equal(completed.status, "cancelled");
+    assert.equal(completed.session?.state, "closed");
+    assert.equal(completed.currentOperation, undefined);
+    assert.equal(completed.lastOperation?.kind, "goal");
+    assert.equal(completed.lastOperation?.status, "interrupted");
+    assert.equal(completed.lastOperation?.error, "stop hanging goal");
+    assert.equal(completed.goal?.status, "active");
+  }, "orchestrator-codex-app-server-session-goal-interrupt-");
 });
 
 test("codex app-server executor maps failed turns to failed tasks", async () => {
@@ -1472,6 +1676,154 @@ test("CLI goal start --wait can run a native codex-app-server goal", async () =>
       return record.status === "cancelled" && record.session?.state === "closed";
     }, 5_000);
   }, "orchestrator-codex-app-server-cli-session-goal-start-");
+});
+
+test("CLI goal get set and clear control a native codex-app-server goal", async () => {
+  await withTempWorkspace(async (workspaceRoot) => {
+    const fakeCodex = await installFakeCodex(workspaceRoot);
+
+    const launch = await runCli(
+      workspaceRoot,
+      [
+        "launch",
+        "codex-app-server",
+        "--workspace",
+        workspaceRoot,
+        "--session",
+        "--name",
+        "goal control cli session",
+        "--json",
+      ],
+      10_000,
+      {
+        ...fakeCodex.env,
+        FAKE_CODEX_APP_SERVER_GOAL_TIMESTAMP_UNIT: "seconds",
+      },
+    );
+    const task = JSON.parse(launch.stdout) as { taskId: string; runtime: string };
+    assert.equal(task.runtime, "codex-app-server");
+
+    try {
+      await waitFor(async () => {
+        const record = await readTaskRecord({ workspaceRoot }, task.taskId);
+        return record.status === "running" && record.session?.state === "idle";
+      }, 5_000);
+
+      const empty = await runCli(
+        workspaceRoot,
+        [
+          "goal",
+          "get",
+          task.taskId.slice(0, 8),
+          "--workspace",
+          workspaceRoot,
+          "--json",
+          "--compact",
+        ],
+        10_000,
+        fakeCodex.env,
+      );
+      const emptyGoal = JSON.parse(empty.stdout) as {
+        ok: boolean;
+        goal: { action: string; source: string; state?: { status?: string } };
+      };
+      assert.equal(emptyGoal.ok, true);
+      assert.equal(emptyGoal.goal.action, "get");
+      assert.equal(emptyGoal.goal.source, "provider");
+      assert.equal(emptyGoal.goal.state, undefined);
+
+      const set = await runCli(
+        workspaceRoot,
+        [
+          "goal",
+          "set",
+          task.taskId.slice(0, 8),
+          "--workspace",
+          workspaceRoot,
+          "--objective",
+          "Pause CLI work.",
+          "--status",
+          "usage-limited",
+          "--token-budget",
+          "1000",
+          "--json",
+          "--compact",
+        ],
+        10_000,
+        fakeCodex.env,
+      );
+      const setGoal = JSON.parse(set.stdout) as {
+        ok: boolean;
+        goal: {
+          action: string;
+          source: string;
+          state?: { status?: string; objective?: string; tokenBudget?: number; createdAt?: string };
+        };
+      };
+      assert.equal(setGoal.ok, true);
+      assert.equal(setGoal.goal.action, "set");
+      assert.equal(setGoal.goal.state?.status, "usage_limited");
+      assert.equal(setGoal.goal.state?.objective, "Pause CLI work.");
+      assert.equal(setGoal.goal.state?.tokenBudget, 1000);
+      assert.match(setGoal.goal.state?.createdAt ?? "", /^\d{4}-/);
+
+      const clear = await runCli(
+        workspaceRoot,
+        [
+          "goal",
+          "clear",
+          task.taskId.slice(0, 8),
+          "--workspace",
+          workspaceRoot,
+          "--json",
+          "--compact",
+        ],
+        10_000,
+        fakeCodex.env,
+      );
+      const clearGoal = JSON.parse(clear.stdout) as {
+        ok: boolean;
+        goal: { action: string; source: string; cleared: boolean };
+      };
+      assert.equal(clearGoal.ok, true);
+      assert.equal(clearGoal.goal.action, "clear");
+      assert.equal(clearGoal.goal.cleared, true);
+
+      await assert.rejects(
+        runCli(
+          workspaceRoot,
+          [
+            "goal",
+            "set",
+            task.taskId.slice(0, 8),
+            "--workspace",
+            workspaceRoot,
+            "--status",
+            "active",
+            "--json",
+          ],
+          10_000,
+          fakeCodex.env,
+        ),
+        (error: unknown) => {
+          const stderr = error instanceof Error && "stderr" in error ? String(error.stderr) : "";
+          return /Use goal start when activating a goal/.test(stderr);
+        },
+      );
+    } finally {
+      await runCli(
+        workspaceRoot,
+        ["interrupt", task.taskId, "--workspace", workspaceRoot, "--reason", "test cleanup"],
+        10_000,
+        fakeCodex.env,
+      ).catch(() => undefined);
+    }
+
+    await waitFor(async () => {
+      const record = await readTaskRecord({ workspaceRoot }, task.taskId);
+      return record.status === "cancelled" && record.session?.state === "closed";
+    }, 5_000);
+  }, "orchestrator-codex-app-server-cli-session-goal-control-");
 });
 
 test("CLI resume can continue a codex-app-server task", async () => {

@@ -119,6 +119,9 @@ Usage:
   orchestrator resume <task-id|prefix> [--name <name>] [--model <model>] [--wait] [--json [--compact [--brief]]] "<next task>"
   orchestrator send <task-id|prefix> [--wait] [--timeout-ms <ms>] [--json [--compact]] "<message>"
   orchestrator goal start <task-id|prefix> [--wait] [--timeout-ms <ms>] [--token-budget <tokens>] [--json [--compact]] "<goal>"
+  orchestrator goal get <task-id|prefix> [--timeout-ms <ms>] [--json [--compact]]
+  orchestrator goal set <task-id|prefix> [--objective <text>] [--status paused|blocked|usage-limited|budget-limited|complete] [--token-budget <tokens|none>] [--timeout-ms <ms>] [--json [--compact]]
+  orchestrator goal clear <task-id|prefix> [--timeout-ms <ms>] [--json [--compact]]
   orchestrator list [--status <status>] [-A|--all-workspaces] [--json]
   orchestrator ps [--all] [-A|--all-workspaces] [--cwd <path>] [--watch] [--runtime <runtime>] [--status <status>] [--parent <run-id>] [--json [--compact [--active] [--brief]]]
   orchestrator read <task-id|prefix>... [--wait] [--timeout-ms <ms>] [--interval-ms <ms>] [--max-bytes <bytes>] [--json [--compact]]
@@ -161,7 +164,7 @@ Agent instructions:
   26. Use launch --json --compact --brief when starting one task and only task id/status/stop is needed.
   27. Use resume only for true provider resume from a finished task whose runtime reports resumeSupported and has stored provider metadata. Keep the default runtime output mode when you want reliable results, provider ids, token usage, or resume.
   28. Use send <task-id|prefix> "message" for running tasks or sessions whose runtime reports runningMessagesSupported. Use --wait when you need the operation result.
-  29. Use goal start <task-id|prefix> for native provider goals on supported running sessions. Do not simulate provider goals by sending prompt text.
+  29. Use goal start <task-id|prefix> for native provider goals on supported running sessions. Use goal get/set/clear to inspect or edit provider goal state. Do not simulate provider goals by sending prompt text.
   30. Use resume or launch a new task when the task is already finished.
   31. When compact JSON returns stop.args, run those portable args to stop exactly the returned task, group, or selected active set.
   32. Compact ps stop.args are scoped to the current view; parent/group stops may include children of that selected run.
@@ -172,16 +175,16 @@ Agent instructions:
   37. Use commands.readPreview, commands.waitPreview, or commands.logsPreview when another agent needs bounded output before deciding whether to fetch more.
   38. Use watch to follow one task live. Use watch --agent-only --json for normalized agent event JSONL.
   39. Use read for final agent answers. Use read <id> <id> --wait --json --compact to build your own multi-task wait call.
-  39. If compact read returns active: true, use commands.waitPreview.args to wait with bounded output or commands.readPreview.args to poll again.
-  40. If compact batch read times out, use its top-level commands.waitPreview.args to wait again or stop.args to stop still-active work safely.
-  41. If compact read returns failed status, use commands.logsPreview.args for bounded raw logs or commands.events.args for the task timeline.
-  42. Check outputTruncated/stdoutTruncated/stderrTruncated in JSON output; ByReadLimit means re-read with more bytes can help, ByCaptureLimit means the task was launched with too small a capture cap.
-  43. If compact read is truncated by read limit, use commands.read.args to fetch more output.
-  44. Use logs --json --compact for a one-line raw stdout/stderr snapshot and events --json --compact for a one-line task timeline. Use logs --follow --stream all when live stdout/stderr order matters.
-  45. Use interrupt to cancel running agents. Use interrupt <id> <id> --json --compact to stop a selected subset.
-  46. Use --children for parent runs with children.
-  47. Use interrupt --active only for deliberate workspace cleanup; use interrupt -A --active --yes only for deliberate all-workspace cleanup.
-  48. Model values are passed through to the provider CLI; aliases are not normalized yet.
+  40. If compact read returns active: true, use commands.waitPreview.args to wait with bounded output or commands.readPreview.args to poll again.
+  41. If compact batch read times out, use its top-level commands.waitPreview.args to wait again or stop.args to stop still-active work safely.
+  42. If compact read returns failed status, use commands.logsPreview.args for bounded raw logs or commands.events.args for the task timeline.
+  43. Check outputTruncated/stdoutTruncated/stderrTruncated in JSON output; ByReadLimit means re-read with more bytes can help, ByCaptureLimit means the task was launched with too small a capture cap.
+  44. If compact read is truncated by read limit, use commands.read.args to fetch more output.
+  45. Use logs --json --compact for a one-line raw stdout/stderr snapshot and events --json --compact for a one-line task timeline. Use logs --follow --stream all when live stdout/stderr order matters.
+  46. Use interrupt to cancel running agents. Use interrupt <id> <id> --json --compact to stop a selected subset.
+  47. Use --children for parent runs with children.
+  48. Use interrupt --active only for deliberate workspace cleanup; use interrupt -A --active --yes only for deliberate all-workspace cleanup.
+  49. Model values are passed through to the provider CLI; aliases are not normalized yet.
 
 Common options:
   --workspace <path>          Workspace scope. Defaults to the nearest git repo, then current directory.
@@ -458,8 +461,9 @@ function buildCliHelpDocument(
       {
         name: "goal",
         usage:
-          'orchestrator goal start <task-id|prefix> [--wait] [--timeout-ms <ms>] [--token-budget <tokens>] [--json [--compact]] "<goal>"',
-        semantics: "Starts a native provider-backed goal on a supported running session.",
+          'orchestrator goal start <task-id|prefix> [--wait] [--timeout-ms <ms>] [--token-budget <tokens>] [--json [--compact]] "<goal>" | orchestrator goal get <task-id|prefix> [--timeout-ms <ms>] [--json [--compact]] | orchestrator goal set <task-id|prefix> [--objective <text>] [--status paused|blocked|usage-limited|budget-limited|complete] [--token-budget <tokens|none>] [--timeout-ms <ms>] [--json [--compact]] | orchestrator goal clear <task-id|prefix> [--timeout-ms <ms>] [--json [--compact]]',
+        semantics:
+          "Starts native provider-backed goal work, or reads/edits/clears provider goal state on a supported running session.",
         options: [
           "--workspace <path>",
           "--orchestrator-dir <path>",
@@ -468,6 +472,9 @@ function buildCliHelpDocument(
           "--wait",
           "--timeout-ms <ms>",
           "--token-budget <tokens>",
+          "--token-budget none",
+          "--objective <text>",
+          "--status paused|blocked|usage-limited|budget-limited|complete",
           "--compact",
         ],
       },
@@ -880,6 +887,9 @@ function buildCliExamples(registry: RuntimeRegistry): string[] {
     examples.push(
       'orchestrator goal start <task-id|prefix> --wait --json --compact "Improve performance across the app by 10%."',
     );
+    examples.push("orchestrator goal get <task-id|prefix> --json --compact");
+    examples.push("orchestrator goal set <task-id|prefix> --status paused --json --compact");
+    examples.push("orchestrator goal clear <task-id|prefix> --json --compact");
   }
 
   return [

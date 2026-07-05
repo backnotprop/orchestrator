@@ -47,35 +47,113 @@ If compact doctor returns `parent.canRun: true`, append the user request to
 `parent.run.argsPrefix`, or use `parent.run.backgroundArgsPrefix` when the
 parent run should be managed as a background task.
 
-## Basic Workflow
+## First-Run Path
 
-Launch a named background task:
+For normal delegation, use this path:
+
+1. Check availability with `orchestrator doctor --json --compact` when runtime
+   setup is uncertain.
+2. Launch with `--json --compact --brief`.
+3. Capture the returned `taskId` or `id`.
+4. Prefer returned `commands.*.args` and `stop.args` for follow-up. Treat those
+   arrays as argv arrays; do not join them into one shell string.
+5. Read results with `read --wait --json --compact`.
+6. Stop work that is stale, duplicated, or no longer needed.
+
+Normal one-agent delegation:
 
 ```sh
-orchestrator launch codex --name "inspect store" --model gpt-5.4-mini --json --compact "Inspect the task store."
+orchestrator launch codex --name "inspect store" --model gpt-5.4-mini --json --compact --brief "Inspect the task store."
+orchestrator read <task-id|prefix> --wait --json --compact
 ```
 
-Launch several tasks from one JSON manifest:
+Use Claude Code or Codex for AI work such as code review, implementation,
+research, repo inspection, or analysis. Use `shell` for exact local commands.
+Do not launch Codex or Claude just to run a deterministic shell command.
+
+## Many Agents
+
+Use `launch -f <manifest.json|-> --json --compact --brief` when several tasks
+should start in one call. The manifest must include `schemaVersion: 1`.
+
+```json
+{
+  "schemaVersion": 1,
+  "defaults": {
+    "runtime": "codex",
+    "model": "gpt-5.4-mini"
+  },
+  "tasks": [
+    {
+      "name": "inspect store",
+      "task": "Inspect the task store."
+    },
+    {
+      "runtime": "claude-code",
+      "model": "sonnet",
+      "name": "review tests",
+      "task": "Find missing tests."
+    }
+  ]
+}
+```
 
 ```sh
 orchestrator launch -f agents.json --json --compact --brief
+orchestrator ps --json --compact --active --brief
+orchestrator read <task-id|prefix> <task-id|prefix> --wait --json --compact
 ```
 
-Or start Orchestrator itself as a managed parent task:
+Use the top-level `commands.waitPreview.args` from compact `ps` to wait for the
+listed tasks without polling. If active compact `ps` is empty after short work,
+run `views.recent.args` from the compact response.
+
+## Orchestrator As Parent
+
+Start Orchestrator itself as a managed parent task when it should coordinate
+child agents for you:
 
 ```sh
 orchestrator run --background --name "repo plan" --json --compact "Launch child agents as needed, wait for them, then summarize."
 ```
 
-Capture `taskId` or `id` from stdout. If JSON output includes `commands.*.args`,
-run `orchestrator` with those portable args for follow-up. Treat returned args
-as an argument vector; do not join them into one shell string. Compact `ps`
-output can include top-level commands for every listed task; use
-`commands.waitPreview.args` to wait for that listed set with bounded output. If
-JSON output includes `stop.args`, run `orchestrator` with those portable args to
-stop exactly the returned task, group, or selected active set. If a JSON lookup
-error includes `recovery.views.*.args`, run those args to recover from missing
-or ambiguous task/group ids. Use the id for follow-up commands:
+If compact doctor returns `parent.canRun: true`, append the user request to the
+returned `parent.run.argsPrefix` or `parent.run.backgroundArgsPrefix` instead of
+constructing `run --agent-dir` by hand.
+
+## Persistent Codex Sessions And Goals
+
+Use `codex` for the stable one-task Codex path. Use `codex-app-server` only when
+you need a persistent Codex session, `send`, native Codex goals, protocol events,
+or provider metadata.
+
+Start a persistent Codex app-server session:
+
+```sh
+orchestrator launch codex-app-server --session --name "performance worker" --model gpt-5.4-mini --json --compact --brief
+```
+
+Then use the returned task id:
+
+```sh
+orchestrator send <task-id|prefix> --wait --json --compact "Inspect current performance bottlenecks."
+orchestrator goal start <task-id|prefix> --wait --json --compact "Improve performance across the app by 10%."
+orchestrator goal get <task-id|prefix> --json --compact
+orchestrator goal set <task-id|prefix> --status paused --json --compact
+orchestrator goal clear <task-id|prefix> --json --compact
+orchestrator send <task-id|prefix> --wait --json --compact "Summarize what changed."
+orchestrator interrupt <task-id|prefix> --json --compact --reason "session complete"
+```
+
+Use `goal start` only when the provider should actively work on a native goal.
+Use `goal get`, `goal set`, and `goal clear` to inspect or edit provider goal
+state without starting work. Do not simulate provider goals by sending prompt
+text. Use `send --wait` or `goal start --wait` when the next step depends on the
+operation result.
+
+## Follow-Up Commands
+
+Use the id or a unique prefix shown by `ps` and `list`:
 
 ```sh
 orchestrator ps --json --compact --active
@@ -90,27 +168,41 @@ orchestrator interrupt <task-id> <task-id> --reason "no longer needed" --json --
 orchestrator interrupt <task-id> --reason "no longer needed" --json
 ```
 
-Use `launch -f <manifest.json|-> --json --compact --brief` when several tasks
-should start from one manifest. Use `launch --json --compact --brief` when
-starting one task and only id/status/stop is needed. Use
-`ps --json --compact --active` to find running tasks and stop targets in the
+Use `ps --json --compact --active` to find running tasks and stop targets in the
 current workspace. Use `ps -A --json --compact --active --brief` to scan active
-work across the machine. Use `ps --json --compact --active --brief` when
-scanning many running tasks in one workspace. Use
-the top-level `commands.waitPreview.args` from compact `ps` to wait for the
-listed tasks without polling. Use
-`ps --parent <run-id|prefix> --json --compact --brief` when follow-up should
-stay scoped to one parent run. If active compact `ps` is empty after short work,
-run `views.recent.args` from the compact response. Build your own multi-task
-wait with `read <id> <id> --wait --json --compact`. Use
-`watch --agent-only --json` for a parseable stream of normalized agent events.
-Use `logs` for raw stdout/stderr. Use `events` for normalized task and agent
-events.
+work across the machine. Use `ps --parent <run-id|prefix> --json --compact
+--brief` when follow-up should stay scoped to one parent run. Build your own
+multi-task wait with `read <id> <id> --wait --json --compact`. Use
+`watch --agent-only --json` for normalized live events. Use `logs` for raw
+stdout/stderr. Use `events` for normalized task and agent events.
 Use `resume <task-id> --json --compact` only when you need true provider resume
 from a finished Codex or Claude Code task.
 Resume needs stored provider metadata. Keep the default runtime output mode when
 you want reliable results, provider ids, token usage, or resume. Provider text
 modes are mainly diagnostic or provider-specific.
+
+## Cleanup
+
+Prefer returned `stop.args` from JSON output when stopping tasks or groups.
+
+Stop selected work:
+
+```sh
+orchestrator interrupt <task-id|prefix> <task-id|prefix> --json --compact --reason "no longer needed"
+```
+
+Stop all active work in the current workspace only when that is intentional:
+
+```sh
+orchestrator interrupt --active --json --compact --reason "cleanup"
+```
+
+Stop active work across all workspaces only when the user clearly asked for
+machine-wide cleanup:
+
+```sh
+orchestrator interrupt -A --active --yes --json --compact --reason "cleanup"
+```
 
 ## Runtime Choices
 

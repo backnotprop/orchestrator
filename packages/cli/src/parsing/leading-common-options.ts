@@ -31,9 +31,13 @@ export function normalizeLeadingCommonOptions(argv: readonly string[]): string[]
   }
 
   const command = argv[index];
-  if (command === "goal" && argv[index + 1] === "start") {
-    return [command, "start", ...leading, ...argv.slice(index + 2)];
+  if (command === "goal" && isGoalSubcommand(argv[index + 1])) {
+    return [command, argv[index + 1], ...leading, ...argv.slice(index + 2)];
   }
 
   return [command, ...leading, ...argv.slice(index + 1)];
+}
+
+function isGoalSubcommand(value: string | undefined): value is "start" | "get" | "set" | "clear" {
+  return value === "start" || value === "get" || value === "set" || value === "clear";
 }

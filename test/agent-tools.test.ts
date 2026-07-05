@@ -37,7 +37,9 @@ type ToolDetails = {
   taskId?: string;
   status?: string;
   provider?: { provider?: string; threadId?: string; turnId?: string };
-  goal?: { status?: string; objective?: string; tokenBudget?: number };
+  source?: string;
+  cleared?: boolean;
+  goal?: { status?: string; objective?: string; tokenBudget?: number | null };
   operation?: { kind?: string; status?: string; turnId?: string; result?: string };
   task?: {
     taskId: string;
@@ -298,6 +300,9 @@ test("parent agent tools manage a background Orchestrator task", async () => {
         "read_agent_logs",
         "send_agent_message",
         "start_agent_goal",
+        "read_agent_goal",
+        "set_agent_goal",
+        "clear_agent_goal",
         "interrupt_agent",
       ],
     );
@@ -851,6 +856,69 @@ test("start_agent_goal can run a native codex-app-server goal", async () => {
   });
 });
 
+test("parent agent goal tools can read set and clear provider goal state", async () => {
+  await withTempWorkspace(async (workspaceRoot) => {
+    const handle = await launchTask({
+      workspaceRoot,
+      plan: codexAppServerSessionPlan(workspaceRoot),
+      name: "goal control tool session",
+      model: "fake-model",
+      timeoutMs: 10_000,
+    });
+
+    try {
+      await waitForTaskState(
+        workspaceRoot,
+        handle.task.taskId,
+        (task) => task.status === "running" && task.session?.state === "idle",
+        "idle session",
+      );
+
+      const tools = createOrchestratorAgentTools({ workspaceRoot });
+      const empty = await executeTool<ToolDetails>(getTool(tools, "read_agent_goal"), {
+        taskId: handle.task.taskId.slice(0, 8),
+        timeoutMs: 5_000,
+      });
+      assert.equal(empty.details.source, "provider");
+      assert.equal(empty.details.goal, undefined);
+
+      const set = await executeTool<ToolDetails>(getTool(tools, "set_agent_goal"), {
+        taskId: handle.task.taskId.slice(0, 8),
+        objective: "Blocked until the API stabilizes.",
+        status: "blocked",
+        tokenBudget: null,
+        timeoutMs: 5_000,
+      });
+      assert.equal(set.details.source, "provider");
+      assert.equal(set.details.goal?.status, "blocked");
+      assert.equal(set.details.goal?.objective, "Blocked until the API stabilizes.");
+      assert.equal(set.details.goal?.tokenBudget, null);
+
+      const read = await executeTool<ToolDetails>(getTool(tools, "read_agent_goal"), {
+        taskId: handle.task.taskId.slice(0, 8),
+        timeoutMs: 5_000,
+      });
+      assert.equal(read.details.goal?.status, "blocked");
+
+      const cleared = await executeTool<ToolDetails>(getTool(tools, "clear_agent_goal"), {
+        taskId: handle.task.taskId.slice(0, 8),
+        timeoutMs: 5_000,
+      });
+      assert.equal(cleared.details.source, "provider");
+      assert.equal(cleared.details.cleared, true);
+    } finally {
+      await interruptTask({
+        workspaceRoot,
+        taskId: handle.task.taskId,
+        reason: "test cleanup",
+      }).catch(() => undefined);
+    }
+
+    const completed = await handle.completed;
+    assert.equal(completed.status, "cancelled");
+  });
+});
+
 test("read_agent event fallback keeps final task usage over later session usage", async () => {
   await withTempWorkspace(async (workspaceRoot) => {
     const fixturePath = join(workspaceRoot, "custom-agent.jsonl");
@@ -1127,6 +1195,9 @@ test("parent AI session starts with only Orchestrator tools enabled", async () =
         "read_agent_logs",
         "send_agent_message",
         "start_agent_goal",
+        "read_agent_goal",
+        "set_agent_goal",
+        "clear_agent_goal",
         "interrupt_agent",
       ]);
       assert.ok(created.session.sessionId);
@@ -1221,6 +1292,9 @@ test("parent AI session ignores unsafe Pi tool overrides", async () => {
         "read_agent_logs",
         "send_agent_message",
         "start_agent_goal",
+        "read_agent_goal",
+        "set_agent_goal",
+        "clear_agent_goal",
         "interrupt_agent",
       ]);
       assert.equal(created.session.getToolDefinition("bash"), undefined);

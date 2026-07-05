@@ -26,6 +26,7 @@ This is the canonical ADR workspace.
 - [Codex app-server persistent sessions and goal operations](specs/codex-app-server-persistent-session-operations-20260701-092650.md)
 - [Parent-agent session control language](specs/parent-agent-session-control-language-20260703-203248.md)
 - [Codex app-server goal start operation](specs/codex-app-server-goal-start-operation-20260704-122339.md)
+- [Codex app-server goal get, set, and clear](specs/codex-app-server-goal-get-set-clear-20260704-180935.md)
 
 ## Intent Notes
 

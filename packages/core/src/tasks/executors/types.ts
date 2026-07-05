@@ -8,6 +8,7 @@ import type {
   TaskSendMessageFailureReason,
   TaskStatus,
   TaskGoal,
+  SettableTaskGoalStatus,
   TaskUsage,
 } from "../types.ts";
 
@@ -39,6 +40,7 @@ export type TaskExecutionHandle = {
   interrupt(reason: string, signal?: NodeJS.Signals): Promise<void> | void;
   sendMessage?(input: TaskSendMessageInput): Promise<TaskSendMessageResult>;
   startGoal?(input: TaskStartGoalInput): Promise<TaskStartGoalResult>;
+  controlGoal?(input: TaskGoalControlInput): Promise<TaskGoalControlResult>;
 };
 
 export type TaskExecutor = {
@@ -72,6 +74,42 @@ export type TaskStartGoalResult = {
   goal?: TaskGoal;
   operation?: TaskOperation;
 };
+
+export type TaskGoalControlAction = "get" | "set" | "clear";
+
+export type TaskGoalControlInput =
+  | {
+      action: "get";
+      timeoutMs?: number;
+    }
+  | {
+      action: "set";
+      objective?: string;
+      status?: SettableTaskGoalStatus;
+      tokenBudget?: number | null;
+      timeoutMs?: number;
+    }
+  | {
+      action: "clear";
+      timeoutMs?: number;
+    };
+
+export type TaskGoalControlResult =
+  | {
+      action: "get";
+      provider?: TaskProviderMetadata;
+      goal?: TaskGoal;
+    }
+  | {
+      action: "set";
+      provider?: TaskProviderMetadata;
+      goal: TaskGoal;
+    }
+  | {
+      action: "clear";
+      provider?: TaskProviderMetadata;
+      cleared: boolean;
+    };
 
 export class TaskSendMessageError extends Error {
   readonly reason: TaskSendMessageFailureReason;

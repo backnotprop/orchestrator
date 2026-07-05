@@ -3,6 +3,7 @@ import { appendFile, readFile, stat, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import type { AgentLaunchPlan } from "../runtime/index.ts";
 import {
+  requestDetachedTaskGoalControl,
   requestDetachedTaskGoalStart,
   requestDetachedTaskMessage,
   startTaskControlLoop,
@@ -17,11 +18,16 @@ import {
   TaskSendMessageError,
   type TaskExecutionHandle,
   type TaskExecutor,
+  type TaskGoalControlInput,
 } from "./executors/types.ts";
 import { isTerminalTaskStatus } from "./types.ts";
 import { selectTaskUsage } from "./usage.ts";
 import type {
   AgentTaskRecord,
+  ClearTaskGoalInput,
+  ClearTaskGoalResult,
+  GetTaskGoalInput,
+  GetTaskGoalResult,
   InterruptTaskInput,
   InterruptTasksInput,
   InterruptTasksResult,
@@ -30,6 +36,8 @@ import type {
   ReadTaskOutputInput,
   SendTaskMessageInput,
   SendTaskMessageResult,
+  SetTaskGoalInput,
+  SetTaskGoalResult,
   StartTaskGoalInput,
   StartTaskGoalResult,
   TaskObservedState,
@@ -490,6 +498,209 @@ export async function startTaskGoal(input: StartTaskGoalInput): Promise<StartTas
   };
 }
 
+export async function getTaskGoal(input: GetTaskGoalInput): Promise<GetTaskGoalResult> {
+  const taskId = await resolveTaskId(input, input.taskId);
+  const task = await readTaskRecord(input, taskId);
+  assertTaskSupportsNativeGoals(task);
+
+  const observation = await observeTaskState(input, task);
+  if (isTerminalTaskStatus(task.status) || !observation.actionable) {
+    return {
+      task,
+      source: "task",
+      ...(task.provider ? { provider: task.provider } : {}),
+      ...(task.goal ? { goal: task.goal } : {}),
+    };
+  }
+
+  const result = await controlGoalForTask(task, {
+    action: "get",
+    ...(input.timeoutMs !== undefined ? { timeoutMs: input.timeoutMs } : {}),
+  });
+  if (result.status === "failed") {
+    throw new TaskControlRequestError(
+      result.error?.reason ?? "provider_rejected",
+      result.error?.message ?? "Task rejected the goal control request.",
+      {
+        input: task.taskId,
+        hint: hintForGoalControlFailure(result.error?.reason ?? "provider_rejected", task.taskId),
+      },
+    );
+  }
+
+  return {
+    task: await readTaskRecord(input, task.taskId),
+    source: "provider",
+    ...(result.provider ? { provider: result.provider } : {}),
+    ...(result.goal ? { goal: result.goal } : {}),
+  };
+}
+
+export async function setTaskGoal(input: SetTaskGoalInput): Promise<SetTaskGoalResult> {
+  const objective = input.objective?.trim();
+  const callerStatus: unknown = input.status;
+  if (callerStatus === "active") {
+    throw new TaskSupervisorSafetyError("goal set cannot activate a goal.", {
+      reason: "invalid_request",
+      input: input.taskId,
+      hint: "Use goal start when activating a goal so Orchestrator can track the work.",
+    });
+  }
+
+  const hasTokenBudget = Object.prototype.hasOwnProperty.call(input, "tokenBudget");
+  if (!objective && input.status === undefined && !hasTokenBudget) {
+    throw new TaskSupervisorSafetyError("goal set requires a change.", {
+      reason: "invalid_request",
+      input: input.taskId,
+      hint: "Pass --objective, --status, or --token-budget.",
+    });
+  }
+
+  const task = await requireMutableGoalControlTask(input);
+  const control: TaskGoalControlInput = {
+    action: "set",
+    ...(objective ? { objective } : {}),
+    ...(input.status ? { status: input.status } : {}),
+    ...(hasTokenBudget ? { tokenBudget: input.tokenBudget ?? null } : {}),
+    ...(input.timeoutMs !== undefined ? { timeoutMs: input.timeoutMs } : {}),
+  };
+  const result = await controlGoalForTask(task, control);
+  if (result.status === "failed") {
+    throw new TaskControlRequestError(
+      result.error?.reason ?? "provider_rejected",
+      result.error?.message ?? "Task rejected the goal control request.",
+      {
+        input: task.taskId,
+        hint: hintForGoalControlFailure(result.error?.reason ?? "provider_rejected", task.taskId),
+      },
+    );
+  }
+  if (!result.goal) {
+    throw new TaskControlRequestError(
+      "provider_rejected",
+      "Task completed goal set without returning goal state.",
+      {
+        input: task.taskId,
+        hint: "Use events and logs to inspect why the provider did not return goal state.",
+      },
+    );
+  }
+
+  return {
+    task: await readTaskRecord(input, task.taskId),
+    source: "provider",
+    ...(result.provider ? { provider: result.provider } : {}),
+    goal: result.goal,
+  };
+}
+
+export async function clearTaskGoal(input: ClearTaskGoalInput): Promise<ClearTaskGoalResult> {
+  const task = await requireMutableGoalControlTask(input);
+  if (task.currentOperation?.kind === "goal") {
+    throw new TaskSupervisorSafetyError("This session is running a goal.", {
+      reason: "not_ready",
+      input: task.taskId,
+      hint: "Use interrupt to stop the session, or wait for the goal operation to finish before clearing it.",
+    });
+  }
+
+  const result = await controlGoalForTask(task, {
+    action: "clear",
+    ...(input.timeoutMs !== undefined ? { timeoutMs: input.timeoutMs } : {}),
+  });
+  if (result.status === "failed") {
+    throw new TaskControlRequestError(
+      result.error?.reason ?? "provider_rejected",
+      result.error?.message ?? "Task rejected the goal control request.",
+      {
+        input: task.taskId,
+        hint: hintForGoalControlFailure(result.error?.reason ?? "provider_rejected", task.taskId),
+      },
+    );
+  }
+
+  return {
+    task: await readTaskRecord(input, task.taskId),
+    source: "provider",
+    ...(result.provider ? { provider: result.provider } : {}),
+    cleared: result.cleared === true,
+  };
+}
+
+async function requireMutableGoalControlTask(
+  input: (SetTaskGoalInput | ClearTaskGoalInput) & TaskStoreOptions,
+): Promise<AgentTaskRecord> {
+  const taskId = await resolveTaskId(input, input.taskId);
+  const task = await readTaskRecord(input, taskId);
+  if (isTerminalTaskStatus(task.status)) {
+    throw new TaskSupervisorSafetyError(`Task "${shortId(task.taskId)}" has already finished.`, {
+      reason: "not_running",
+      input: task.taskId,
+      hint: "Start a new codex-app-server --session task before controlling a goal.",
+    });
+  }
+  assertTaskSupportsNativeGoals(task);
+  const threadId = task.provider?.threadId ?? task.session?.threadId;
+  if (!threadId) {
+    throw new TaskSupervisorSafetyError(
+      `Task "${shortId(task.taskId)}" has not opened a provider thread yet.`,
+      {
+        reason: "not_ready",
+        input: task.taskId,
+        hint: "Wait for the codex-app-server session to become idle, then retry.",
+      },
+    );
+  }
+
+  const observation = await observeTaskState(input, task);
+  if (!observation.actionable) {
+    throw new TaskSupervisorSafetyError(
+      `Task "${shortId(task.taskId)}" is ${observation.state}; Orchestrator cannot control the goal safely.`,
+      {
+        reason: sendFailureReasonForObservedState(observation.state),
+        input: task.taskId,
+        hint: "Use read, logs, and events to inspect the task before retrying.",
+      },
+    );
+  }
+
+  return task;
+}
+
+function assertTaskSupportsNativeGoals(task: AgentTaskRecord): void {
+  if (
+    task.runtime === "codex-app-server" &&
+    task.launchPlan.protocolExecutionMode === "session" &&
+    task.launchPlan.canSteerRunning
+  ) {
+    return;
+  }
+
+  throw new TaskSupervisorSafetyError(
+    `Task "${shortId(task.taskId)}" does not support native goals.`,
+    {
+      reason: "unsupported",
+      input: task.taskId,
+      hint: "Use goal commands only with a running codex-app-server --session task.",
+    },
+  );
+}
+
+async function controlGoalForTask(
+  task: AgentTaskRecord,
+  control: TaskGoalControlInput,
+): Promise<TaskControlResponse> {
+  const running = runningTasks.get(task.taskId);
+  return running
+    ? await controlGoalOnRunningHandle(task, running.handle, control)
+    : await requestDetachedTaskGoalControl({
+        paths: task.paths,
+        taskId: task.taskId,
+        control,
+        ...(control.timeoutMs !== undefined ? { timeoutMs: control.timeoutMs } : {}),
+      });
+}
+
 async function sendMessageToRunningHandle(
   task: AgentTaskRecord,
   handle: TaskExecutionHandle,
@@ -579,6 +790,42 @@ async function startGoalOnRunningHandle(
   }
 }
 
+async function controlGoalOnRunningHandle(
+  task: AgentTaskRecord,
+  handle: TaskExecutionHandle,
+  input: TaskGoalControlInput,
+): Promise<TaskControlResponse> {
+  if (!handle.controlGoal) {
+    return goalControlFailedResponse(task, input.action, {
+      reason: "unsupported",
+      message: "This task runtime does not support native goal state control while running.",
+    });
+  }
+
+  try {
+    const result = await handle.controlGoal(input);
+    return {
+      schemaVersion: 1,
+      requestId: "in-process",
+      taskId: task.taskId,
+      kind: "goal_control",
+      goalAction: result.action,
+      status: "completed",
+      createdAt: now(),
+      completedAt: now(),
+      ...(result.provider ? { provider: result.provider } : {}),
+      ...(result.action === "get" && result.goal ? { goal: result.goal } : {}),
+      ...(result.action === "set" ? { goal: result.goal } : {}),
+      ...(result.action === "clear" ? { cleared: result.cleared } : {}),
+    };
+  } catch (error: unknown) {
+    return goalControlFailedResponse(task, input.action, {
+      reason: error instanceof TaskSendMessageError ? error.reason : "provider_rejected",
+      message: formatError(error),
+    });
+  }
+}
+
 function goalStartFailedResponse(
   task: AgentTaskRecord,
   error: { reason: TaskSendMessageFailureReason; message: string },
@@ -588,6 +835,24 @@ function goalStartFailedResponse(
     requestId: "in-process",
     taskId: task.taskId,
     kind: "goal_start",
+    status: "failed",
+    createdAt: now(),
+    completedAt: now(),
+    error,
+  };
+}
+
+function goalControlFailedResponse(
+  task: AgentTaskRecord,
+  action: TaskGoalControlInput["action"],
+  error: { reason: TaskSendMessageFailureReason; message: string },
+): TaskControlResponse {
+  return {
+    schemaVersion: 1,
+    requestId: "in-process",
+    taskId: task.taskId,
+    kind: "goal_control",
+    goalAction: action,
     status: "failed",
     createdAt: now(),
     completedAt: now(),
@@ -649,6 +914,29 @@ function hintForGoalFailure(reason: TaskSendMessageFailureReason, taskId: string
       return "Pass a non-empty goal as the final quoted argument.";
     case "provider_rejected":
       return "Use events and logs to inspect why the provider rejected the goal.";
+  }
+}
+
+function hintForGoalControlFailure(reason: TaskSendMessageFailureReason, taskId: string): string {
+  switch (reason) {
+    case "not_running":
+      return `Start a new codex-app-server --session task before controlling a goal. Last task: ${shortId(taskId)}.`;
+    case "not_ready":
+      return "Wait for the codex-app-server session to become idle, then retry.";
+    case "unsupported":
+      return "Use goal commands only with a running codex-app-server --session task.";
+    case "timeout":
+      return "Use events, logs, or ps to inspect the session, then retry if it is still active.";
+    case "stale":
+    case "orphaned":
+    case "lost":
+      return "Use read, logs, and events to inspect the task before retrying.";
+    case "turn_mismatch":
+      return "Use events and logs to inspect the provider thread before retrying.";
+    case "invalid_request":
+      return "Use goal start to activate goal work; use goal set only for paused, blocked, usage-limited, budget-limited, or complete state.";
+    case "provider_rejected":
+      return "Use events and logs to inspect why the provider rejected the goal control request.";
   }
 }
 

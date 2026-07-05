@@ -6,7 +6,7 @@ import { commandRunTask } from "./background-task.ts";
 import { formatError, unknownCommandError, wantsJsonError } from "./cli-errors.ts";
 import { cliErrorJsonWithRecovery } from "./cli-error-recovery.ts";
 import { commandDoctor } from "./commands/doctor.ts";
-import { commandGoalStart } from "./commands/goal.ts";
+import { commandGoal } from "./commands/goal.ts";
 import { buildCliHelpText, commandHelp } from "./commands/help.ts";
 import { commandInterrupt } from "./commands/interrupt.ts";
 import { commandLaunch } from "./commands/launch.ts";
@@ -54,7 +54,7 @@ export async function main(argv: readonly string[] = process.argv.slice(2)): Pro
         await commandSend(parseSendOptions(rest));
         return 0;
       case "goal":
-        await commandGoalStart(parseGoalOptions(rest));
+        await commandGoal(parseGoalOptions(rest));
         return 0;
       case "list":
         await commandList(parseListOptions(rest));

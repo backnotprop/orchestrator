@@ -6,6 +6,8 @@ import {
   type OrchestratorConfigLoadOptions,
 } from "@backnotprop/orchestrator-core/runtime";
 import {
+  clearTaskGoal,
+  getTaskGoal,
   interruptTasks,
   isTerminalTaskStatus,
   launchTask,
@@ -19,6 +21,7 @@ import {
   resolveTaskId,
   selectTaskUsage,
   sendTaskMessage,
+  setTaskGoal,
   startTaskGoal,
   taskDisplayState,
   waitForTask,
@@ -180,6 +183,27 @@ type StartAgentGoalDetails = {
   operation?: TaskOperation;
 };
 
+type ReadAgentGoalDetails = {
+  task: TaskSummary;
+  source: "provider" | "task";
+  provider?: TaskProviderMetadata;
+  goal?: TaskGoal;
+};
+
+type SetAgentGoalDetails = {
+  task: TaskSummary;
+  source: "provider";
+  provider?: TaskProviderMetadata;
+  goal: TaskGoal;
+};
+
+type ClearAgentGoalDetails = {
+  task: TaskSummary;
+  source: "provider";
+  provider?: TaskProviderMetadata;
+  cleared: boolean;
+};
+
 const StatusSchema = Type.Union([
   Type.Literal("queued"),
   Type.Literal("starting"),
@@ -188,6 +212,14 @@ const StatusSchema = Type.Union([
   Type.Literal("failed"),
   Type.Literal("cancelled"),
   Type.Literal("timed_out"),
+]);
+
+const GoalSetStatusSchema = Type.Union([
+  Type.Literal("paused"),
+  Type.Literal("blocked"),
+  Type.Literal("usage_limited"),
+  Type.Literal("budget_limited"),
+  Type.Literal("complete"),
 ]);
 
 const LogStreamSchema = Type.Union([
@@ -209,6 +241,9 @@ export function createOrchestratorAgentTools(
     createReadAgentLogsTool(toolContext),
     createSendAgentMessageTool(toolContext),
     createStartAgentGoalTool(toolContext),
+    createReadAgentGoalTool(toolContext),
+    createSetAgentGoalTool(toolContext),
+    createClearAgentGoalTool(toolContext),
     createInterruptAgentTool(toolContext),
   ];
 
@@ -587,6 +622,115 @@ function createStartAgentGoalTool(context: ToolContext): OrchestratorParentTool 
         ...(result.provider ? { provider: result.provider } : {}),
         ...(result.goal ? { goal: result.goal } : {}),
         ...(result.operation ? { operation: result.operation } : {}),
+      });
+    },
+  });
+}
+
+function createReadAgentGoalTool(context: ToolContext): OrchestratorParentTool {
+  return defineTool({
+    name: "read_agent_goal",
+    label: "Read agent goal",
+    description: "Read native provider goal state from a supported running agent session.",
+    promptSnippet:
+      "read_agent_goal reads native provider goal state from a supported running session.",
+    promptGuidelines: [
+      "Use read_agent_goal to inspect a supported session's current native provider goal.",
+      "Use start_agent_goal to activate tracked goal work.",
+      "If the session is not controllable, read_agent_goal may return the cached task goal.",
+    ],
+    parameters: Type.Object({
+      taskId: Type.String(),
+      timeoutMs: Type.Optional(Type.Number()),
+    }),
+    executionMode: "sequential",
+    async execute(_toolCallId, params) {
+      const result = await getTaskGoal({
+        ...storeOptions(context),
+        taskId: params.taskId,
+        ...(params.timeoutMs !== undefined ? { timeoutMs: params.timeoutMs } : {}),
+      });
+
+      return jsonResult<ReadAgentGoalDetails>({
+        task: await summarizeStoredTask(context, result.task),
+        source: result.source,
+        ...(result.provider ? { provider: result.provider } : {}),
+        ...(result.goal ? { goal: result.goal } : {}),
+      });
+    },
+  });
+}
+
+function createSetAgentGoalTool(context: ToolContext): OrchestratorParentTool {
+  return defineTool({
+    name: "set_agent_goal",
+    label: "Set agent goal",
+    description: "Edit native provider goal state on a supported running agent session.",
+    promptSnippet:
+      "set_agent_goal edits native provider goal state on a supported running session.",
+    promptGuidelines: [
+      "Use set_agent_goal to pause, mark blocked, mark complete, or edit the objective/token budget.",
+      "Do not use set_agent_goal to activate goal work. Use start_agent_goal for that.",
+      "Use interrupt_agent to stop a running goal session.",
+    ],
+    parameters: Type.Object({
+      taskId: Type.String(),
+      objective: Type.Optional(Type.String()),
+      status: Type.Optional(GoalSetStatusSchema),
+      tokenBudget: Type.Optional(Type.Union([Type.Number(), Type.Null()])),
+      timeoutMs: Type.Optional(Type.Number()),
+    }),
+    executionMode: "sequential",
+    async execute(_toolCallId, params) {
+      const hasTokenBudget = Object.prototype.hasOwnProperty.call(params, "tokenBudget");
+      const result = await setTaskGoal({
+        ...storeOptions(context),
+        taskId: params.taskId,
+        ...(params.objective ? { objective: params.objective } : {}),
+        ...(params.status ? { status: params.status } : {}),
+        ...(hasTokenBudget ? { tokenBudget: params.tokenBudget ?? null } : {}),
+        ...(params.timeoutMs !== undefined ? { timeoutMs: params.timeoutMs } : {}),
+      });
+
+      return jsonResult<SetAgentGoalDetails>({
+        task: await summarizeStoredTask(context, result.task),
+        source: result.source,
+        ...(result.provider ? { provider: result.provider } : {}),
+        goal: result.goal,
+      });
+    },
+  });
+}
+
+function createClearAgentGoalTool(context: ToolContext): OrchestratorParentTool {
+  return defineTool({
+    name: "clear_agent_goal",
+    label: "Clear agent goal",
+    description: "Clear native provider goal state from a supported running agent session.",
+    promptSnippet:
+      "clear_agent_goal clears native provider goal state from a supported running session.",
+    promptGuidelines: [
+      "Use clear_agent_goal only when the supported session is not running a goal operation.",
+      "Use interrupt_agent to stop a running goal session.",
+      "Use read_agent_goal after clearing if you need to confirm no provider goal remains.",
+    ],
+    parameters: Type.Object({
+      taskId: Type.String(),
+      timeoutMs: Type.Optional(Type.Number()),
+    }),
+    executionMode: "sequential",
+    async execute(_toolCallId, params) {
+      const result = await clearTaskGoal({
+        ...storeOptions(context),
+        taskId: params.taskId,
+        ...(params.timeoutMs !== undefined ? { timeoutMs: params.timeoutMs } : {}),
+      });
+
+      return jsonResult<ClearAgentGoalDetails>({
+        task: await summarizeStoredTask(context, result.task),
+        source: result.source,
+        ...(result.provider ? { provider: result.provider } : {}),
+        cleared: result.cleared,
       });
     },
   });

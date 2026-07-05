@@ -16,8 +16,8 @@ let currentGoal =
         tokenBudget: null,
         tokensUsed: 0,
         timeUsedSeconds: 0,
-        createdAt: Date.now(),
-        updatedAt: Date.now(),
+        createdAt: goalTimestamp(),
+        updatedAt: goalTimestamp(),
       }
     : undefined;
 
@@ -86,9 +86,16 @@ function goalRecord(objective, status, tokenBudget) {
     tokenBudget: tokenBudget ?? null,
     tokensUsed: status === "active" ? 0 : 15,
     timeUsedSeconds: status === "active" ? 0 : 1,
-    createdAt: currentGoal?.createdAt ?? Date.now(),
-    updatedAt: Date.now(),
+    createdAt: currentGoal?.createdAt ?? goalTimestamp(),
+    updatedAt: goalTimestamp(),
   };
+}
+
+function goalTimestamp() {
+  if (process.env.FAKE_CODEX_APP_SERVER_GOAL_TIMESTAMP_UNIT === "seconds") {
+    return Math.floor(Date.now() / 1000);
+  }
+  return Date.now();
 }
 
 function notifyGoalUpdated(goal) {
@@ -297,9 +304,12 @@ rl.on("line", (line) => {
       });
       break;
     case "thread/goal/clear":
+      const hadGoal = Boolean(currentGoal);
       currentGoal = undefined;
-      respond(message.id, {});
-      notify("thread/goal/cleared", { threadId });
+      respond(message.id, { cleared: hadGoal });
+      if (hadGoal) {
+        notify("thread/goal/cleared", { threadId });
+      }
       break;
     case "thread/goal/set": {
       const objective = message.params?.objective ?? currentGoal?.objective;
