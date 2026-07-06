@@ -2,7 +2,7 @@
 import { realpathSync } from "node:fs";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { commandRunTask } from "./background-task.ts";
+import { commandMonitorSessionOperation, commandRunTask } from "./background-task.ts";
 import { formatError, unknownCommandError, wantsJsonError } from "./cli-errors.ts";
 import { cliErrorJsonWithRecovery } from "./cli-error-recovery.ts";
 import { commandDoctor } from "./commands/doctor.ts";
@@ -20,7 +20,10 @@ import { commandWatch } from "./commands/watch.ts";
 import { parseDoctorOptions } from "./parsing/doctor.ts";
 import { parseGoalOptions } from "./parsing/goal.ts";
 import { parseHelpOptions } from "./parsing/help.ts";
-import { parseInternalRunTaskOptions } from "./parsing/internal.ts";
+import {
+  parseInternalMonitorSessionOperationOptions,
+  parseInternalRunTaskOptions,
+} from "./parsing/internal.ts";
 import { parseInterruptOptions } from "./parsing/interrupt.ts";
 import { parseLaunchOptions } from "./parsing/launch.ts";
 import { parseListOptions } from "./parsing/list.ts";
@@ -51,10 +54,10 @@ export async function main(argv: readonly string[] = process.argv.slice(2)): Pro
         await commandResume(parseResumeOptions(rest), { cliEntryPath: CLI_ENTRY_PATH });
         return 0;
       case "send":
-        await commandSend(parseSendOptions(rest));
+        await commandSend(parseSendOptions(rest), { cliEntryPath: CLI_ENTRY_PATH });
         return 0;
       case "goal":
-        await commandGoal(parseGoalOptions(rest));
+        await commandGoal(parseGoalOptions(rest), { cliEntryPath: CLI_ENTRY_PATH });
         return 0;
       case "list":
         await commandList(parseListOptions(rest));
@@ -83,6 +86,9 @@ export async function main(argv: readonly string[] = process.argv.slice(2)): Pro
         return await commandDoctor(parseDoctorOptions(rest));
       case "__run-task":
         await commandRunTask(parseInternalRunTaskOptions(rest));
+        return 0;
+      case "__monitor-session-operation":
+        await commandMonitorSessionOperation(parseInternalMonitorSessionOperationOptions(rest));
         return 0;
       case "__run-parent-task":
         await commandRunParentTask(parseInternalRunTaskOptions(rest), {

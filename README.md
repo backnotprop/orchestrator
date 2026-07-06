@@ -284,10 +284,12 @@ First-class targets:
 
 `codex` is the stable headless Codex runtime backed by `codex exec`.
 `codex-app-server` is the experimental protocol runtime backed by
-`codex app-server --listen stdio://`. It supports provider-thread resume for
-tasks with stored `provider.threadId`, running messages through
-`orchestrator send`, and native Codex goals through `orchestrator goal start`
-on persistent sessions. `orchestrator goal get`, `orchestrator goal set`, and
+Codex app-server. One-shot tasks use `codex app-server --listen stdio://`;
+`--session` tasks use an Orchestrator-managed
+`codex app-server --listen unix://<socket>` backend and one provider thread per
+Orchestrator task. It supports provider-thread resume, running messages through
+`orchestrator send`, and native Codex goals through `orchestrator goal start` on
+persistent sessions. `orchestrator goal get`, `orchestrator goal set`, and
 `orchestrator goal clear` inspect or edit provider goal state without starting
 tracked goal work.
 

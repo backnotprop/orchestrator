@@ -31,6 +31,10 @@ import {
   waitForText,
   withTempWorkspace,
 } from "./cli-support.ts";
+import {
+  FAKE_SHARED_CODEX_APP_SERVER_SOCKET_ENV,
+  withFakeSharedCodexAppServer,
+} from "./fake-shared-codex-app-server.ts";
 
 const fakeAppServerPath = fileURLToPath(
   new URL("./fixtures/fake-codex-app-server.mjs", import.meta.url),
@@ -1402,428 +1406,453 @@ test("CLI launch can run codex-app-server through the normal command path", asyn
 });
 
 test("CLI launch can start and interrupt an idle codex-app-server session", async () => {
-  await withTempWorkspace(async (workspaceRoot) => {
-    const fakeCodex = await installFakeCodex(workspaceRoot);
+  await withFakeSharedCodexAppServer(async ({ socketPath }) => {
+    await withTempWorkspace(async (workspaceRoot) => {
+      const fakeEnv = { [FAKE_SHARED_CODEX_APP_SERVER_SOCKET_ENV]: socketPath };
 
-    const launch = await runCli(
-      workspaceRoot,
-      [
-        "launch",
-        "codex-app-server",
-        "--workspace",
+      const launch = await runCli(
         workspaceRoot,
-        "--session",
-        "--name",
-        "idle session",
-        "--json",
-      ],
-      10_000,
-      fakeCodex.env,
-    );
-    const task = JSON.parse(launch.stdout) as {
-      taskId: string;
-      runtime: string;
-      status: string;
-      name?: string;
-    };
-    assert.equal(task.runtime, "codex-app-server");
-    assert.equal(task.name, "idle session");
+        [
+          "launch",
+          "codex-app-server",
+          "--workspace",
+          workspaceRoot,
+          "--session",
+          "--name",
+          "idle session",
+          "--json",
+        ],
+        10_000,
+        fakeEnv,
+      );
+      const task = JSON.parse(launch.stdout) as {
+        taskId: string;
+        runtime: string;
+        status: string;
+        name?: string;
+      };
+      assert.equal(task.runtime, "codex-app-server");
+      assert.equal(task.name, "idle session");
 
-    try {
+      try {
+        const record = await readTaskRecord({ workspaceRoot }, task.taskId);
+        assert.equal(record.status, "running");
+        assert.equal(record.provider?.provider, "codex");
+        assert.equal(record.provider?.threadId, "thread-fake-1");
+        assert.equal(record.provider?.turnId, undefined);
+        assert.equal(record.session?.state, "idle");
+        assert.equal(record.session?.threadId, "thread-fake-1");
+
+        const events = await runCli(workspaceRoot, [
+          "events",
+          task.taskId,
+          "--workspace",
+          workspaceRoot,
+          "--agent-only",
+        ]);
+        assert.match(events.stdout, /thread\.started/);
+        assert.match(events.stdout, /session\.idle/);
+        assert.doesNotMatch(events.stdout, /turn\.started/);
+
+        const transcript = await readFile(record.paths.transcriptJsonl, "utf8");
+        assert.match(transcript, /"method":"thread\/start"/);
+        assert.doesNotMatch(transcript, /"method":"turn\/start"/);
+      } finally {
+        await runCli(
+          workspaceRoot,
+          [
+            "interrupt",
+            task.taskId,
+            "--workspace",
+            workspaceRoot,
+            "--reason",
+            "close idle session",
+          ],
+          10_000,
+          fakeEnv,
+        ).catch(() => undefined);
+      }
+
       await waitFor(async () => {
         const record = await readTaskRecord({ workspaceRoot }, task.taskId);
-        return record.status === "running" && record.session?.state === "idle";
+        return record.status === "cancelled" && record.session?.state === "closed";
       }, 5_000);
-
-      const record = await readTaskRecord({ workspaceRoot }, task.taskId);
-      assert.equal(record.provider?.provider, "codex");
-      assert.equal(record.provider?.threadId, "thread-fake-1");
-      assert.equal(record.provider?.turnId, undefined);
-      assert.equal(record.session?.state, "idle");
-      assert.equal(record.session?.threadId, "thread-fake-1");
-
-      const events = await runCli(workspaceRoot, [
-        "events",
-        task.taskId,
-        "--workspace",
-        workspaceRoot,
-        "--agent-only",
-      ]);
-      assert.match(events.stdout, /thread\.started/);
-      assert.match(events.stdout, /session\.idle/);
-      assert.doesNotMatch(events.stdout, /turn\.started/);
-
-      const transcript = await readFile(record.paths.transcriptJsonl, "utf8");
-      assert.match(transcript, /"method":"thread\/start"/);
-      assert.match(transcript, /"ephemeral":false/);
-      assert.doesNotMatch(transcript, /"method":"turn\/start"/);
-    } finally {
-      await runCli(
-        workspaceRoot,
-        ["interrupt", task.taskId, "--workspace", workspaceRoot, "--reason", "close idle session"],
-        10_000,
-        fakeCodex.env,
-      ).catch(() => undefined);
-    }
-
-    await waitFor(async () => {
-      const record = await readTaskRecord({ workspaceRoot }, task.taskId);
-      return record.status === "cancelled" && record.session?.state === "closed";
-    }, 5_000);
-  }, "orchestrator-codex-app-server-cli-session-");
+    }, "orchestrator-codex-app-server-cli-session-");
+  });
 });
 
 test("CLI send --wait can run repeated work in an idle codex-app-server session", async () => {
-  await withTempWorkspace(async (workspaceRoot) => {
-    const fakeCodex = await installFakeCodex(workspaceRoot);
+  await withFakeSharedCodexAppServer(
+    async ({ socketPath }) => {
+      await withTempWorkspace(async (workspaceRoot) => {
+        const fakeEnv = { [FAKE_SHARED_CODEX_APP_SERVER_SOCKET_ENV]: socketPath };
 
-    const launch = await runCli(
-      workspaceRoot,
-      [
-        "launch",
-        "codex-app-server",
-        "--workspace",
-        workspaceRoot,
-        "--session",
-        "--name",
-        "repeat cli session",
-        "--json",
-      ],
-      10_000,
-      fakeCodex.env,
-    );
-    const task = JSON.parse(launch.stdout) as { taskId: string; runtime: string };
-    assert.equal(task.runtime, "codex-app-server");
-
-    try {
-      await waitFor(async () => {
-        const record = await readTaskRecord({ workspaceRoot }, task.taskId);
-        return record.status === "running" && record.session?.state === "idle";
-      }, 5_000);
-
-      const first = await runCli(
-        workspaceRoot,
-        [
-          "send",
-          task.taskId.slice(0, 8),
-          "--workspace",
-          workspaceRoot,
-          "--wait",
-          "--json",
-          "--compact",
-          "Say hello once.",
-        ],
-        10_000,
-        fakeCodex.env,
-      );
-      const firstSent = JSON.parse(first.stdout) as {
-        ok: boolean;
-        task: {
-          taskId: string;
-          runtime: string;
-          status: string;
-          session?: { state?: string; currentTurnId?: string };
-          lastOperation?: { result?: string; turnId?: string };
-        };
-        message: {
-          status: string;
-          operation?: { result?: string; turnId?: string };
-        };
-      };
-      assert.equal(firstSent.ok, true);
-      assert.equal(firstSent.message.status, "completed");
-      assert.equal(firstSent.message.operation?.turnId, "turn-fake-1");
-      assert.equal(firstSent.message.operation?.result, "Hello from fake Codex.");
-      assert.equal(firstSent.task.session?.state, "idle");
-      assert.equal(firstSent.task.session?.currentTurnId, undefined);
-      assert.equal(firstSent.task.lastOperation?.turnId, "turn-fake-1");
-
-      const second = await runCli(
-        workspaceRoot,
-        [
-          "send",
-          task.taskId.slice(0, 8),
-          "--workspace",
-          workspaceRoot,
-          "--wait",
-          "--json",
-          "--compact",
-          "Say hello again.",
-        ],
-        10_000,
-        fakeCodex.env,
-      );
-      const secondSent = JSON.parse(second.stdout) as {
-        message: { status: string; operation?: { result?: string; turnId?: string } };
-        task: { session?: { state?: string }; lastOperation?: { turnId?: string } };
-      };
-      assert.equal(secondSent.message.status, "completed");
-      assert.equal(secondSent.message.operation?.turnId, "turn-fake-2");
-      assert.equal(secondSent.message.operation?.result, "Hello from fake Codex.");
-      assert.equal(secondSent.task.session?.state, "idle");
-      assert.equal(secondSent.task.lastOperation?.turnId, "turn-fake-2");
-    } finally {
-      await runCli(
-        workspaceRoot,
-        ["interrupt", task.taskId, "--workspace", workspaceRoot, "--reason", "test cleanup"],
-        10_000,
-        fakeCodex.env,
-      ).catch(() => undefined);
-    }
-
-    await waitFor(async () => {
-      const record = await readTaskRecord({ workspaceRoot }, task.taskId);
-      return record.status === "cancelled" && record.session?.state === "closed";
-    }, 5_000);
-  }, "orchestrator-codex-app-server-cli-session-send-wait-");
-});
-
-test("CLI goal start --wait can run a native codex-app-server goal", async () => {
-  await withTempWorkspace(async (workspaceRoot) => {
-    const fakeCodex = await installFakeCodex(workspaceRoot);
-
-    const launch = await runCli(
-      workspaceRoot,
-      [
-        "launch",
-        "codex-app-server",
-        "--workspace",
-        workspaceRoot,
-        "--session",
-        "--name",
-        "goal cli session",
-        "--json",
-      ],
-      10_000,
-      fakeCodex.env,
-    );
-    const task = JSON.parse(launch.stdout) as { taskId: string; runtime: string };
-    assert.equal(task.runtime, "codex-app-server");
-
-    try {
-      await waitFor(async () => {
-        const record = await readTaskRecord({ workspaceRoot }, task.taskId);
-        return record.status === "running" && record.session?.state === "idle";
-      }, 5_000);
-
-      const goal = await runCli(
-        workspaceRoot,
-        [
-          "--workspace",
-          workspaceRoot,
-          "goal",
-          "start",
-          task.taskId.slice(0, 8),
-          "--wait",
-          "--token-budget",
-          "1000",
-          "--json",
-          "--compact",
-          "Improve performance by 10%.",
-        ],
-        10_000,
-        fakeCodex.env,
-      );
-      const started = JSON.parse(goal.stdout) as {
-        ok: boolean;
-        task: {
-          taskId: string;
-          runtime: string;
-          status: string;
-          session?: { state?: string };
-          goal?: { status?: string; objective?: string; tokenBudget?: number };
-          lastOperation?: { kind?: string; status?: string; result?: string };
-        };
-        goal: {
-          status: string;
-          state?: { status?: string; objective?: string; tokenBudget?: number };
-          operation?: { kind?: string; status?: string; result?: string; turnId?: string };
-        };
-      };
-      assert.equal(started.ok, true);
-      assert.equal(started.goal.status, "completed");
-      assert.equal(started.goal.state?.status, "complete");
-      assert.equal(started.goal.state?.objective, "Improve performance by 10%.");
-      assert.equal(started.goal.state?.tokenBudget, 1000);
-      assert.equal(started.goal.operation?.kind, "goal");
-      assert.equal(started.goal.operation?.status, "complete");
-      assert.equal(started.goal.operation?.turnId, "turn-fake-goal-1");
-      assert.equal(started.goal.operation?.result, "Goal complete from fake Codex.");
-      assert.equal(started.task.session?.state, "idle");
-      assert.equal(started.task.lastOperation?.kind, "goal");
-
-      const events = await runCli(workspaceRoot, [
-        "events",
-        task.taskId.slice(0, 8),
-        "--workspace",
-        workspaceRoot,
-        "--agent-only",
-      ]);
-      assert.match(events.stdout, /goal\.updated/);
-      assert.match(events.stdout, /operation\.completed/);
-      assert.doesNotMatch(events.stdout, /thread\/goal\/updated/);
-    } finally {
-      await runCli(
-        workspaceRoot,
-        ["interrupt", task.taskId, "--workspace", workspaceRoot, "--reason", "test cleanup"],
-        10_000,
-        fakeCodex.env,
-      ).catch(() => undefined);
-    }
-
-    await waitFor(async () => {
-      const record = await readTaskRecord({ workspaceRoot }, task.taskId);
-      return record.status === "cancelled" && record.session?.state === "closed";
-    }, 5_000);
-  }, "orchestrator-codex-app-server-cli-session-goal-start-");
-});
-
-test("CLI goal get set and clear control a native codex-app-server goal", async () => {
-  await withTempWorkspace(async (workspaceRoot) => {
-    const fakeCodex = await installFakeCodex(workspaceRoot);
-
-    const launch = await runCli(
-      workspaceRoot,
-      [
-        "launch",
-        "codex-app-server",
-        "--workspace",
-        workspaceRoot,
-        "--session",
-        "--name",
-        "goal control cli session",
-        "--json",
-      ],
-      10_000,
-      {
-        ...fakeCodex.env,
-        FAKE_CODEX_APP_SERVER_GOAL_TIMESTAMP_UNIT: "seconds",
-      },
-    );
-    const task = JSON.parse(launch.stdout) as { taskId: string; runtime: string };
-    assert.equal(task.runtime, "codex-app-server");
-
-    try {
-      await waitFor(async () => {
-        const record = await readTaskRecord({ workspaceRoot }, task.taskId);
-        return record.status === "running" && record.session?.state === "idle";
-      }, 5_000);
-
-      const empty = await runCli(
-        workspaceRoot,
-        [
-          "goal",
-          "get",
-          task.taskId.slice(0, 8),
-          "--workspace",
-          workspaceRoot,
-          "--json",
-          "--compact",
-        ],
-        10_000,
-        fakeCodex.env,
-      );
-      const emptyGoal = JSON.parse(empty.stdout) as {
-        ok: boolean;
-        goal: { action: string; source: string; state?: { status?: string } };
-      };
-      assert.equal(emptyGoal.ok, true);
-      assert.equal(emptyGoal.goal.action, "get");
-      assert.equal(emptyGoal.goal.source, "provider");
-      assert.equal(emptyGoal.goal.state, undefined);
-
-      const set = await runCli(
-        workspaceRoot,
-        [
-          "goal",
-          "set",
-          task.taskId.slice(0, 8),
-          "--workspace",
-          workspaceRoot,
-          "--objective",
-          "Pause CLI work.",
-          "--status",
-          "usage-limited",
-          "--token-budget",
-          "1000",
-          "--json",
-          "--compact",
-        ],
-        10_000,
-        fakeCodex.env,
-      );
-      const setGoal = JSON.parse(set.stdout) as {
-        ok: boolean;
-        goal: {
-          action: string;
-          source: string;
-          state?: { status?: string; objective?: string; tokenBudget?: number; createdAt?: string };
-        };
-      };
-      assert.equal(setGoal.ok, true);
-      assert.equal(setGoal.goal.action, "set");
-      assert.equal(setGoal.goal.state?.status, "usage_limited");
-      assert.equal(setGoal.goal.state?.objective, "Pause CLI work.");
-      assert.equal(setGoal.goal.state?.tokenBudget, 1000);
-      assert.match(setGoal.goal.state?.createdAt ?? "", /^\d{4}-/);
-
-      const clear = await runCli(
-        workspaceRoot,
-        [
-          "goal",
-          "clear",
-          task.taskId.slice(0, 8),
-          "--workspace",
-          workspaceRoot,
-          "--json",
-          "--compact",
-        ],
-        10_000,
-        fakeCodex.env,
-      );
-      const clearGoal = JSON.parse(clear.stdout) as {
-        ok: boolean;
-        goal: { action: string; source: string; cleared: boolean };
-      };
-      assert.equal(clearGoal.ok, true);
-      assert.equal(clearGoal.goal.action, "clear");
-      assert.equal(clearGoal.goal.cleared, true);
-
-      await assert.rejects(
-        runCli(
+        const launch = await runCli(
           workspaceRoot,
           [
-            "goal",
-            "set",
-            task.taskId.slice(0, 8),
+            "launch",
+            "codex-app-server",
             "--workspace",
             workspaceRoot,
-            "--status",
-            "active",
+            "--session",
+            "--name",
+            "repeat cli session",
             "--json",
           ],
           10_000,
-          fakeCodex.env,
-        ),
-        (error: unknown) => {
-          const stderr = error instanceof Error && "stderr" in error ? String(error.stderr) : "";
-          return /Use goal start when activating a goal/.test(stderr);
-        },
-      );
-    } finally {
-      await runCli(
-        workspaceRoot,
-        ["interrupt", task.taskId, "--workspace", workspaceRoot, "--reason", "test cleanup"],
-        10_000,
-        fakeCodex.env,
-      ).catch(() => undefined);
-    }
+          fakeEnv,
+        );
+        const task = JSON.parse(launch.stdout) as { taskId: string; runtime: string };
+        assert.equal(task.runtime, "codex-app-server");
 
-    await waitFor(async () => {
-      const record = await readTaskRecord({ workspaceRoot }, task.taskId);
-      return record.status === "cancelled" && record.session?.state === "closed";
-    }, 5_000);
-  }, "orchestrator-codex-app-server-cli-session-goal-control-");
+        try {
+          const record = await readTaskRecord({ workspaceRoot }, task.taskId);
+          assert.equal(record.status, "running");
+          assert.equal(record.session?.state, "idle");
+
+          const first = await runCli(
+            workspaceRoot,
+            [
+              "send",
+              task.taskId.slice(0, 8),
+              "--workspace",
+              workspaceRoot,
+              "--wait",
+              "--json",
+              "--compact",
+              "Say hello once.",
+            ],
+            10_000,
+            fakeEnv,
+          );
+          const firstSent = JSON.parse(first.stdout) as {
+            ok: boolean;
+            task: {
+              taskId: string;
+              runtime: string;
+              status: string;
+              session?: { state?: string; currentTurnId?: string };
+              lastOperation?: { result?: string; turnId?: string };
+            };
+            message: {
+              status: string;
+              operation?: { result?: string; turnId?: string };
+            };
+          };
+          assert.equal(firstSent.ok, true);
+          assert.equal(firstSent.message.status, "completed");
+          assert.equal(firstSent.message.operation?.turnId, "turn-fake-1");
+          assert.equal(firstSent.message.operation?.result, "Hello from fake Codex.");
+          assert.equal(firstSent.task.session?.state, "idle");
+          assert.equal(firstSent.task.session?.currentTurnId, undefined);
+          assert.equal(firstSent.task.lastOperation?.turnId, "turn-fake-1");
+
+          const second = await runCli(
+            workspaceRoot,
+            [
+              "send",
+              task.taskId.slice(0, 8),
+              "--workspace",
+              workspaceRoot,
+              "--wait",
+              "--json",
+              "--compact",
+              "Say hello again.",
+            ],
+            10_000,
+            fakeEnv,
+          );
+          const secondSent = JSON.parse(second.stdout) as {
+            message: { status: string; operation?: { result?: string; turnId?: string } };
+            task: { session?: { state?: string }; lastOperation?: { turnId?: string } };
+          };
+          assert.equal(secondSent.message.status, "completed");
+          assert.equal(secondSent.message.operation?.turnId, "turn-fake-2");
+          assert.equal(secondSent.message.operation?.result, "Hello from fake Codex.");
+          assert.equal(secondSent.task.session?.state, "idle");
+          assert.equal(secondSent.task.lastOperation?.turnId, "turn-fake-2");
+        } finally {
+          await runCli(
+            workspaceRoot,
+            ["interrupt", task.taskId, "--workspace", workspaceRoot, "--reason", "test cleanup"],
+            10_000,
+            fakeEnv,
+          ).catch(() => undefined);
+        }
+
+        await waitFor(async () => {
+          const record = await readTaskRecord({ workspaceRoot }, task.taskId);
+          return record.status === "cancelled" && record.session?.state === "closed";
+        }, 5_000);
+      }, "orchestrator-codex-app-server-cli-session-send-wait-");
+    },
+    {
+      resultText: "Hello from fake Codex.",
+    },
+  );
+});
+
+test("CLI goal start --wait can run a native codex-app-server goal", async () => {
+  await withFakeSharedCodexAppServer(
+    async ({ socketPath }) => {
+      await withTempWorkspace(async (workspaceRoot) => {
+        const fakeEnv = { [FAKE_SHARED_CODEX_APP_SERVER_SOCKET_ENV]: socketPath };
+
+        const launch = await runCli(
+          workspaceRoot,
+          [
+            "launch",
+            "codex-app-server",
+            "--workspace",
+            workspaceRoot,
+            "--session",
+            "--name",
+            "goal cli session",
+            "--json",
+          ],
+          10_000,
+          fakeEnv,
+        );
+        const task = JSON.parse(launch.stdout) as { taskId: string; runtime: string };
+        assert.equal(task.runtime, "codex-app-server");
+
+        try {
+          const record = await readTaskRecord({ workspaceRoot }, task.taskId);
+          assert.equal(record.status, "running");
+          assert.equal(record.session?.state, "idle");
+
+          const goal = await runCli(
+            workspaceRoot,
+            [
+              "--workspace",
+              workspaceRoot,
+              "goal",
+              "start",
+              task.taskId.slice(0, 8),
+              "--wait",
+              "--token-budget",
+              "1000",
+              "--json",
+              "--compact",
+              "Improve performance by 10%.",
+            ],
+            10_000,
+            fakeEnv,
+          );
+          const started = JSON.parse(goal.stdout) as {
+            ok: boolean;
+            task: {
+              taskId: string;
+              runtime: string;
+              status: string;
+              session?: { state?: string };
+              goal?: { status?: string; objective?: string; tokenBudget?: number };
+              lastOperation?: { kind?: string; status?: string; result?: string };
+            };
+            goal: {
+              status: string;
+              state?: { status?: string; objective?: string; tokenBudget?: number };
+              operation?: { kind?: string; status?: string; result?: string; turnId?: string };
+            };
+          };
+          assert.equal(started.ok, true);
+          assert.equal(started.goal.status, "completed");
+          assert.equal(started.goal.state?.status, "complete");
+          assert.equal(started.goal.state?.objective, "Improve performance by 10%.");
+          assert.equal(started.goal.state?.tokenBudget, 1000);
+          assert.equal(started.goal.operation?.kind, "goal");
+          assert.equal(started.goal.operation?.status, "complete");
+          assert.equal(started.goal.operation?.turnId, "turn-fake-goal-1");
+          assert.equal(started.goal.operation?.result, "Goal complete from fake Codex.");
+          assert.equal(started.task.session?.state, "idle");
+          assert.equal(started.task.lastOperation?.kind, "goal");
+
+          const events = await runCli(workspaceRoot, [
+            "events",
+            task.taskId.slice(0, 8),
+            "--workspace",
+            workspaceRoot,
+            "--agent-only",
+          ]);
+          assert.match(events.stdout, /goal\.updated/);
+          assert.match(events.stdout, /operation\.completed/);
+          assert.doesNotMatch(events.stdout, /thread\/goal\/updated/);
+        } finally {
+          await runCli(
+            workspaceRoot,
+            ["interrupt", task.taskId, "--workspace", workspaceRoot, "--reason", "test cleanup"],
+            10_000,
+            fakeEnv,
+          ).catch(() => undefined);
+        }
+
+        await waitFor(async () => {
+          const record = await readTaskRecord({ workspaceRoot }, task.taskId);
+          return record.status === "cancelled" && record.session?.state === "closed";
+        }, 5_000);
+      }, "orchestrator-codex-app-server-cli-session-goal-start-");
+    },
+    {
+      goalResultText: "Goal complete from fake Codex.",
+    },
+  );
+});
+
+test("CLI goal get set and clear control a native codex-app-server goal", async () => {
+  await withFakeSharedCodexAppServer(
+    async ({ socketPath }) => {
+      await withTempWorkspace(async (workspaceRoot) => {
+        const fakeEnv = { [FAKE_SHARED_CODEX_APP_SERVER_SOCKET_ENV]: socketPath };
+
+        const launch = await runCli(
+          workspaceRoot,
+          [
+            "launch",
+            "codex-app-server",
+            "--workspace",
+            workspaceRoot,
+            "--session",
+            "--name",
+            "goal control cli session",
+            "--json",
+          ],
+          10_000,
+          fakeEnv,
+        );
+        const task = JSON.parse(launch.stdout) as { taskId: string; runtime: string };
+        assert.equal(task.runtime, "codex-app-server");
+
+        try {
+          const record = await readTaskRecord({ workspaceRoot }, task.taskId);
+          assert.equal(record.status, "running");
+          assert.equal(record.session?.state, "idle");
+
+          const empty = await runCli(
+            workspaceRoot,
+            [
+              "goal",
+              "get",
+              task.taskId.slice(0, 8),
+              "--workspace",
+              workspaceRoot,
+              "--json",
+              "--compact",
+            ],
+            10_000,
+            fakeEnv,
+          );
+          const emptyGoal = JSON.parse(empty.stdout) as {
+            ok: boolean;
+            goal: { action: string; source: string; state?: { status?: string } };
+          };
+          assert.equal(emptyGoal.ok, true);
+          assert.equal(emptyGoal.goal.action, "get");
+          assert.equal(emptyGoal.goal.source, "provider");
+          assert.equal(emptyGoal.goal.state, undefined);
+
+          const set = await runCli(
+            workspaceRoot,
+            [
+              "goal",
+              "set",
+              task.taskId.slice(0, 8),
+              "--workspace",
+              workspaceRoot,
+              "--objective",
+              "Pause CLI work.",
+              "--status",
+              "usage-limited",
+              "--token-budget",
+              "1000",
+              "--json",
+              "--compact",
+            ],
+            10_000,
+            fakeEnv,
+          );
+          const setGoal = JSON.parse(set.stdout) as {
+            ok: boolean;
+            goal: {
+              action: string;
+              source: string;
+              state?: {
+                status?: string;
+                objective?: string;
+                tokenBudget?: number;
+                createdAt?: string;
+              };
+            };
+          };
+          assert.equal(setGoal.ok, true);
+          assert.equal(setGoal.goal.action, "set");
+          assert.equal(setGoal.goal.state?.status, "usage_limited");
+          assert.equal(setGoal.goal.state?.objective, "Pause CLI work.");
+          assert.equal(setGoal.goal.state?.tokenBudget, 1000);
+          assert.match(setGoal.goal.state?.createdAt ?? "", /^\d{4}-/);
+
+          const clear = await runCli(
+            workspaceRoot,
+            [
+              "goal",
+              "clear",
+              task.taskId.slice(0, 8),
+              "--workspace",
+              workspaceRoot,
+              "--json",
+              "--compact",
+            ],
+            10_000,
+            fakeEnv,
+          );
+          const clearGoal = JSON.parse(clear.stdout) as {
+            ok: boolean;
+            goal: { action: string; source: string; cleared: boolean };
+          };
+          assert.equal(clearGoal.ok, true);
+          assert.equal(clearGoal.goal.action, "clear");
+          assert.equal(clearGoal.goal.cleared, true);
+
+          await assert.rejects(
+            runCli(
+              workspaceRoot,
+              [
+                "goal",
+                "set",
+                task.taskId.slice(0, 8),
+                "--workspace",
+                workspaceRoot,
+                "--status",
+                "active",
+                "--json",
+              ],
+              10_000,
+              fakeEnv,
+            ),
+            (error: unknown) => {
+              const stderr =
+                error instanceof Error && "stderr" in error ? String(error.stderr) : "";
+              return /Use goal start when activating a goal/.test(stderr);
+            },
+          );
+        } finally {
+          await runCli(
+            workspaceRoot,
+            ["interrupt", task.taskId, "--workspace", workspaceRoot, "--reason", "test cleanup"],
+            10_000,
+            fakeEnv,
+          ).catch(() => undefined);
+        }
+
+        await waitFor(async () => {
+          const record = await readTaskRecord({ workspaceRoot }, task.taskId);
+          return record.status === "cancelled" && record.session?.state === "closed";
+        }, 5_000);
+      }, "orchestrator-codex-app-server-cli-session-goal-control-");
+    },
+    {
+      goalTimestampUnit: "seconds",
+    },
+  );
 });
 
 test("CLI resume can continue a codex-app-server task", async () => {

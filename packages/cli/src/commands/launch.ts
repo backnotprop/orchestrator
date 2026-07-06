@@ -5,7 +5,9 @@ import {
   buildAgentLaunchPlan,
   createConfiguredRuntimeRegistryLoader,
   getRuntimeConfig,
+  isSharedCodexAppServerSessionPlan,
   isTerminalTaskStatus as isTerminalStatus,
+  launchSharedCodexAppServerSessionTask,
   launchTask,
   listTaskIds,
   observeTaskState,
@@ -80,7 +82,9 @@ export async function commandLaunch(
     return;
   }
 
-  const task = await launchInBackground(launchInput, context);
+  const task = isSharedCodexAppServerSessionPlan(launchInput.plan)
+    ? await launchSharedCodexAppServerSessionTask(launchInput)
+    : await launchInBackground(launchInput, context);
   await printLaunchTask(task, options);
 }
 
@@ -111,7 +115,13 @@ async function commandBatchLaunch(
       return buildCliLaunchTaskInput(request, options, registry);
     }),
   );
-  const tasks = await Promise.all(launchInputs.map((input) => launchInBackground(input, context)));
+  const tasks = await Promise.all(
+    launchInputs.map((input) =>
+      isSharedCodexAppServerSessionPlan(input.plan)
+        ? launchSharedCodexAppServerSessionTask(input)
+        : launchInBackground(input, context),
+    ),
+  );
   await printBatchLaunchTasks(tasks, options);
 }
 

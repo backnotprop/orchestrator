@@ -18,6 +18,7 @@ import {
   launchTask,
   listTaskIds,
   listTasks,
+  observeTaskState,
   readTaskEvents as readTaskEventStream,
   readTaskLogs,
   readTaskRecord,
@@ -680,6 +681,85 @@ test("ps observes fresh and lost supervised tasks from heartbeat files", async (
     assert.equal(compactLost?.state, "lost");
     assert.equal(compactLost?.active, false);
     assert.equal(compactLost?.stop, undefined);
+  });
+});
+
+test("provider-backed supervised tasks do not require process heartbeats", async () => {
+  await withTempWorkspace(async (workspaceRoot) => {
+    const handle = await launchTask({
+      workspaceRoot,
+      plan: shellPlan("printf provider", workspaceRoot),
+      name: "provider supervised",
+    });
+    const completed = await handle.completed;
+    const raw = JSON.parse(await readFile(completed.paths.taskJson, "utf8"));
+    const startedAt = "2026-07-05T10:00:00.000Z";
+
+    await writeFile(
+      completed.paths.taskJson,
+      `${JSON.stringify(
+        {
+          ...raw,
+          runtime: "codex-app-server",
+          status: "running",
+          startedAt,
+          finishedAt: undefined,
+          exitCode: undefined,
+          provider: {
+            provider: "codex",
+            protocol: "jsonrpc",
+            transport: "unix",
+            threadId: "thread-provider-1",
+          },
+          session: {
+            kind: "codex-app-server",
+            state: "idle",
+            threadId: "thread-provider-1",
+            startedAt,
+            updatedAt: startedAt,
+          },
+          supervision: {
+            kind: "provider",
+            provider: "codex",
+            transport: "unix",
+            socketPath: "/tmp/fake-codex.sock",
+            startedAt,
+            staleAfterMs: 20_000,
+          },
+        },
+        null,
+        2,
+      )}\n`,
+    );
+
+    const task = await readTaskRecord({ workspaceRoot }, completed.taskId);
+    const defaultObservation = await observeTaskState({ workspaceRoot }, task);
+    assert.equal(defaultObservation.state, "running");
+    assert.equal(defaultObservation.active, true);
+    assert.equal(defaultObservation.actionable, true);
+
+    const reachableObservation = await observeTaskState({ workspaceRoot }, task, {
+      providerHealth: async () => ({
+        reachable: true,
+        checkedAt: "2026-07-05T10:00:01.000Z",
+      }),
+    });
+    assert.equal(reachableObservation.state, "running");
+    assert.equal(reachableObservation.active, true);
+    assert.equal(reachableObservation.actionable, true);
+    assert.equal(reachableObservation.heartbeat?.lastHeartbeatAt, "2026-07-05T10:00:01.000Z");
+
+    const staleObservation = await observeTaskState({ workspaceRoot }, task, {
+      providerHealth: async () => ({
+        reachable: false,
+        checkedAt: "2026-07-05T10:00:02.000Z",
+        reason: "provider app-server unavailable",
+      }),
+    });
+    assert.equal(staleObservation.state, "stale");
+    assert.equal(staleObservation.active, true);
+    assert.equal(staleObservation.actionable, false);
+    assert.equal(staleObservation.reason, "provider app-server unavailable");
   });
 });
 

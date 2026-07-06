@@ -9,10 +9,12 @@ import {
   clearTaskGoal,
   getTaskGoal,
   interruptTasks,
+  isSharedCodexAppServerSessionTask,
   isTerminalTaskStatus,
   launchTask,
   listTasks,
   matchesTaskWorkspace,
+  monitorSharedCodexAppServerSessionOperation,
   observeTaskState,
   readTaskEvents,
   readTaskLogs,
@@ -573,6 +575,7 @@ function createSendAgentMessageTool(context: ToolContext): OrchestratorParentToo
         ...(params.timeoutMs !== undefined ? { timeoutMs: params.timeoutMs } : {}),
         ...(params.wait !== undefined ? { wait: params.wait } : {}),
       });
+      startSessionOperationMonitorFromTool(context, result.task, result.operation, params.wait);
 
       return jsonResult<SendAgentMessageDetails>({
         task: await summarizeStoredTask(context, result.task),
@@ -615,6 +618,7 @@ function createStartAgentGoalTool(context: ToolContext): OrchestratorParentTool 
         ...(params.wait !== undefined ? { wait: params.wait } : {}),
         ...(params.tokenBudget !== undefined ? { tokenBudget: params.tokenBudget } : {}),
       });
+      startSessionOperationMonitorFromTool(context, result.task, result.operation, params.wait);
 
       return jsonResult<StartAgentGoalDetails>({
         task: await summarizeStoredTask(context, result.task),
@@ -889,6 +893,32 @@ function storeOptions(context: ToolContext) {
     workspaceRoot: context.workspaceRoot,
     ...(context.orchestratorDir ? { orchestratorDir: context.orchestratorDir } : {}),
   };
+}
+
+function startSessionOperationMonitorFromTool(
+  context: ToolContext,
+  task: AgentTaskRecord,
+  operation: TaskOperation | undefined,
+  wait: boolean | undefined,
+): void {
+  if (
+    wait === true ||
+    !operation ||
+    !isSharedCodexAppServerSessionTask(task) ||
+    !isRunningOperationStatus(operation.status)
+  ) {
+    return;
+  }
+
+  void monitorSharedCodexAppServerSessionOperation({
+    ...storeOptions(context),
+    taskId: task.taskId,
+    operationId: operation.operationId,
+  }).catch(() => undefined);
+}
+
+function isRunningOperationStatus(status: TaskOperation["status"]): boolean {
+  return status === "starting" || status === "running";
 }
 
 async function summarizeStoredTask(

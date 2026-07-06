@@ -27,12 +27,17 @@ This is the canonical ADR workspace.
 - [Parent-agent session control language](specs/parent-agent-session-control-language-20260703-203248.md)
 - [Codex app-server goal start operation](specs/codex-app-server-goal-start-operation-20260704-122339.md)
 - [Codex app-server goal get, set, and clear](specs/codex-app-server-goal-get-set-clear-20260704-180935.md)
+- [Shared Codex app-server thread controller](specs/shared-codex-app-server-thread-controller-20260705-114539.md)
+- [Managed Codex app-server backend](specs/managed-codex-app-server-backend-20260705-164048.md)
+- [Codex app-server no-wait operation monitoring](specs/codex-app-server-no-wait-operation-monitoring-20260705-211822.md)
 
 ## Intent Notes
 
 - [Batch launch manifests](intent/batch-launch-manifests-20260622-055107.md)
 - [Single control-plane task store](intent/single-control-plane-task-store-20260622-075137.md)
 - [Send messages to running Codex app-server tasks](intent/send-messages-to-running-codex-app-server-tasks-20260701.md)
+- [Shared Codex app-server session tasks](intent/shared-codex-app-server-session-tasks-20260705.md)
+- [No-wait Codex app-server session operation monitoring](intent/no-wait-codex-app-server-session-operation-monitoring-20260706.md)
 
 ## Decisions
 
@@ -91,3 +96,6 @@ This is the canonical ADR workspace.
 - [53. Send messages to running Codex app-server tasks through file-backed control requests](decisions/0053-send-messages-to-running-codex-app-server-tasks-20260630-234839.md)
 - [54. Use persistent Codex app-server sessions for goal work](decisions/0054-use-persistent-codex-app-server-sessions-for-goal-work-20260701-104716.md)
 - [55. Hide provider turn mechanics behind session operations](decisions/0055-hide-provider-turn-mechanics-behind-session-operations-20260704-094016.md)
+- [56. Use shared Codex app-server for session tasks](decisions/0056-use-shared-codex-app-server-for-session-tasks-20260705-132920.md)
+- [57. Manage Codex app-server backend with Orchestrator-owned socket](decisions/0057-manage-codex-app-server-backend-with-orchestrator-owned-socket-20260705-164624.md)
+- [58. Monitor no-wait Codex app-server session operations](decisions/0058-monitor-no-wait-codex-app-server-session-operations-20260705-234841.md)

@@ -181,7 +181,8 @@ export type TaskProcessIdentity = {
   executable?: string;
 };
 
-export type TaskSupervision = {
+export type ProcessTaskSupervision = {
+  kind?: "process";
   supervisor: TaskProcessIdentity;
   child?: TaskProcessIdentity;
   processGroupId?: number;
@@ -189,6 +190,30 @@ export type TaskSupervision = {
   heartbeatIntervalMs: number;
   staleAfterMs: number;
 };
+
+export type ProviderTaskSupervision = {
+  kind: "provider";
+  provider: "codex" | (string & {});
+  transport: "unix" | "websocket" | "http";
+  socketPath?: string;
+  backendPid?: number;
+  startedAt: string;
+  staleAfterMs: number;
+  lastVerifiedAt?: string;
+};
+
+export type TaskSupervision = ProcessTaskSupervision | ProviderTaskSupervision;
+
+export type ProviderTaskHealth = {
+  reachable: boolean;
+  checkedAt?: string;
+  reason?: string;
+};
+
+export type ProviderTaskHealthLookup = (
+  task: AgentTaskRecord,
+  supervision: ProviderTaskSupervision,
+) => Promise<ProviderTaskHealth>;
 
 export type TaskHeartbeat = {
   taskId: string;

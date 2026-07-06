@@ -18,9 +18,11 @@
     "@backnotprop/orchestrator-cli": "workspace:*",
     "@backnotprop/orchestrator-core": "workspace:*",
     "@types/node": "^25.9.3",
+    "@types/ws": "^8.18.1",
     "oxfmt": "^0.43.0",
     "oxlint": "^1.58.0",
-    "typescript": "^6.0.3"
+    "typescript": "^6.0.3",
+    "ws": "^8.21.0"
   },
   "engines": {
     "node": ">=24.0.0"

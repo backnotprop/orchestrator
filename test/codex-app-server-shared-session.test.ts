@@ -1,0 +1,564 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+import { createOrchestratorAgentTools } from "@backnotprop/orchestrator-agent/tools";
+import { buildAgentLaunchPlan } from "@backnotprop/orchestrator-core/runtime";
+import {
+  interruptTask,
+  launchSharedCodexAppServerSessionTask,
+  monitorSharedCodexAppServerSessionOperation,
+  readTaskEvents,
+  readTaskOutput,
+  readTaskRecord,
+  sendTaskMessage,
+  startTaskGoal,
+} from "@backnotprop/orchestrator-core/tasks";
+import {
+  FAKE_SHARED_CODEX_APP_SERVER_SOCKET_ENV as TEST_SOCKET_PATH_ENV,
+  withFakeSharedCodexAppServer,
+} from "./fake-shared-codex-app-server.ts";
+import { runCli, withTempWorkspace } from "./helpers.ts";
+
+type TestTool = ReturnType<typeof createOrchestratorAgentTools>[number];
+
+test("shared codex-app-server session launches sends goals and interrupts through task ids", async () => {
+  await withFakeSharedCodexAppServer(async ({ socketPath }) => {
+    await withTempWorkspace(async (workspaceRoot) => {
+      const task = await launchSharedCodexAppServerSessionTask({
+        workspaceRoot,
+        plan: sessionPlan(workspaceRoot, socketPath),
+        name: "shared session",
+        model: "fake-model",
+      });
+
+      assert.equal(task.status, "running");
+      assert.equal(task.pid, undefined);
+      assert.equal(task.provider?.transport, "unix");
+      assert.equal(task.provider?.threadId, "thread-fake-1");
+      assert.equal(task.session?.state, "idle");
+      assert.equal(task.supervision?.kind, "provider");
+
+      const sent = await sendTaskMessage({
+        workspaceRoot,
+        taskId: task.taskId,
+        text: "Say hello.",
+        wait: true,
+        timeoutMs: 1_000,
+      });
+      assert.equal(sent.status, "completed");
+      assert.equal(sent.operation?.result, "Hello from shared Codex.");
+      assert.equal(sent.provider?.transport, "unix");
+      assert.equal(sent.provider?.turnId, "turn-fake-1");
+      assert.equal(
+        await readTaskOutput({ workspaceRoot, taskId: task.taskId }),
+        "Hello from shared Codex.",
+      );
+      const afterSend = await readTaskRecord({ workspaceRoot }, task.taskId);
+      assert.equal(afterSend.usage?.totalTokens, 15);
+
+      const goal = await startTaskGoal({
+        workspaceRoot,
+        taskId: task.taskId,
+        goal: "Improve performance.",
+        wait: true,
+        timeoutMs: 1_000,
+        tokenBudget: 100,
+      });
+      assert.equal(goal.status, "completed");
+      assert.equal(goal.goal?.status, "complete");
+      assert.equal(goal.operation?.kind, "goal");
+      assert.equal(goal.operation?.result, "Goal complete from shared Codex.");
+
+      const events = await readTaskEvents({
+        workspaceRoot,
+        taskId: task.taskId,
+        agentOnly: true,
+      });
+      const kinds = events.map((event) => String(event.data.kind));
+      assert.ok(kinds.includes("thread.started"));
+      assert.ok(kinds.includes("protocol.message.sent"));
+      assert.ok(kinds.includes("goal.updated"));
+      assert.ok(kinds.includes("operation.completed"));
+      assert.equal(
+        events.some((event) => event.data.threadId === "thread-foreign"),
+        false,
+      );
+
+      const cancelled = await interruptTask({
+        workspaceRoot,
+        taskId: task.taskId,
+        reason: "done",
+      });
+      assert.equal(cancelled.status, "cancelled");
+      assert.equal(cancelled.session?.state, "closed");
+    });
+  });
+});
+
+test("interrupting one shared codex-app-server session does not stop another session", async () => {
+  await withFakeSharedCodexAppServer(async ({ socketPath }) => {
+    await withTempWorkspace(async (workspaceRoot) => {
+      const first = await launchSharedCodexAppServerSessionTask({
+        workspaceRoot,
+        plan: sessionPlan(workspaceRoot, socketPath),
+        name: "first shared session",
+      });
+      const second = await launchSharedCodexAppServerSessionTask({
+        workspaceRoot,
+        plan: sessionPlan(workspaceRoot, socketPath),
+        name: "second shared session",
+      });
+
+      const cancelled = await interruptTask({
+        workspaceRoot,
+        taskId: first.taskId,
+        reason: "stop first",
+      });
+      const remaining = await readTaskRecord({ workspaceRoot }, second.taskId);
+
+      assert.equal(cancelled.status, "cancelled");
+      assert.equal(remaining.status, "running");
+      assert.equal(remaining.session?.state, "idle");
+      assert.notEqual(cancelled.provider?.threadId, remaining.provider?.threadId);
+    });
+  });
+});
+
+test("shared codex-app-server monitor settles a no-wait send operation", async () => {
+  await withFakeSharedCodexAppServer(
+    async ({ socketPath }) => {
+      await withTempWorkspace(async (workspaceRoot) => {
+        const task = await launchSharedCodexAppServerSessionTask({
+          workspaceRoot,
+          plan: sessionPlan(workspaceRoot, socketPath),
+          name: "monitored send session",
+        });
+
+        const sent = await sendTaskMessage({
+          workspaceRoot,
+          taskId: task.taskId,
+          text: "Say hello.",
+          wait: false,
+          timeoutMs: 1_000,
+        });
+        assert.equal(sent.status, "running");
+        assert.equal(sent.operation?.status, "running");
+        assert.ok(sent.operation?.operationId);
+
+        const monitored = await monitorSharedCodexAppServerSessionOperation({
+          workspaceRoot,
+          taskId: task.taskId,
+          operationId: sent.operation.operationId,
+          timeoutMs: 5_000,
+        });
+        assert.equal(monitored.status, "running");
+        assert.equal(monitored.session?.state, "idle");
+        assert.equal(monitored.currentOperation, undefined);
+        assert.equal(monitored.lastOperation?.status, "succeeded");
+        assert.equal(monitored.lastOperation?.result, "Hello from shared Codex.");
+        assert.equal(monitored.usage?.totalTokens, 15);
+        assert.equal(
+          await readTaskOutput({ workspaceRoot, taskId: task.taskId }),
+          "Hello from shared Codex.",
+        );
+      });
+    },
+    { turnDelayMs: 50 },
+  );
+});
+
+test("shared codex-app-server monitor claim prevents duplicate operation settlement", async () => {
+  await withFakeSharedCodexAppServer(
+    async ({ socketPath }) => {
+      await withTempWorkspace(async (workspaceRoot) => {
+        const task = await launchSharedCodexAppServerSessionTask({
+          workspaceRoot,
+          plan: sessionPlan(workspaceRoot, socketPath),
+          name: "duplicate monitor session",
+        });
+
+        const sent = await sendTaskMessage({
+          workspaceRoot,
+          taskId: task.taskId,
+          text: "Say hello.",
+          wait: false,
+          timeoutMs: 1_000,
+        });
+        assert.ok(sent.operation?.operationId);
+
+        const [first, second] = await Promise.all([
+          monitorSharedCodexAppServerSessionOperation({
+            workspaceRoot,
+            taskId: task.taskId,
+            operationId: sent.operation.operationId,
+            timeoutMs: 5_000,
+          }),
+          monitorSharedCodexAppServerSessionOperation({
+            workspaceRoot,
+            taskId: task.taskId,
+            operationId: sent.operation.operationId,
+            timeoutMs: 5_000,
+          }),
+        ]);
+
+        const settled = await waitForTask(
+          workspaceRoot,
+          task.taskId,
+          (record) =>
+            record.session?.state === "idle" &&
+            record.currentOperation === undefined &&
+            record.lastOperation?.status === "succeeded",
+        );
+        const events = await readTaskEvents({
+          workspaceRoot,
+          taskId: task.taskId,
+          agentOnly: true,
+        });
+        const completedEvents = events.filter(
+          (event) =>
+            event.data.kind === "operation.completed" &&
+            event.data.operationId === sent.operation?.operationId,
+        );
+
+        assert.equal(settled.lastOperation?.result, "Hello from shared Codex.");
+        assert.equal(first.taskId, task.taskId);
+        assert.equal(second.taskId, task.taskId);
+        assert.equal(completedEvents.length, 1);
+      });
+    },
+    { turnDelayMs: 50 },
+  );
+});
+
+test("CLI send without wait starts a detached shared session monitor", async () => {
+  await withFakeSharedCodexAppServer(
+    async ({ socketPath }) => {
+      await withTempWorkspace(async (workspaceRoot) => {
+        const launch = await runCli(
+          workspaceRoot,
+          [
+            "launch",
+            "codex-app-server",
+            "--workspace",
+            workspaceRoot,
+            "--session",
+            "--name",
+            "cli monitored send",
+            "--json",
+          ],
+          10_000,
+          {
+            [TEST_SOCKET_PATH_ENV]: socketPath,
+          },
+        );
+        const launched = JSON.parse(launch.stdout) as { taskId: string };
+
+        const send = await runCli(
+          workspaceRoot,
+          [
+            "send",
+            launched.taskId.slice(0, 8),
+            "--workspace",
+            workspaceRoot,
+            "--json",
+            "--compact",
+            "Say hello.",
+          ],
+          10_000,
+          {
+            [TEST_SOCKET_PATH_ENV]: socketPath,
+          },
+        );
+        const sent = JSON.parse(send.stdout) as {
+          ok: boolean;
+          message: { status: string; operation?: { operationId?: string } };
+        };
+        assert.equal(sent.ok, true);
+        assert.equal(sent.message.status, "running");
+        assert.ok(sent.message.operation?.operationId);
+
+        const settled = await waitForTask(
+          workspaceRoot,
+          launched.taskId,
+          (record) =>
+            record.session?.state === "idle" &&
+            record.currentOperation === undefined &&
+            record.lastOperation?.status === "succeeded",
+        );
+        assert.equal(settled.lastOperation?.result, "Hello from shared Codex.");
+        assert.equal(settled.usage?.totalTokens, 15);
+      });
+    },
+    { turnDelayMs: 1_000 },
+  );
+});
+
+test("parent tool send_agent_message without wait starts an in-process shared session monitor", async () => {
+  await withFakeSharedCodexAppServer(
+    async ({ socketPath }) => {
+      await withTempWorkspace(async (workspaceRoot) => {
+        const task = await launchSharedCodexAppServerSessionTask({
+          workspaceRoot,
+          plan: sessionPlan(workspaceRoot, socketPath),
+          name: "tool monitored send",
+        });
+        const tools = createOrchestratorAgentTools({ workspaceRoot });
+
+        const sent = await executeTool<{
+          status: string;
+          operation?: { operationId?: string; status?: string };
+        }>(getTool(tools, "send_agent_message"), {
+          taskId: task.taskId.slice(0, 8),
+          message: "Say hello.",
+          wait: false,
+        });
+
+        assert.equal(sent.details.status, "running");
+        assert.equal(sent.details.operation?.status, "running");
+        assert.ok(sent.details.operation?.operationId);
+
+        const settled = await waitForTask(
+          workspaceRoot,
+          task.taskId,
+          (record) =>
+            record.session?.state === "idle" &&
+            record.currentOperation === undefined &&
+            record.lastOperation?.kind === "turn" &&
+            record.lastOperation.status === "succeeded",
+        );
+        assert.equal(settled.lastOperation?.result, "Hello from shared Codex.");
+        assert.equal(settled.usage?.totalTokens, 15);
+      });
+    },
+    { turnDelayMs: 50 },
+  );
+});
+
+test("parent tool start_agent_goal without wait starts an in-process shared session monitor", async () => {
+  await withFakeSharedCodexAppServer(
+    async ({ socketPath }) => {
+      await withTempWorkspace(async (workspaceRoot) => {
+        const task = await launchSharedCodexAppServerSessionTask({
+          workspaceRoot,
+          plan: sessionPlan(workspaceRoot, socketPath),
+          name: "tool monitored goal",
+        });
+        const tools = createOrchestratorAgentTools({ workspaceRoot });
+
+        const started = await executeTool<{
+          status: string;
+          operation?: { operationId?: string; status?: string };
+        }>(getTool(tools, "start_agent_goal"), {
+          taskId: task.taskId.slice(0, 8),
+          goal: "Improve performance.",
+          wait: false,
+        });
+
+        assert.equal(started.details.status, "running");
+        assert.equal(started.details.operation?.status, "running");
+        assert.ok(started.details.operation?.operationId);
+
+        const settled = await waitForTask(
+          workspaceRoot,
+          task.taskId,
+          (record) =>
+            record.session?.state === "idle" &&
+            record.currentOperation === undefined &&
+            record.lastOperation?.kind === "goal" &&
+            record.lastOperation.status === "complete",
+        );
+        assert.equal(settled.goal?.status, "complete");
+        assert.equal(settled.lastOperation?.result, "Goal complete from shared Codex.");
+      });
+    },
+    { goalDelayMs: 50 },
+  );
+});
+
+test("CLI goal start without wait starts a detached shared session monitor", async () => {
+  await withFakeSharedCodexAppServer(
+    async ({ socketPath }) => {
+      await withTempWorkspace(async (workspaceRoot) => {
+        const launch = await runCli(
+          workspaceRoot,
+          [
+            "launch",
+            "codex-app-server",
+            "--workspace",
+            workspaceRoot,
+            "--session",
+            "--name",
+            "cli monitored goal",
+            "--json",
+          ],
+          10_000,
+          {
+            [TEST_SOCKET_PATH_ENV]: socketPath,
+          },
+        );
+        const launched = JSON.parse(launch.stdout) as { taskId: string };
+
+        const goal = await runCli(
+          workspaceRoot,
+          [
+            "goal",
+            "start",
+            launched.taskId.slice(0, 8),
+            "--workspace",
+            workspaceRoot,
+            "--json",
+            "--compact",
+            "Improve performance.",
+          ],
+          10_000,
+          {
+            [TEST_SOCKET_PATH_ENV]: socketPath,
+          },
+        );
+        const started = JSON.parse(goal.stdout) as {
+          ok: boolean;
+          goal: { status: string; operation?: { operationId?: string } };
+        };
+        assert.equal(started.ok, true);
+        assert.equal(started.goal.status, "running");
+        assert.ok(started.goal.operation?.operationId);
+
+        const settled = await waitForTask(
+          workspaceRoot,
+          launched.taskId,
+          (record) =>
+            record.session?.state === "idle" &&
+            record.currentOperation === undefined &&
+            record.lastOperation?.kind === "goal" &&
+            record.lastOperation.status === "complete",
+        );
+        assert.equal(settled.goal?.status, "complete");
+        assert.equal(settled.lastOperation?.result, "Goal complete from shared Codex.");
+      });
+    },
+    { goalDelayMs: 1_000 },
+  );
+});
+
+test("shared codex-app-server session checks provider thread is idle before starting a turn", async () => {
+  await withFakeSharedCodexAppServer(
+    async ({ socketPath }) => {
+      await withTempWorkspace(async (workspaceRoot) => {
+        const task = await launchSharedCodexAppServerSessionTask({
+          workspaceRoot,
+          plan: sessionPlan(workspaceRoot, socketPath),
+          name: "busy shared session",
+        });
+
+        await assert.rejects(
+          sendTaskMessage({
+            workspaceRoot,
+            taskId: task.taskId,
+            text: "Say hello.",
+            wait: true,
+            timeoutMs: 1_000,
+          }),
+          /Codex app-server thread must be idle; current status is "running"./,
+        );
+
+        const afterSend = await readTaskRecord({ workspaceRoot }, task.taskId);
+        assert.equal(afterSend.session?.state, "idle");
+        assert.equal(afterSend.currentOperation, undefined);
+        assert.equal(afterSend.lastOperation?.kind, "turn");
+        assert.equal(afterSend.lastOperation?.status, "failed");
+      });
+    },
+    { threadReadStatus: "running" },
+  );
+});
+
+test("CLI launch codex-app-server --session creates a shared provider-backed task", async () => {
+  await withFakeSharedCodexAppServer(async ({ socketPath }) => {
+    await withTempWorkspace(async (workspaceRoot) => {
+      const output = await runCli(
+        workspaceRoot,
+        [
+          "launch",
+          "codex-app-server",
+          "--workspace",
+          workspaceRoot,
+          "--session",
+          "--name",
+          "cli shared session",
+          "--json",
+        ],
+        10_000,
+        {
+          [TEST_SOCKET_PATH_ENV]: socketPath,
+        },
+      );
+      const launched = JSON.parse(output.stdout) as {
+        taskId: string;
+        status: string;
+        runtime: string;
+        session?: { state?: string };
+        provider?: { transport?: string; threadId?: string };
+      };
+
+      assert.equal(launched.status, "running");
+      assert.equal(launched.runtime, "codex-app-server");
+      assert.equal(launched.provider?.transport, "unix");
+      assert.equal(launched.provider?.threadId, "thread-fake-1");
+      assert.equal(launched.session?.state, "idle");
+
+      const read = await readTaskRecord({ workspaceRoot }, launched.taskId);
+      assert.equal(read.supervision?.kind, "provider");
+      assert.equal(read.status, "running");
+    });
+  });
+});
+
+function sessionPlan(workspaceRoot: string, socketPath: string) {
+  return buildAgentLaunchPlan({
+    runtime: "codex-app-server",
+    cwd: workspaceRoot,
+    session: true,
+    env: {
+      [TEST_SOCKET_PATH_ENV]: socketPath,
+    },
+  });
+}
+
+function getTool(tools: readonly TestTool[], name: string): TestTool {
+  const tool = tools.find((candidate) => candidate.name === name);
+  assert.ok(tool, `Expected tool ${name} to be registered.`);
+  return tool;
+}
+
+async function executeTool<TDetails>(
+  tool: TestTool,
+  params: unknown,
+): Promise<{ details: TDetails }> {
+  return (await tool.execute(
+    "test-tool-call",
+    params as never,
+    undefined,
+    undefined,
+    undefined as never,
+  )) as { details: TDetails };
+}
+
+async function waitForTask(
+  workspaceRoot: string,
+  taskId: string,
+  predicate: (record: Awaited<ReturnType<typeof readTaskRecord>>) => boolean,
+  timeoutMs = 5_000,
+) {
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < timeoutMs) {
+    const record = await readTaskRecord({ workspaceRoot }, taskId);
+    if (predicate(record)) {
+      return record;
+    }
+    await delay(25);
+  }
+  assert.fail(`Timed out waiting for task ${taskId}.`);
+}
+
+async function delay(ms: number): Promise<void> {
+  await new Promise((resolve) => setTimeout(resolve, ms));
+}

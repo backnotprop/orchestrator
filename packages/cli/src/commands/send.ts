@@ -1,9 +1,11 @@
 import {
   listTaskIds,
+  isSharedCodexAppServerSessionTask,
   observeTaskState,
   sendTaskMessage,
   type SendTaskMessageResult,
 } from "@backnotprop/orchestrator-core";
+import { launchSessionOperationMonitor } from "../background-task.ts";
 import { jsonLine } from "../json-output.ts";
 import {
   briefTaskSummaryJsonPayload,
@@ -21,7 +23,10 @@ export type SendOptions = CommonTaskOutputOptions & {
   compact: boolean;
 };
 
-export async function commandSend(options: SendOptions): Promise<void> {
+export async function commandSend(
+  options: SendOptions,
+  context: { cliEntryPath: string },
+): Promise<void> {
   const result = await sendTaskMessage({
     workspaceRoot: options.workspaceRoot,
     ...(options.orchestratorDir ? { orchestratorDir: options.orchestratorDir } : {}),
@@ -30,6 +35,7 @@ export async function commandSend(options: SendOptions): Promise<void> {
     ...(options.timeoutMs !== undefined ? { timeoutMs: options.timeoutMs } : {}),
     wait: options.wait,
   });
+  await maybeLaunchSessionOperationMonitor(result, options, context);
 
   if (options.json) {
     await printSendJson(result, options);
@@ -39,6 +45,36 @@ export async function commandSend(options: SendOptions): Promise<void> {
   const target = result.task.name ?? shortId(result.task.taskId);
   const operation = result.operation?.result ? `: ${result.operation.result}` : "";
   process.stdout.write(`sent message to ${target}${operation}\n`);
+}
+
+async function maybeLaunchSessionOperationMonitor(
+  result: SendTaskMessageResult,
+  options: SendOptions,
+  context: { cliEntryPath: string },
+): Promise<void> {
+  if (
+    options.wait ||
+    !result.operation ||
+    !isSharedCodexAppServerSessionTask(result.task) ||
+    !isRunningOperationStatus(result.operation.status)
+  ) {
+    return;
+  }
+
+  await launchSessionOperationMonitor(
+    {
+      workspaceRoot: options.workspaceRoot,
+      ...(options.orchestratorDir ? { orchestratorDir: options.orchestratorDir } : {}),
+      taskId: result.task.taskId,
+      operationId: result.operation.operationId,
+      ...(options.timeoutMs !== undefined ? { timeoutMs: options.timeoutMs } : {}),
+    },
+    context,
+  );
+}
+
+function isRunningOperationStatus(status: string): boolean {
+  return status === "starting" || status === "running";
 }
 
 async function printSendJson(result: SendTaskMessageResult, options: SendOptions): Promise<void> {

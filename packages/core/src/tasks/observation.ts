@@ -4,7 +4,9 @@ import { readTaskHeartbeat } from "./store.ts";
 import { isTerminalTaskStatus, taskDisplayState } from "./types.ts";
 import type {
   AgentTaskRecord,
+  ProviderTaskHealthLookup,
   TaskObservation,
+  ProviderTaskSupervision,
   TaskProcessIdentity,
   TaskStoreOptions,
 } from "./types.ts";
@@ -30,7 +32,7 @@ export async function captureProcessIdentity(
 export async function observeTaskState(
   _input: TaskStoreOptions,
   task: AgentTaskRecord,
-  options: { now?: Date } = {},
+  options: { now?: Date; providerHealth?: ProviderTaskHealthLookup } = {},
 ): Promise<TaskObservation> {
   const checkedAt = (options.now ?? new Date()).toISOString();
   if (isTerminalTaskStatus(task.status)) {
@@ -53,6 +55,10 @@ export async function observeTaskState(
     return observation(task, "stale", checkedAt, {
       reason: "legacy/unverified supervision",
     });
+  }
+
+  if (task.supervision.kind === "provider") {
+    return await observeProviderTask(task, task.supervision, checkedAt, options);
   }
 
   const heartbeat = await readTaskHeartbeat(task.paths);
@@ -134,6 +140,49 @@ export async function observeTaskState(
         : {}),
     },
   });
+}
+
+async function observeProviderTask(
+  task: AgentTaskRecord,
+  supervision: ProviderTaskSupervision,
+  checkedAt: string,
+  options: { providerHealth?: ProviderTaskHealthLookup },
+): Promise<TaskObservation> {
+  const baseState = taskDisplayState(task);
+  if (!options.providerHealth) {
+    return observation(task, baseState, checkedAt);
+  }
+
+  try {
+    const health = await options.providerHealth(task, supervision);
+    if (health.reachable) {
+      return observation(task, baseState, health.checkedAt ?? checkedAt, {
+        heartbeat: {
+          ...((health.checkedAt ?? supervision.lastVerifiedAt)
+            ? { lastHeartbeatAt: health.checkedAt ?? supervision.lastVerifiedAt }
+            : {}),
+          staleAfterMs: supervision.staleAfterMs,
+        },
+      });
+    }
+    return observation(task, "stale", health.checkedAt ?? checkedAt, {
+      reason: health.reason ?? "provider app-server unavailable",
+      heartbeat: {
+        ...((health.checkedAt ?? supervision.lastVerifiedAt)
+          ? { lastHeartbeatAt: health.checkedAt ?? supervision.lastVerifiedAt }
+          : {}),
+        staleAfterMs: supervision.staleAfterMs,
+      },
+    });
+  } catch (error) {
+    return observation(task, "stale", checkedAt, {
+      reason: error instanceof Error ? error.message : "provider app-server unavailable",
+      heartbeat: {
+        ...(supervision.lastVerifiedAt ? { lastHeartbeatAt: supervision.lastVerifiedAt } : {}),
+        staleAfterMs: supervision.staleAfterMs,
+      },
+    });
+  }
 }
 
 function observation(

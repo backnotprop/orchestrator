@@ -3,12 +3,20 @@
 Orchestrator has two Codex runtimes:
 
 - `codex`: the stable headless process runtime backed by `codex exec`.
-- `codex-app-server`: the experimental protocol runtime backed by `codex app-server --listen stdio://`.
+- `codex-app-server`: the experimental protocol runtime backed by Codex
+  app-server.
 
 Use `codex` when you want the normal, stable Codex path. Use `codex-app-server`
 when you specifically want to exercise the protocol runtime: provider metadata,
 normalized protocol events, provider-side usage when emitted, and protocol-aware
 interrupts.
+
+`codex-app-server` has two modes:
+
+- One-shot tasks run `codex app-server --listen stdio://` for a single task.
+- `--session` tasks use an Orchestrator-managed
+  `codex app-server --listen unix://<socket>` backend. Each Orchestrator
+  session task is one Codex provider thread.
 
 ```sh
 orchestrator launch codex --name "inspect store" "Inspect the task store."
@@ -57,19 +65,21 @@ Resume uses the stored Codex `provider.threadId`. Each resume creates a new
 Orchestrator task linked to the source task, while Codex app-server continues
 the provider thread internally.
 
-`launch --session` starts an idle persisted app-server thread that can be
-managed like a normal Orchestrator task. `send` can give work to an idle
-session, or add a follow-up instruction while a regular turn is already
-running. Use `send --wait` when you need the operation result before moving on.
-`goal start` starts a native Codex goal operation on that running session. Use
-`goal start --wait` when Orchestrator should wait for Codex to report a terminal
-goal state before moving on. `goal get`, `goal set`, and `goal clear` inspect or
-edit provider goal state. `goal set --status active` is rejected; use
-`goal start` when Codex should actively work on a goal.
+`launch --session` starts or reuses the Orchestrator-managed Codex app-server
+backend and creates an idle persisted provider thread that can be managed like a
+normal Orchestrator task. `send` can give work to an idle session, or add a
+follow-up instruction while a regular turn is already running. Use `send
+--wait` when you need the operation result before moving on. `goal start` starts
+a native Codex goal operation on that running session. Use `goal start --wait`
+when Orchestrator should wait for Codex to report a terminal goal state before
+moving on. `goal get`, `goal set`, and `goal clear` inspect or edit provider
+goal state. `goal set --status active` is rejected; use `goal start` when Codex
+should actively work on a goal.
 
 Each completed turn leaves the session running and returns it to idle. `read`
 returns the latest completed operation result. Completed goal operations also
-return the session to idle. `interrupt` stops the whole session.
+return the session to idle. `interrupt` stops that Orchestrator session task. It
+does not stop the shared Codex app-server backend or unrelated session tasks.
 
 ## Live Smoke
 
@@ -85,10 +95,13 @@ live provider emits usage for that run.
 
 ## Current Limits
 
-- Each task starts its own app-server process.
+- One-shot tasks still use their own stdio app-server process.
+- `--session` tasks use an Orchestrator-managed shared app-server backend and
+  one provider thread per Orchestrator task.
 - Protocol details may still change upstream.
 - Usage timing is provider controlled; usage may arrive during a turn, at the end, or not at all.
 - Older app-server tasks created before durable threads may fail to resume.
 - Native goal support starts goals on idle persistent sessions.
-- There is no app-server pooling yet.
+- There is no public backend management surface; Orchestrator starts and reuses
+  the app-server backend internally.
 - There is no public protocol custom-agent config yet.

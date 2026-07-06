@@ -125,7 +125,10 @@ constructing `run --agent-dir` by hand.
 
 Use `codex` for the stable one-task Codex path. Use `codex-app-server` only when
 you need a persistent Codex session, `send`, native Codex goals, protocol events,
-or provider metadata.
+or provider metadata. One-shot `codex-app-server` tasks use a stdio app-server
+process. `codex-app-server --session` uses an Orchestrator-managed
+`codex app-server --listen unix://<socket>` backend and one Codex provider
+thread per Orchestrator task.
 
 Start a persistent Codex app-server session:
 
@@ -150,6 +153,8 @@ Use `goal get`, `goal set`, and `goal clear` to inspect or edit provider goal
 state without starting work. Do not simulate provider goals by sending prompt
 text. Use `send --wait` or `goal start --wait` when the next step depends on the
 operation result.
+Interrupting the session stops that Orchestrator task, not the shared Codex
+app-server backend or unrelated session tasks.
 
 ## Follow-Up Commands
 

@@ -15,6 +15,14 @@ import { observeTaskState } from "./observation.ts";
 import { CodexAppServerTaskExecutor } from "./executors/protocol/codex-app-server.ts";
 import { killPidGroup, ProcessTaskExecutor } from "./executors/process.ts";
 import {
+  controlSharedCodexAppServerSessionGoal,
+  interruptSharedCodexAppServerSession,
+  isSharedCodexAppServerSessionTask,
+  launchSharedCodexAppServerSessionTask,
+  sendSharedCodexAppServerSessionMessage,
+  startSharedCodexAppServerSessionGoal,
+} from "./shared-codex-app-server-session.ts";
+import {
   TaskSendMessageError,
   type TaskExecutionHandle,
   type TaskExecutor,
@@ -79,6 +87,7 @@ const processTaskExecutor = new ProcessTaskExecutor();
 const codexAppServerTaskExecutor = new CodexAppServerTaskExecutor();
 
 export { listTasks } from "./store.ts";
+export { launchSharedCodexAppServerSessionTask };
 
 export class TaskSupervisorError extends Error {
   constructor(message: string) {
@@ -385,14 +394,23 @@ export async function sendTaskMessage(input: SendTaskMessageInput): Promise<Send
         ...(input.timeoutMs !== undefined ? { timeoutMs: input.timeoutMs } : {}),
         ...(input.wait !== undefined ? { wait: input.wait } : {}),
       })
-    : await requestDetachedTaskMessage({
-        paths: task.paths,
-        taskId: task.taskId,
-        text,
-        ...(input.clientMessageId ? { clientMessageId: input.clientMessageId } : {}),
-        ...(input.timeoutMs !== undefined ? { timeoutMs: input.timeoutMs } : {}),
-        ...(input.wait !== undefined ? { wait: input.wait } : {}),
-      });
+    : isSharedCodexAppServerSessionTask(task)
+      ? await sendSharedCodexAppServerSessionMessage({
+          store: input,
+          task,
+          text,
+          ...(input.clientMessageId ? { clientMessageId: input.clientMessageId } : {}),
+          ...(input.timeoutMs !== undefined ? { timeoutMs: input.timeoutMs } : {}),
+          ...(input.wait !== undefined ? { wait: input.wait } : {}),
+        })
+      : await requestDetachedTaskMessage({
+          paths: task.paths,
+          taskId: task.taskId,
+          text,
+          ...(input.clientMessageId ? { clientMessageId: input.clientMessageId } : {}),
+          ...(input.timeoutMs !== undefined ? { timeoutMs: input.timeoutMs } : {}),
+          ...(input.wait !== undefined ? { wait: input.wait } : {}),
+        });
 
   if (result.status === "failed") {
     throw new TaskControlRequestError(
@@ -468,15 +486,25 @@ export async function startTaskGoal(input: StartTaskGoalInput): Promise<StartTas
         ...(input.wait !== undefined ? { wait: input.wait } : {}),
         ...(input.tokenBudget !== undefined ? { tokenBudget: input.tokenBudget } : {}),
       })
-    : await requestDetachedTaskGoalStart({
-        paths: task.paths,
-        taskId: task.taskId,
-        goal,
-        ...(input.clientMessageId ? { clientMessageId: input.clientMessageId } : {}),
-        ...(input.timeoutMs !== undefined ? { timeoutMs: input.timeoutMs } : {}),
-        ...(input.wait !== undefined ? { wait: input.wait } : {}),
-        ...(input.tokenBudget !== undefined ? { tokenBudget: input.tokenBudget } : {}),
-      });
+    : isSharedCodexAppServerSessionTask(task)
+      ? await startSharedCodexAppServerSessionGoal({
+          store: input,
+          task,
+          goal,
+          ...(input.clientMessageId ? { clientMessageId: input.clientMessageId } : {}),
+          ...(input.timeoutMs !== undefined ? { timeoutMs: input.timeoutMs } : {}),
+          ...(input.wait !== undefined ? { wait: input.wait } : {}),
+          ...(input.tokenBudget !== undefined ? { tokenBudget: input.tokenBudget } : {}),
+        })
+      : await requestDetachedTaskGoalStart({
+          paths: task.paths,
+          taskId: task.taskId,
+          goal,
+          ...(input.clientMessageId ? { clientMessageId: input.clientMessageId } : {}),
+          ...(input.timeoutMs !== undefined ? { timeoutMs: input.timeoutMs } : {}),
+          ...(input.wait !== undefined ? { wait: input.wait } : {}),
+          ...(input.tokenBudget !== undefined ? { tokenBudget: input.tokenBudget } : {}),
+        });
 
   if (result.status === "failed") {
     throw new TaskControlRequestError(
@@ -513,7 +541,7 @@ export async function getTaskGoal(input: GetTaskGoalInput): Promise<GetTaskGoalR
     };
   }
 
-  const result = await controlGoalForTask(task, {
+  const result = await controlGoalForTask(input, task, {
     action: "get",
     ...(input.timeoutMs !== undefined ? { timeoutMs: input.timeoutMs } : {}),
   });
@@ -564,7 +592,7 @@ export async function setTaskGoal(input: SetTaskGoalInput): Promise<SetTaskGoalR
     ...(hasTokenBudget ? { tokenBudget: input.tokenBudget ?? null } : {}),
     ...(input.timeoutMs !== undefined ? { timeoutMs: input.timeoutMs } : {}),
   };
-  const result = await controlGoalForTask(task, control);
+  const result = await controlGoalForTask(input, task, control);
   if (result.status === "failed") {
     throw new TaskControlRequestError(
       result.error?.reason ?? "provider_rejected",
@@ -604,7 +632,7 @@ export async function clearTaskGoal(input: ClearTaskGoalInput): Promise<ClearTas
     });
   }
 
-  const result = await controlGoalForTask(task, {
+  const result = await controlGoalForTask(input, task, {
     action: "clear",
     ...(input.timeoutMs !== undefined ? { timeoutMs: input.timeoutMs } : {}),
   });
@@ -687,18 +715,25 @@ function assertTaskSupportsNativeGoals(task: AgentTaskRecord): void {
 }
 
 async function controlGoalForTask(
+  store: TaskStoreOptions,
   task: AgentTaskRecord,
   control: TaskGoalControlInput,
 ): Promise<TaskControlResponse> {
   const running = runningTasks.get(task.taskId);
   return running
     ? await controlGoalOnRunningHandle(task, running.handle, control)
-    : await requestDetachedTaskGoalControl({
-        paths: task.paths,
-        taskId: task.taskId,
-        control,
-        ...(control.timeoutMs !== undefined ? { timeoutMs: control.timeoutMs } : {}),
-      });
+    : isSharedCodexAppServerSessionTask(task)
+      ? await controlSharedCodexAppServerSessionGoal({
+          store,
+          task,
+          control,
+        })
+      : await requestDetachedTaskGoalControl({
+          paths: task.paths,
+          taskId: task.taskId,
+          control,
+          ...(control.timeoutMs !== undefined ? { timeoutMs: control.timeoutMs } : {}),
+        });
 }
 
 async function sendMessageToRunningHandle(
@@ -960,6 +995,15 @@ export async function interruptTask(input: InterruptTaskInput): Promise<AgentTas
         hint: "Use read, logs, and events to inspect the task. If this is stale history, leave it as-is.",
       },
     );
+  }
+
+  if (!running && isSharedCodexAppServerSessionTask(task)) {
+    return await interruptSharedCodexAppServerSession({
+      store: input,
+      task,
+      reason,
+      signal,
+    });
   }
 
   const updated = await updateTaskStatus(task, task.status, {

@@ -6,6 +6,7 @@ export {
   interruptTasks,
   interruptTask,
   launchTask,
+  launchSharedCodexAppServerSessionTask,
   listTasks,
   readTaskOutput,
   sendTaskMessage,
@@ -79,6 +80,12 @@ export {
   type NormalizedTaskUsage,
 } from "./usage.ts";
 export { waitForTask } from "./wait.ts";
+export {
+  isSharedCodexAppServerSessionPlan,
+  isSharedCodexAppServerSessionTask,
+  monitorSharedCodexAppServerSessionOperation,
+} from "./shared-codex-app-server-session.ts";
+export type { MonitorSharedCodexAppServerSessionOperationInput } from "./shared-codex-app-server-session.ts";
 export type {
   AgentTaskRecord,
   ClearTaskGoalInput,
@@ -122,6 +129,10 @@ export type {
   TaskOperation,
   TaskOperationKind,
   TaskOperationStatus,
+  ProviderTaskHealth,
+  ProviderTaskHealthLookup,
+  ProviderTaskSupervision,
+  ProcessTaskSupervision,
   TaskResumeMetadata,
   TaskSession,
   TaskSessionState,

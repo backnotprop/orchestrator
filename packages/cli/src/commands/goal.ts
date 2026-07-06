@@ -1,6 +1,7 @@
 import {
   clearTaskGoal,
   getTaskGoal,
+  isSharedCodexAppServerSessionTask,
   listTaskIds,
   observeTaskState,
   setTaskGoal,
@@ -11,6 +12,7 @@ import {
   type SettableTaskGoalStatus,
   type StartTaskGoalResult,
 } from "@backnotprop/orchestrator-core";
+import { launchSessionOperationMonitor } from "../background-task.ts";
 import { jsonLine } from "../json-output.ts";
 import {
   briefTaskSummaryJsonPayload,
@@ -50,10 +52,13 @@ export type GoalClearOptions = GoalBaseOptions & {
 
 export type GoalOptions = GoalStartOptions | GoalGetOptions | GoalSetOptions | GoalClearOptions;
 
-export async function commandGoal(options: GoalOptions): Promise<void> {
+export async function commandGoal(
+  options: GoalOptions,
+  context: { cliEntryPath: string },
+): Promise<void> {
   switch (options.command) {
     case "start":
-      await commandGoalStart(options);
+      await commandGoalStart(options, context);
       return;
     case "get":
       await commandGoalGet(options);
@@ -67,7 +72,10 @@ export async function commandGoal(options: GoalOptions): Promise<void> {
   }
 }
 
-async function commandGoalStart(options: GoalStartOptions): Promise<void> {
+async function commandGoalStart(
+  options: GoalStartOptions,
+  context: { cliEntryPath: string },
+): Promise<void> {
   const result = await startTaskGoal({
     workspaceRoot: options.workspaceRoot,
     ...(options.orchestratorDir ? { orchestratorDir: options.orchestratorDir } : {}),
@@ -77,6 +85,7 @@ async function commandGoalStart(options: GoalStartOptions): Promise<void> {
     ...(options.tokenBudget !== undefined ? { tokenBudget: options.tokenBudget } : {}),
     wait: options.wait,
   });
+  await maybeLaunchSessionOperationMonitor(result, options, context);
 
   if (options.json) {
     await printGoalStartJson(result, options);
@@ -88,6 +97,32 @@ async function commandGoalStart(options: GoalStartOptions): Promise<void> {
   const tokens = result.operation?.usage?.totalTokens ?? result.task.usage?.totalTokens;
   const tokenText = tokens === undefined ? "" : `  ${formatTokens(tokens)} tok`;
   process.stdout.write(`goal ${status}  ${target}${tokenText}\n`);
+}
+
+async function maybeLaunchSessionOperationMonitor(
+  result: StartTaskGoalResult,
+  options: GoalStartOptions,
+  context: { cliEntryPath: string },
+): Promise<void> {
+  if (
+    options.wait ||
+    result.status !== "running" ||
+    !result.operation ||
+    !isSharedCodexAppServerSessionTask(result.task)
+  ) {
+    return;
+  }
+
+  await launchSessionOperationMonitor(
+    {
+      workspaceRoot: options.workspaceRoot,
+      ...(options.orchestratorDir ? { orchestratorDir: options.orchestratorDir } : {}),
+      taskId: result.task.taskId,
+      operationId: result.operation.operationId,
+      ...(options.timeoutMs !== undefined ? { timeoutMs: options.timeoutMs } : {}),
+    },
+    context,
+  );
 }
 
 async function commandGoalGet(options: GoalGetOptions): Promise<void> {
