@@ -42,16 +42,21 @@ orchestrator logs <task-id>
 orchestrator interrupt <task-id> --json --compact --reason "session complete"
 ```
 
+Do not set a goal token budget by default. Native goals are open-ended provider
+work, and guessing a budget upfront can stop useful work early. Use
+`--token-budget` only when you intentionally want a hard cap.
+
 For agents, the normal persistent-session recipe is:
 
 1. Launch `codex-app-server --session`.
 2. Capture the returned `taskId` or `id`.
 3. Use `send --wait` for normal work in that session.
 4. Use `goal start --wait` only for native Codex goals.
-5. Use `goal get`, `goal set`, or `goal clear` to inspect or edit provider goal
+5. Usually omit `--token-budget` on `goal start`.
+6. Use `goal get`, `goal set`, or `goal clear` to inspect or edit provider goal
    state without starting work.
-6. Use another `send --wait` for follow-up work after the goal completes.
-7. Interrupt the session when it is no longer needed.
+7. Use another `send --wait` for follow-up work after the goal completes.
+8. Interrupt the session when it is no longer needed.
 
 Do not simulate native goals by sending prompt text. If the next step depends on
 the result, use `--wait` and parse the compact JSON response.
@@ -74,7 +79,8 @@ a native Codex goal operation on that running session. Use `goal start --wait`
 when Orchestrator should wait for Codex to report a terminal goal state before
 moving on. `goal get`, `goal set`, and `goal clear` inspect or edit provider
 goal state. `goal set --status active` is rejected; use `goal start` when Codex
-should actively work on a goal.
+should actively work on a goal. Avoid `--token-budget` unless you deliberately
+want Codex to stop at a hard token cap.
 
 Each completed turn leaves the session running and returns it to idle. `read`
 returns the latest completed operation result. Completed goal operations also

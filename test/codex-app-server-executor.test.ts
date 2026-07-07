@@ -1650,13 +1650,17 @@ test("CLI goal start --wait can run a native codex-app-server goal", async () =>
               lastOperation?: { kind?: string; status?: string; result?: string };
             };
             goal: {
+              action: string;
+              commandStatus: string;
               status: string;
               state?: { status?: string; objective?: string; tokenBudget?: number };
               operation?: { kind?: string; status?: string; result?: string; turnId?: string };
             };
           };
           assert.equal(started.ok, true);
-          assert.equal(started.goal.status, "completed");
+          assert.equal(started.goal.action, "start");
+          assert.equal(started.goal.commandStatus, "completed");
+          assert.equal(started.goal.status, "complete");
           assert.equal(started.goal.state?.status, "complete");
           assert.equal(started.goal.state?.objective, "Improve performance by 10%.");
           assert.equal(started.goal.state?.tokenBudget, 1000);
@@ -1696,6 +1700,83 @@ test("CLI goal start --wait can run a native codex-app-server goal", async () =>
       goalResultText: "Goal complete from fake Codex.",
     },
   );
+});
+
+test("CLI goal start separates command status from provider goal status", async () => {
+  await withTempWorkspace(async (workspaceRoot) => {
+    const handle = await launchTask({
+      workspaceRoot,
+      plan: codexAppServerSessionPlan(workspaceRoot, {
+        FAKE_CODEX_APP_SERVER_GOAL_STATUS: "budgetLimited",
+      }),
+      name: "budget-limited goal cli session",
+      model: "fake-model",
+      timeoutMs: 10_000,
+    });
+
+    try {
+      await waitFor(async () => {
+        const task = await readTaskRecord({ workspaceRoot }, handle.task.taskId);
+        return task.status === "running" && task.session?.state === "idle";
+      }, 5_000);
+
+      const goal = await runCli(
+        workspaceRoot,
+        [
+          "goal",
+          "start",
+          handle.task.taskId.slice(0, 8),
+          "--workspace",
+          workspaceRoot,
+          "--wait",
+          "--json",
+          "--compact",
+          "Use the available budget.",
+        ],
+        10_000,
+      );
+      const started = JSON.parse(goal.stdout) as {
+        ok: boolean;
+        goal: {
+          action: string;
+          commandStatus: string;
+          status: string;
+          state?: { status?: string };
+          operation?: { status?: string };
+        };
+      };
+
+      assert.equal(started.ok, true);
+      assert.equal(started.goal.action, "start");
+      assert.equal(started.goal.commandStatus, "completed");
+      assert.equal(started.goal.status, "budget_limited");
+      assert.equal(started.goal.state?.status, "budget_limited");
+      assert.equal(started.goal.operation?.status, "budget_limited");
+
+      const human = await runCli(
+        workspaceRoot,
+        [
+          "goal",
+          "start",
+          handle.task.taskId.slice(0, 8),
+          "--workspace",
+          workspaceRoot,
+          "--wait",
+          "Use the available budget again.",
+        ],
+        10_000,
+      );
+      assert.match(human.stdout, /goal start completed\s+goal budget_limited/);
+      assert.doesNotMatch(human.stdout, /goal completed/);
+    } finally {
+      await interruptTask({
+        workspaceRoot,
+        taskId: handle.task.taskId,
+        reason: "test cleanup",
+      }).catch(() => undefined);
+      await handle.completed.catch(() => undefined);
+    }
+  }, "orchestrator-codex-app-server-cli-goal-status-wording-");
 });
 
 test("CLI goal get set and clear control a native codex-app-server goal", async () => {

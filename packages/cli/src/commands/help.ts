@@ -164,7 +164,7 @@ Agent instructions:
   26. Use launch --json --compact --brief when starting one task and only task id/status/stop is needed.
   27. Use resume only for true provider resume from a finished task whose runtime reports resumeSupported and has stored provider metadata. Keep the default runtime output mode when you want reliable results, provider ids, token usage, or resume.
   28. Use send <task-id|prefix> "message" for running tasks or sessions whose runtime reports runningMessagesSupported. Use --wait when you need the operation result.
-  29. Use goal start <task-id|prefix> for native provider goals on supported running sessions. Use goal get/set/clear to inspect or edit provider goal state. Do not simulate provider goals by sending prompt text.
+  29. Use goal start <task-id|prefix> for native provider goals on supported running sessions. Usually omit --token-budget; set it only when you intentionally want a hard cap. Use goal get/set/clear to inspect or edit provider goal state. Do not simulate provider goals by sending prompt text.
   30. Use resume or launch a new task when the task is already finished.
   31. When compact JSON returns stop.args, run those portable args to stop exactly the returned task, group, or selected active set.
   32. Compact ps stop.args are scoped to the current view; parent/group stops may include children of that selected run.
@@ -463,7 +463,7 @@ function buildCliHelpDocument(
         usage:
           'orchestrator goal start <task-id|prefix> [--wait] [--timeout-ms <ms>] [--token-budget <tokens>] [--json [--compact]] "<goal>" | orchestrator goal get <task-id|prefix> [--timeout-ms <ms>] [--json [--compact]] | orchestrator goal set <task-id|prefix> [--objective <text>] [--status paused|blocked|usage-limited|budget-limited|complete] [--token-budget <tokens|none>] [--timeout-ms <ms>] [--json [--compact]] | orchestrator goal clear <task-id|prefix> [--timeout-ms <ms>] [--json [--compact]]',
         semantics:
-          "Starts native provider-backed goal work, or reads/edits/clears provider goal state on a supported running session.",
+          "Starts native provider-backed goal work, or reads/edits/clears provider goal state on a supported running session. Usually omit --token-budget; set it only when you intentionally want a hard cap.",
         options: [
           "--workspace <path>",
           "--orchestrator-dir <path>",

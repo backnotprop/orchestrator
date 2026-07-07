@@ -93,10 +93,10 @@ async function commandGoalStart(
   }
 
   const target = result.task.name ?? shortId(result.task.taskId);
-  const status = result.goal?.status ?? result.operation?.status ?? result.status;
+  const status = goalStartStatus(result);
   const tokens = result.operation?.usage?.totalTokens ?? result.task.usage?.totalTokens;
   const tokenText = tokens === undefined ? "" : `  ${formatTokens(tokens)} tok`;
-  process.stdout.write(`goal ${status}  ${target}${tokenText}\n`);
+  process.stdout.write(`goal start ${result.status}  goal ${status}  ${target}${tokenText}\n`);
 }
 
 async function maybeLaunchSessionOperationMonitor(
@@ -191,7 +191,9 @@ async function printGoalStartJson(
         ok: true,
         task,
         goal: {
-          status: result.status,
+          action: "start",
+          commandStatus: result.status,
+          status: goalStartStatus(result),
           ...(result.provider ? { provider: result.provider } : {}),
           ...(result.goal ? { state: result.goal } : {}),
           ...(result.operation ? { operation: result.operation } : {}),
@@ -258,6 +260,10 @@ function printGoalState(result: GetTaskGoalResult | SetTaskGoalResult): void {
   const tokens = result.goal?.tokensUsed ?? result.task.usage?.totalTokens;
   const tokenText = tokens === undefined ? "" : `  ${formatTokens(tokens)} tok`;
   process.stdout.write(`goal ${status}  ${target}${tokenText}\n`);
+}
+
+function goalStartStatus(result: StartTaskGoalResult): string {
+  return result.goal?.status ?? result.operation?.status ?? result.status;
 }
 
 function formatTokens(tokens: number): string {

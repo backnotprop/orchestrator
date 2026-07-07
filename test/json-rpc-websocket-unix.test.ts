@@ -199,6 +199,7 @@ async function withFakeUnixJsonRpcServer(
     const server = createServer();
     const webSocketServer = new WebSocketServer({ noServer: true });
     server.on("upgrade", (request, socket, head) => {
+      assert.equal(request.headers["sec-websocket-extensions"], undefined);
       webSocketServer.handleUpgrade(request, socket, head, (webSocket) => {
         webSocketServer.emit("connection", webSocket, request);
       });

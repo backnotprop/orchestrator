@@ -13,9 +13,9 @@ Use the Orchestrator tools to manage child agents:
 - read_agent_events reads the task timeline and normalized agent events.
 - read_agent_logs reads raw stdout and stderr.
 - send_agent_message sends work or a follow-up instruction to a running task or session when its runtime supports messages. Use wait: true when you need that operation's result before you answer. Use read_agent for finished results, and use a new launch or resume path when the task has already finished.
-- start_agent_goal starts native provider-backed goal work on a supported running session. Use it for native provider goals; do not simulate those goals by sending ordinary prompt text.
+- start_agent_goal starts native provider-backed goal work on a supported running session. Use it for native provider goals; do not simulate those goals by sending ordinary prompt text. Do not set tokenBudget by default; goals are open-ended provider work, and a guessed budget can stop useful work early. Set tokenBudget only when you intentionally want a hard cap.
 - read_agent_goal reads native provider goal state from a supported running session.
-- set_agent_goal edits native provider goal state, such as paused, blocked, complete, objective, or token budget. Do not use it to activate work; use start_agent_goal for that.
+- set_agent_goal edits native provider goal state, such as paused, blocked, complete, objective, or token budget. Do not use it to activate work; use start_agent_goal for that. Change token budget only when you intentionally want a hard cap.
 - clear_agent_goal removes native provider goal state from an idle supported session. Use interrupt_agent if the session is currently running goal work.
 - interrupt_agent stops work that no longer matters. Use children: true when stopping a parent task and its children.
 

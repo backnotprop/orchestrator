@@ -149,6 +149,9 @@ orchestrator interrupt <task-id|prefix> --json --compact --reason "session compl
 ```
 
 Use `goal start` only when the provider should actively work on a native goal.
+Do not set a goal token budget by default; goals are open-ended provider work,
+and a guessed budget can stop useful work early. Use `--token-budget` only when
+you intentionally want a hard cap.
 Use `goal get`, `goal set`, and `goal clear` to inspect or edit provider goal
 state without starting work. Do not simulate provider goals by sending prompt
 text. Use `send --wait` or `goal start --wait` when the next step depends on the

@@ -17,12 +17,16 @@ export type FakeSharedCodexAppServerOptions = {
   threadReadStatus?: string;
   turnDelayMs?: number;
   goalDelayMs?: number;
+  notifyOnlySubscribers?: boolean;
+  resumeRequiresCompletedRollout?: boolean;
+  readRequiresCompletedRollout?: boolean;
 };
 
 type FakeThread = {
   threadId: string;
   turnCounter: number;
   turns: FakeTurn[];
+  subscribers: Set<WebSocket>;
   goal?: FakeGoal;
 };
 
@@ -70,6 +74,9 @@ export async function withFakeSharedCodexAppServer(
     clients.add(webSocket);
     webSocket.on("close", () => {
       clients.delete(webSocket);
+      for (const thread of threads.values()) {
+        thread.subscribers.delete(webSocket);
+      }
     });
     webSocket.on("message", (data) => {
       const message = JSON.parse(rawDataToString(data)) as {
@@ -119,7 +126,12 @@ function handleFakeMessage(
       return;
     case "thread/start": {
       const threadId = nextThreadId();
-      const thread: FakeThread = { threadId, turnCounter: 1, turns: [] };
+      const thread: FakeThread = {
+        threadId,
+        turnCounter: 1,
+        turns: [],
+        subscribers: new Set([webSocket]),
+      };
       threads.set(threadId, thread);
       respond(webSocket, message.id, { thread: threadResponse(thread) });
       notifyAll(clients, "thread/started", { threadId });
@@ -128,8 +140,13 @@ function handleFakeMessage(
     case "thread/resume": {
       const threadId = requireString(message.params?.threadId, "threadId");
       const thread = requireThread(threads, threadId);
+      if (options.resumeRequiresCompletedRollout && !hasCompletedTurn(thread)) {
+        respondError(webSocket, message.id, `no rollout found for thread id ${threadId}`);
+        return;
+      }
+      thread.subscribers.add(webSocket);
       respond(webSocket, message.id, {
-        thread: threadResponse(thread, true),
+        thread: threadResponse(thread, true, options.threadReadStatus),
         initialTurnsPage: {
           data: thread.turns.map(turnResponse),
           nextCursor: null,
@@ -142,6 +159,10 @@ function handleFakeMessage(
     case "thread/read": {
       const threadId = requireString(message.params?.threadId, "threadId");
       const thread = requireThread(threads, threadId);
+      if (options.readRequiresCompletedRollout && !hasCompletedTurn(thread)) {
+        respondError(webSocket, message.id, `no rollout found for thread id ${threadId}`);
+        return;
+      }
       const includeTurns = message.params?.includeTurns === true;
       respond(webSocket, message.id, {
         thread: threadResponse(thread, includeTurns, options.threadReadStatus),
@@ -157,6 +178,7 @@ function handleFakeMessage(
       emitCompletedTurn(
         clients,
         thread,
+        options,
         threadId,
         turnId,
         options.resultText ?? "Hello from shared Codex.",
@@ -190,7 +212,7 @@ function handleFakeMessage(
       }
       const turnId = `turn-fake-goal-${thread.turnCounter++}`;
       thread.turns.push({ id: turnId, status: "inProgress" });
-      notifyAll(clients, "thread/goal/updated", { threadId, goal });
+      notifyThread(clients, thread, options, "thread/goal/updated", { threadId, goal });
       schedule(() => {
         const completeGoal = fakeGoal(threadId, objective, "complete", tokenBudget, options);
         thread.goal = completeGoal;
@@ -199,12 +221,12 @@ function handleFakeMessage(
           turn.status = "completed";
           turn.text = options.goalResultText ?? "Goal complete from shared Codex.";
         }
-        notifyAll(clients, "turn/started", {
+        notifyThread(clients, thread, options, "turn/started", {
           threadId,
           turnId,
           turn: { id: turnId, status: "inProgress" },
         });
-        notifyAll(clients, "item/completed", {
+        notifyThread(clients, thread, options, "item/completed", {
           threadId,
           turnId,
           item: {
@@ -213,8 +235,11 @@ function handleFakeMessage(
             text: options.goalResultText ?? "Goal complete from shared Codex.",
           },
         });
-        notifyAll(clients, "thread/goal/updated", { threadId, goal: completeGoal });
-        notifyAll(clients, "turn/completed", {
+        notifyThread(clients, thread, options, "thread/goal/updated", {
+          threadId,
+          goal: completeGoal,
+        });
+        notifyThread(clients, thread, options, "turn/completed", {
           threadId,
           turnId,
           turn: { id: turnId, status: "completed" },
@@ -243,24 +268,29 @@ function handleFakeMessage(
 function emitCompletedTurn(
   clients: Set<WebSocket>,
   thread: FakeThread,
+  options: FakeSharedCodexAppServerOptions,
   threadId: string,
   turnId: string,
   text: string,
   delayMs: number | undefined,
 ): void {
   schedule(() => {
-    notifyAll(clients, "turn/started", {
+    notifyThread(clients, thread, options, "turn/started", {
       threadId,
       turnId,
       turn: { id: turnId, status: "inProgress" },
     });
-    notifyAll(clients, "item/agentMessage/delta", { threadId, turnId, delta: text });
-    notifyAll(clients, "item/completed", {
+    notifyThread(clients, thread, options, "item/agentMessage/delta", {
+      threadId,
+      turnId,
+      delta: text,
+    });
+    notifyThread(clients, thread, options, "item/completed", {
       threadId,
       turnId,
       item: { id: "item-agent", type: "agentMessage", text },
     });
-    notifyAll(clients, "thread/tokenUsage/updated", {
+    notifyThread(clients, thread, options, "thread/tokenUsage/updated", {
       threadId,
       turnId,
       tokenUsage: {
@@ -297,7 +327,7 @@ function emitCompletedTurn(
         totalTokens: 15,
       };
     }
-    notifyAll(clients, "turn/completed", {
+    notifyThread(clients, thread, options, "turn/completed", {
       threadId,
       turnId,
       turn: { id: turnId, status: "completed" },
@@ -381,8 +411,22 @@ function respond(webSocket: WebSocket, id: unknown, result: unknown): void {
   webSocket.send(JSON.stringify({ jsonrpc: "2.0", id, result }));
 }
 
+function respondError(webSocket: WebSocket, id: unknown, message: string): void {
+  webSocket.send(JSON.stringify({ jsonrpc: "2.0", id, error: { code: -32600, message } }));
+}
+
 function notify(webSocket: WebSocket, method: string, params: Record<string, unknown>): void {
   webSocket.send(JSON.stringify({ jsonrpc: "2.0", method, params }));
+}
+
+function notifyThread(
+  clients: Set<WebSocket>,
+  thread: FakeThread,
+  options: FakeSharedCodexAppServerOptions,
+  method: string,
+  params: Record<string, unknown>,
+): void {
+  notifyAll(options.notifyOnlySubscribers ? thread.subscribers : clients, method, params);
 }
 
 function notifyAll(clients: Set<WebSocket>, method: string, params: Record<string, unknown>): void {
@@ -407,6 +451,10 @@ function requireThread(threads: Map<string, FakeThread>, threadId: string): Fake
     throw new Error(`Unknown fake thread: ${threadId}`);
   }
   return thread;
+}
+
+function hasCompletedTurn(thread: FakeThread): boolean {
+  return thread.turns.some((turn) => turn.status !== "inProgress");
 }
 
 function requireString(value: unknown, name: string): string {

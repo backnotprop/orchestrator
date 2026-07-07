@@ -166,6 +166,174 @@ test("shared codex-app-server monitor settles a no-wait send operation", async (
   );
 });
 
+test("fresh shared codex-app-server session first send materializes rollout without resume", async () => {
+  await withFakeSharedCodexAppServer(
+    async ({ socketPath }) => {
+      await withTempWorkspace(async (workspaceRoot) => {
+        const task = await launchSharedCodexAppServerSessionTask({
+          workspaceRoot,
+          plan: sessionPlan(workspaceRoot, socketPath),
+          name: "fresh first send session",
+        });
+
+        const sent = await sendTaskMessage({
+          workspaceRoot,
+          taskId: task.taskId,
+          text: "Say hello.",
+          wait: true,
+          timeoutMs: 5_000,
+        });
+        const after = await readTaskRecord({ workspaceRoot }, task.taskId);
+        const events = await readTaskEvents({
+          workspaceRoot,
+          taskId: task.taskId,
+          agentOnly: true,
+        });
+        const kinds = events.map((event) => String(event.data.kind));
+
+        assert.equal(sent.status, "completed");
+        assert.equal(sent.operation?.result, "Hello from shared Codex.");
+        assert.equal(sent.provider?.turnId, "turn-fake-1");
+        assert.equal(after.session?.state, "idle");
+        assert.equal(after.lastOperation?.status, "succeeded");
+        assert.equal(after.usage?.totalTokens, 15);
+        assert.ok(kinds.includes("thread.rollout.pending"));
+        assert.ok(kinds.includes("operation.completed"));
+      });
+    },
+    {
+      notifyOnlySubscribers: true,
+      readRequiresCompletedRollout: true,
+      resumeRequiresCompletedRollout: true,
+      turnDelayMs: 50,
+    },
+  );
+});
+
+test("fresh shared codex-app-server session monitor settles first send after rollout appears", async () => {
+  await withFakeSharedCodexAppServer(
+    async ({ socketPath }) => {
+      await withTempWorkspace(async (workspaceRoot) => {
+        const task = await launchSharedCodexAppServerSessionTask({
+          workspaceRoot,
+          plan: sessionPlan(workspaceRoot, socketPath),
+          name: "fresh monitored first send session",
+        });
+
+        const sent = await sendTaskMessage({
+          workspaceRoot,
+          taskId: task.taskId,
+          text: "Say hello.",
+          wait: false,
+          timeoutMs: 5_000,
+        });
+        assert.equal(sent.status, "running");
+        assert.ok(sent.operation?.operationId);
+
+        const monitored = await monitorSharedCodexAppServerSessionOperation({
+          workspaceRoot,
+          taskId: task.taskId,
+          operationId: sent.operation.operationId,
+          timeoutMs: 5_000,
+        });
+
+        assert.equal(monitored.session?.state, "idle");
+        assert.equal(monitored.lastOperation?.status, "succeeded");
+        assert.equal(monitored.lastOperation?.result, "Hello from shared Codex.");
+        assert.equal(monitored.usage?.totalTokens, 15);
+      });
+    },
+    {
+      notifyOnlySubscribers: true,
+      readRequiresCompletedRollout: true,
+      resumeRequiresCompletedRollout: true,
+      turnDelayMs: 50,
+    },
+  );
+});
+
+test("fresh shared codex-app-server session can steer an active first turn before rollout appears", async () => {
+  await withFakeSharedCodexAppServer(
+    async ({ socketPath }) => {
+      await withTempWorkspace(async (workspaceRoot) => {
+        const task = await launchSharedCodexAppServerSessionTask({
+          workspaceRoot,
+          plan: sessionPlan(workspaceRoot, socketPath),
+          name: "fresh first steer session",
+        });
+
+        const started = await sendTaskMessage({
+          workspaceRoot,
+          taskId: task.taskId,
+          text: "Start the first turn.",
+          wait: false,
+          timeoutMs: 5_000,
+        });
+        assert.equal(started.status, "running");
+
+        const steered = await sendTaskMessage({
+          workspaceRoot,
+          taskId: task.taskId,
+          text: "Add one more sentence.",
+          wait: true,
+          timeoutMs: 5_000,
+        });
+        const after = await readTaskRecord({ workspaceRoot }, task.taskId);
+
+        assert.equal(steered.status, "completed");
+        assert.equal(steered.operation?.result, "Hello from shared Codex.");
+        assert.equal(steered.provider?.turnId, "turn-fake-1");
+        assert.equal(after.session?.state, "idle");
+        assert.equal(after.lastOperation?.status, "succeeded");
+      });
+    },
+    {
+      notifyOnlySubscribers: true,
+      readRequiresCompletedRollout: true,
+      resumeRequiresCompletedRollout: true,
+      turnDelayMs: 50,
+    },
+  );
+});
+
+test("fresh shared codex-app-server session first goal materializes rollout without resume", async () => {
+  await withFakeSharedCodexAppServer(
+    async ({ socketPath }) => {
+      await withTempWorkspace(async (workspaceRoot) => {
+        const task = await launchSharedCodexAppServerSessionTask({
+          workspaceRoot,
+          plan: sessionPlan(workspaceRoot, socketPath),
+          name: "fresh first goal session",
+        });
+
+        const goal = await startTaskGoal({
+          workspaceRoot,
+          taskId: task.taskId,
+          goal: "Complete a tiny goal.",
+          wait: true,
+          timeoutMs: 5_000,
+          tokenBudget: 100,
+        });
+        const after = await readTaskRecord({ workspaceRoot }, task.taskId);
+
+        assert.equal(goal.status, "completed");
+        assert.equal(goal.goal?.status, "complete");
+        assert.equal(goal.operation?.kind, "goal");
+        assert.equal(goal.operation?.result, "Goal complete from shared Codex.");
+        assert.equal(goal.operation?.turnId, "turn-fake-goal-1");
+        assert.equal(after.session?.state, "idle");
+        assert.equal(after.lastOperation?.status, "complete");
+      });
+    },
+    {
+      goalDelayMs: 50,
+      notifyOnlySubscribers: true,
+      readRequiresCompletedRollout: true,
+      resumeRequiresCompletedRollout: true,
+    },
+  );
+});
+
 test("shared codex-app-server monitor claim prevents duplicate operation settlement", async () => {
   await withFakeSharedCodexAppServer(
     async ({ socketPath }) => {
@@ -416,10 +584,17 @@ test("CLI goal start without wait starts a detached shared session monitor", asy
         );
         const started = JSON.parse(goal.stdout) as {
           ok: boolean;
-          goal: { status: string; operation?: { operationId?: string } };
+          goal: {
+            action: string;
+            commandStatus: string;
+            status: string;
+            operation?: { operationId?: string };
+          };
         };
         assert.equal(started.ok, true);
-        assert.equal(started.goal.status, "running");
+        assert.equal(started.goal.action, "start");
+        assert.equal(started.goal.commandStatus, "running");
+        assert.equal(started.goal.status, "active");
         assert.ok(started.goal.operation?.operationId);
 
         const settled = await waitForTask(

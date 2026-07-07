@@ -159,6 +159,8 @@ test("CLI help teaches agents the job-control contract", async () => {
     assert.match(result.stdout.toString(), /launch -f <manifest\.json\|->/);
     assert.match(result.stdout.toString(), /Common options like --workspace/);
     assert.match(result.stdout.toString(), /commands\.\*\.args/);
+    assert.match(result.stdout.toString(), /Usually omit --token-budget/);
+    assert.match(result.stdout.toString(), /only when you intentionally want a hard cap/);
     assert.match(result.stdout.toString(), /orchestrator ps --all --json --compact/);
     assert.match(
       result.stdout.toString(),
@@ -463,6 +465,14 @@ test("CLI JSON help exposes a machine-readable agent contract", async () => {
         (command) => command.name === "events" && command.usage.includes("[--json [--compact]]"),
       ),
     );
+    assert.ok(
+      help.commands.some(
+        (command) =>
+          command.name === "goal" &&
+          command.semantics.includes("Usually omit --token-budget") &&
+          command.semantics.includes("hard cap"),
+      ),
+    );
     assert.ok(help.runtimes.some((runtime) => runtime.id === "claude-code" && runtime.modelFlag));
     assert.ok(help.runtimes.some((runtime) => runtime.id === "codex" && runtime.modelFlag));
     assert.ok(help.commands.some((command) => command.name === "watch"));
@@ -626,6 +636,14 @@ test("CLI compact JSON help exposes a small agent command contract", async () =>
     assert.ok(help.runtimeIds.includes("scratch-agent"));
     assert.ok(help.commands.some((command) => command.name === "launch"));
     assert.ok(help.commands.some((command) => command.name === "help"));
+    assert.ok(
+      help.commands.some(
+        (command) =>
+          command.name === "goal" &&
+          command.semantics.includes("Usually omit --token-budget") &&
+          command.semantics.includes("hard cap"),
+      ),
+    );
     assert.ok(help.commands.every((command) => command.options === undefined));
     assert.ok(help.agentQuickStart.some((step) => step.includes("launch -f <manifest.json|->")));
     assert.ok(

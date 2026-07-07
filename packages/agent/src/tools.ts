@@ -599,6 +599,7 @@ function createStartAgentGoalTool(context: ToolContext): OrchestratorParentTool 
       "Use send_agent_message for normal work before or after the goal.",
       "Use wait: true when you need the goal result before answering.",
       "Do not simulate native provider goals by sending ordinary prompt text.",
+      "Do not set tokenBudget by default; goals are open-ended provider work, and a guessed budget can stop useful work early. Set tokenBudget only when you intentionally want a hard cap.",
       "If start_agent_goal returns not_ready, inspect events or wait for the session to become idle before retrying.",
     ],
     parameters: Type.Object({
@@ -675,6 +676,7 @@ function createSetAgentGoalTool(context: ToolContext): OrchestratorParentTool {
     promptGuidelines: [
       "Use set_agent_goal to pause, mark blocked, mark complete, or edit the objective/token budget.",
       "Do not use set_agent_goal to activate goal work. Use start_agent_goal for that.",
+      "Change tokenBudget only when you intentionally want a hard cap.",
       "Use interrupt_agent to stop a running goal session.",
     ],
     parameters: Type.Object({

@@ -120,6 +120,10 @@ For persistent Codex sessions, `send`, and native Codex goals, use
 `codex-app-server`.
 [Codex App Server](doc/codex-app-server.md)
 
+Do not set a goal token budget by default. Goals are open-ended provider work,
+and guessing a budget upfront can stop useful work early. Use `--token-budget`
+only when you intentionally want a hard cap.
+
 Configure the parent agent in `~/.orchestrator/auth.json`.
 [Parent Agent Config](doc/parent-agent-config.md)
 
@@ -291,7 +295,8 @@ Orchestrator task. It supports provider-thread resume, running messages through
 `orchestrator send`, and native Codex goals through `orchestrator goal start` on
 persistent sessions. `orchestrator goal get`, `orchestrator goal set`, and
 `orchestrator goal clear` inspect or edit provider goal state without starting
-tracked goal work.
+tracked goal work. Do not set a goal token budget by default; use one only when
+you intentionally want a hard cap.
 
 The runtime layer is generic, but the first release is focused on Claude Code
 and Codex. `shell` is also enabled as a local-command runtime for research,

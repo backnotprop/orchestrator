@@ -62,6 +62,7 @@ type SharedOperationState = {
   lastUsage?: TaskUsage;
   completed: Deferred<TaskOperation>;
   settled: boolean;
+  pendingRolloutReported?: boolean;
 };
 
 export type MonitorSharedCodexAppServerSessionOperationInput = TaskStoreOptions & {
@@ -238,12 +239,19 @@ export async function sendSharedCodexAppServerSessionMessage(input: {
         input.task.currentOperation?.kind === "turn" &&
         input.task.currentOperation.status === "running" &&
         Boolean(input.task.currentOperation.turnId ?? input.task.provider?.turnId);
-      if (!isActiveTurn) {
-        const readResponse = await connection.readThread(threadId, {
-          timeoutMs: input.timeoutMs ?? SEND_MESSAGE_TIMEOUT_MS,
-        });
-        await appendProtocolResponse(context, "thread/read", readResponse);
-        assertThreadIdle(readResponse, threadId);
+      const resumeResponse = isActiveTurn
+        ? undefined
+        : await tryResumeSharedThread({
+            context,
+            connection,
+            threadId,
+            task: input.task,
+            operationState,
+            timeoutMs: input.timeoutMs ?? SEND_MESSAGE_TIMEOUT_MS,
+            allowMissingRollout: true,
+          });
+      if (!isActiveTurn && resumeResponse) {
+        assertThreadIdle(resumeResponse, threadId);
       }
       const response = isActiveTurn
         ? await connection.steerTurn(
@@ -291,7 +299,12 @@ export async function sendSharedCodexAppServerSessionMessage(input: {
       });
 
       if (input.wait) {
-        const completed = await waitForOperation(operationState, input.timeoutMs);
+        const completed = await waitForOperationWithReconcile(
+          context,
+          connection,
+          operationState,
+          input.timeoutMs,
+        );
         return {
           status: "completed",
           provider: codexProvider(threadId, completed.turnId ?? turnId),
@@ -338,11 +351,18 @@ export async function startSharedCodexAppServerSessionGoal(input: {
     const subscription = subscribeOperationNotifications(context, connection, operationState);
 
     try {
-      const readResponse = await connection.readThread(threadId, {
+      const resumeResponse = await tryResumeSharedThread({
+        context,
+        connection,
+        threadId,
+        task: input.task,
+        operationState,
         timeoutMs: input.timeoutMs ?? SEND_MESSAGE_TIMEOUT_MS,
+        allowMissingRollout: true,
       });
-      await appendProtocolResponse(context, "thread/read", readResponse);
-      assertThreadIdle(readResponse, threadId);
+      if (resumeResponse) {
+        assertThreadIdle(resumeResponse, threadId);
+      }
 
       await context.updateTask({
         session: sessionRecord(input.task.session?.startedAt ?? now(), "goal_running", {
@@ -406,7 +426,12 @@ export async function startSharedCodexAppServerSessionGoal(input: {
       }
 
       if (input.wait) {
-        const completed = await waitForOperation(operationState, input.timeoutMs);
+        const completed = await waitForOperationWithReconcile(
+          context,
+          connection,
+          operationState,
+          input.timeoutMs,
+        );
         return {
           status: "completed",
           provider: codexProvider(threadId, completed.turnId),
@@ -628,23 +653,20 @@ async function runSharedCodexAppServerSessionOperationMonitor(
   const subscription = subscribeOperationNotifications(context, connection, operationState);
 
   try {
-    const resume = await connection.resumeThread(
-      {
-        threadId,
-        cwd: task.cwd,
-        ...(task.model ? { model: task.model } : {}),
-        initialTurnsPage: {
-          limit: 10,
-          sortDirection: "desc",
-          itemsView: "full",
-        },
-      },
-      { timeoutMs: SEND_MESSAGE_TIMEOUT_MS },
-    );
-    await appendProtocolResponse(context, "thread/resume", resume);
-    await reconcileOperationFromResponse(context, connection, operationState, resume);
+    const resume = await tryResumeSharedThread({
+      context,
+      connection,
+      threadId,
+      task,
+      operationState,
+      timeoutMs: SEND_MESSAGE_TIMEOUT_MS,
+      allowMissingRollout: true,
+    });
+    if (resume) {
+      await reconcileOperationFromResponse(context, connection, operationState, resume);
+    }
     await reconcileOperation(context, connection, operationState);
-    await waitForMonitoredOperation(context, connection, operationState, input.timeoutMs);
+    await waitForOperationWithReconcile(context, connection, operationState, input.timeoutMs);
     return await readTaskRecord(input, context.taskId);
   } finally {
     subscription.unsubscribe();
@@ -652,12 +674,12 @@ async function runSharedCodexAppServerSessionOperationMonitor(
   }
 }
 
-async function waitForMonitoredOperation(
+async function waitForOperationWithReconcile(
   context: SharedSessionContext,
   connection: CodexAppServerConnection,
   operationState: SharedOperationState,
   timeoutMs: number | undefined,
-): Promise<void> {
+): Promise<TaskOperation> {
   const deadline = timeoutMs === undefined ? undefined : Date.now() + timeoutMs;
   while (!operationState.settled) {
     const remainingMs = deadline === undefined ? undefined : deadline - Date.now();
@@ -673,14 +695,18 @@ async function waitForMonitoredOperation(
         ? OPERATION_MONITOR_RECONCILE_INTERVAL_MS
         : Math.min(OPERATION_MONITOR_RECONCILE_INTERVAL_MS, remainingMs);
     const result = await Promise.race([
-      operationState.completed.promise.then(() => "completed" as const),
+      operationState.completed.promise.then((operation) => ({
+        kind: "completed" as const,
+        operation,
+      })),
       delay(waitMs).then(() => "reconcile" as const),
     ]);
-    if (result === "completed") {
-      return;
+    if (typeof result === "object" && result.kind === "completed") {
+      return result.operation;
     }
     await reconcileOperation(context, connection, operationState);
   }
+  return await operationState.completed.promise;
 }
 
 async function reconcileOperation(
@@ -703,13 +729,11 @@ async function reconcileOperation(
     await reconcileGoalOperation(context, connection, operationState);
     return;
   }
-  const response = await connection.readThread(
-    operationState.operation.threadId ?? requireThreadId(latest),
-    {
-      timeoutMs: SEND_MESSAGE_TIMEOUT_MS,
-      includeTurns: true,
-    },
-  );
+  const threadId = operationState.operation.threadId ?? requireThreadId(latest);
+  const response = await readThreadIfMaterialized(context, connection, operationState, threadId);
+  if (!response) {
+    return;
+  }
   await appendProtocolResponse(context, "thread/read", response);
   await reconcileOperationFromResponse(context, connection, operationState, response);
 }
@@ -791,6 +815,7 @@ async function reconcileGoalOperation(
   operationState.goal = goal;
   await context.updateTask({ goal });
   if (isTerminalGoalStatus(goal.status)) {
+    await hydrateGoalOperationFromThread(context, connection, operationState);
     await settleGoalOperation(context, context.task, operationState, goal);
   }
 }
@@ -923,6 +948,107 @@ async function connectSharedCodexAppServer(
   return await connectCodexAppServer(endpoint, {
     onServerRequest: async () => ({ decision: "accept" }),
   });
+}
+
+async function tryResumeSharedThread(input: {
+  context: SharedSessionContext;
+  connection: CodexAppServerConnection;
+  task: AgentTaskRecord;
+  threadId: string;
+  operationState: SharedOperationState;
+  timeoutMs: number;
+  allowMissingRollout: boolean;
+}): Promise<unknown | undefined> {
+  try {
+    const response = await input.connection.resumeThread(
+      {
+        threadId: input.threadId,
+        cwd: input.task.cwd,
+        ...(input.task.model ? { model: input.task.model } : {}),
+        initialTurnsPage: {
+          limit: 10,
+          sortDirection: "desc",
+          itemsView: "full",
+        },
+      },
+      { timeoutMs: input.timeoutMs },
+    );
+    await appendProtocolResponse(input.context, "thread/resume", response);
+    return response;
+  } catch (error) {
+    if (input.allowMissingRollout && isNoRolloutForThreadError(error, input.threadId)) {
+      await reportPendingRollout(input.context, input.operationState, input.threadId);
+      return undefined;
+    }
+    throw error;
+  }
+}
+
+async function readThreadIfMaterialized(
+  context: SharedSessionContext,
+  connection: CodexAppServerConnection,
+  operationState: SharedOperationState,
+  threadId: string,
+): Promise<unknown | undefined> {
+  try {
+    return await connection.readThread(threadId, {
+      timeoutMs: SEND_MESSAGE_TIMEOUT_MS,
+      includeTurns: true,
+    });
+  } catch (error) {
+    if (isNoRolloutForThreadError(error, threadId)) {
+      await reportPendingRollout(context, operationState, threadId);
+      return undefined;
+    }
+    throw error;
+  }
+}
+
+async function reportPendingRollout(
+  context: SharedSessionContext,
+  operationState: SharedOperationState,
+  threadId: string,
+): Promise<void> {
+  if (operationState.pendingRolloutReported) {
+    return;
+  }
+  operationState.pendingRolloutReported = true;
+  await appendAgentEvent(context, context.task.runtime, "thread.rollout.pending", {
+    threadId,
+    operationId: operationState.operation.operationId,
+    operationKind: operationState.operation.kind,
+  });
+}
+
+async function hydrateGoalOperationFromThread(
+  context: SharedSessionContext,
+  connection: CodexAppServerConnection,
+  operationState: SharedOperationState,
+): Promise<void> {
+  const threadId = operationState.operation.threadId ?? requireThreadId(context.task);
+  const response = await readThreadIfMaterialized(context, connection, operationState, threadId);
+  if (!response) {
+    return;
+  }
+  await appendProtocolResponse(context, "thread/read", response);
+  const turn = latestTerminalTurn(response);
+  if (!turn) {
+    return;
+  }
+  const turnId = stringValue(turn.id);
+  if (turnId && !operationState.operation.turnId) {
+    operationState.operation = { ...operationState.operation, turnId };
+    await context.updateProvider({ turnId });
+  }
+  const result = finalAnswerFromTurn(turn);
+  if (result !== undefined) {
+    operationState.finalAnswer = result;
+  }
+  const usage = usageFromRecord(turn);
+  if (usage) {
+    operationState.lastUsage = usage;
+    await context.updateUsage(usage);
+  }
 }
 
 function endpointForTask(task: AgentTaskRecord): CodexAppServerEndpoint {
@@ -1154,24 +1280,6 @@ async function failOperation(
     error: failed.error,
   });
   operationState.completed.resolve(failed);
-}
-
-async function waitForOperation(
-  operationState: SharedOperationState,
-  timeoutMs: number | undefined,
-): Promise<TaskOperation> {
-  if (timeoutMs === undefined) {
-    return await operationState.completed.promise;
-  }
-  return await Promise.race([
-    operationState.completed.promise,
-    delay(timeoutMs).then(() => {
-      throw new TaskSendMessageError(
-        "timeout",
-        `Timed out waiting for operation "${operationState.operation.operationId}" to complete.`,
-      );
-    }),
-  ]);
 }
 
 async function controlResponse(
@@ -1425,6 +1533,17 @@ function findOperationTurn(
   return turns.find((turn) => stringValue(turn.status) === "inProgress");
 }
 
+function latestTerminalTurn(response: unknown): Record<string, unknown> | undefined {
+  const turns = turnsFromResponse(response);
+  for (let index = turns.length - 1; index >= 0; index -= 1) {
+    const turn = turns[index];
+    if (turn && isTerminalTurnStatus(stringValue(turn.status))) {
+      return turn;
+    }
+  }
+  return undefined;
+}
+
 function finalAnswerFromTurn(turn: Record<string, unknown>): string | undefined {
   const items = Array.isArray(turn.items) ? turn.items.filter(isRecord) : [];
   for (let index = items.length - 1; index >= 0; index -= 1) {
@@ -1493,6 +1612,10 @@ function assertThreadIdle(response: unknown, threadId: string): void {
       `Codex app-server thread must be idle; current status is "${status}".`,
     );
   }
+}
+
+function isNoRolloutForThreadError(error: unknown, threadId: string): boolean {
+  return errorMessage(error).includes(`no rollout found for thread id ${threadId}`);
 }
 
 function terminalResultForNotification(

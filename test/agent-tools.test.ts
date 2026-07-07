@@ -1270,6 +1270,28 @@ test("send_agent_message metadata teaches running task and session use", async (
   });
 });
 
+test("start_agent_goal metadata discourages default token budgets", async () => {
+  await withTempWorkspace(async (workspaceRoot) => {
+    const startAgentGoal = getTool(
+      createOrchestratorAgentTools({ workspaceRoot }),
+      "start_agent_goal",
+    );
+    const promptGuidelines = startAgentGoal.promptGuidelines;
+
+    assert.ok(promptGuidelines);
+    assert.ok(
+      promptGuidelines.some(
+        (guideline) =>
+          guideline.includes("Do not set tokenBudget by default") && guideline.includes("hard cap"),
+      ),
+    );
+    assert.match(
+      buildOrchestratorParentPrompt("Improve performance."),
+      /Do not set tokenBudget by default/,
+    );
+  });
+});
+
 test("parent AI session ignores unsafe Pi tool overrides", async () => {
   await withTempWorkspace(async (workspaceRoot) => {
     const created = await createOrchestratorParentSession({

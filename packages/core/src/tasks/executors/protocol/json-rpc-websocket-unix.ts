@@ -125,6 +125,7 @@ export class JsonRpcWebSocketUnixClient {
     });
     this.socket = new WebSocket(`ws://localhost${this.options.requestPath}`, {
       createConnection: () => createConnection(options.socketPath),
+      perMessageDeflate: false,
     });
     this.ready = new Promise<void>((resolve, reject) => {
       this.socket.once("open", () => resolve());
