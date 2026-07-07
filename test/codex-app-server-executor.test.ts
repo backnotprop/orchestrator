@@ -1824,11 +1824,12 @@ test("CLI goal get set and clear control a native codex-app-server goal", async 
           );
           const emptyGoal = JSON.parse(empty.stdout) as {
             ok: boolean;
-            goal: { action: string; source: string; state?: { status?: string } };
+            goal: { action: string; source: string; exists: boolean; state?: { status?: string } };
           };
           assert.equal(emptyGoal.ok, true);
           assert.equal(emptyGoal.goal.action, "get");
           assert.equal(emptyGoal.goal.source, "provider");
+          assert.equal(emptyGoal.goal.exists, false);
           assert.equal(emptyGoal.goal.state, undefined);
 
           const set = await runCli(
@@ -1856,6 +1857,7 @@ test("CLI goal get set and clear control a native codex-app-server goal", async 
             goal: {
               action: string;
               source: string;
+              exists: boolean;
               state?: {
                 status?: string;
                 objective?: string;
@@ -1866,6 +1868,7 @@ test("CLI goal get set and clear control a native codex-app-server goal", async 
           };
           assert.equal(setGoal.ok, true);
           assert.equal(setGoal.goal.action, "set");
+          assert.equal(setGoal.goal.exists, true);
           assert.equal(setGoal.goal.state?.status, "usage_limited");
           assert.equal(setGoal.goal.state?.objective, "Pause CLI work.");
           assert.equal(setGoal.goal.state?.tokenBudget, 1000);
@@ -1887,11 +1890,35 @@ test("CLI goal get set and clear control a native codex-app-server goal", async 
           );
           const clearGoal = JSON.parse(clear.stdout) as {
             ok: boolean;
-            goal: { action: string; source: string; cleared: boolean };
+            goal: { action: string; source: string; exists: boolean; cleared: boolean };
           };
           assert.equal(clearGoal.ok, true);
           assert.equal(clearGoal.goal.action, "clear");
+          assert.equal(clearGoal.goal.exists, false);
           assert.equal(clearGoal.goal.cleared, true);
+
+          const emptyAfterClear = await runCli(
+            workspaceRoot,
+            [
+              "goal",
+              "get",
+              task.taskId.slice(0, 8),
+              "--workspace",
+              workspaceRoot,
+              "--json",
+              "--compact",
+            ],
+            10_000,
+            fakeEnv,
+          );
+          const emptyAfterClearGoal = JSON.parse(emptyAfterClear.stdout) as {
+            ok: boolean;
+            goal: { action: string; source: string; exists: boolean; state?: { status?: string } };
+          };
+          assert.equal(emptyAfterClearGoal.ok, true);
+          assert.equal(emptyAfterClearGoal.goal.action, "get");
+          assert.equal(emptyAfterClearGoal.goal.exists, false);
+          assert.equal(emptyAfterClearGoal.goal.state, undefined);
 
           await assert.rejects(
             runCli(

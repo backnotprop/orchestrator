@@ -743,6 +743,11 @@ test("CLI launch codex-app-server --session creates a shared provider-backed tas
       const read = await readTaskRecord({ workspaceRoot }, launched.taskId);
       assert.equal(read.supervision?.kind, "provider");
       assert.equal(read.status, "running");
+
+      const ps = await runCli(workspaceRoot, ["ps", "--workspace", workspaceRoot], 10_000, {
+        [TEST_SOCKET_PATH_ENV]: socketPath,
+      });
+      assert.match(ps.stdout, /cli shared session\s+idle/);
     });
   });
 });

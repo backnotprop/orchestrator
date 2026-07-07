@@ -41,7 +41,12 @@ export function parseLaunchManifest(
   options: { workspaceRoot: string; cliDefaults: LaunchManifestCliDefaults },
 ): NormalizedLaunchRequest[] {
   const parsed = parseJson(raw);
-  const manifest = objectValue(parsed, "manifest");
+  const manifest = Array.isArray(parsed)
+    ? {
+        schemaVersion: 1,
+        tasks: parsed,
+      }
+    : objectValue(parsed, "manifest");
 
   const schemaVersion = manifest.schemaVersion;
   if (schemaVersion !== 1) {
@@ -287,6 +292,6 @@ function manifestError(message: string, input: string): CliError {
   return new CliError(message, {
     reason: "invalid_launch_manifest",
     input,
-    hint: "Use launch -f <manifest.json> --json with schemaVersion: 1 and a non-empty tasks array.",
+    hint: "Use launch -f <manifest.json> --json with schemaVersion: 1 and a non-empty tasks array, or pass a bare task array.",
   });
 }

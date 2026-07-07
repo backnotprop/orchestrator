@@ -53,7 +53,7 @@ export function renderPsView(view: AgentTaskPsView, options: { columns?: number 
         `  ${showWorkspace ? `${padCell(formatWorkspace(row), widths.workspace)} ` : ""}${padCell(
           row.runtime,
           widths.runtime,
-        )} ${padCell(row.name, widths.work)} ${padCell(formatPsStatus(row.state ?? row.status), widths.status)} ${padCell(
+        )} ${padCell(row.name, widths.work)} ${padCell(formatPsRowStatus(row), widths.status)} ${padCell(
           row.model ?? "-",
           widths.model,
         )} ${showWorkspace ? `${padCell(formatCwd(row), widths.cwd)} ` : ""}${padCell(
@@ -245,6 +245,31 @@ function formatPsStatus(status: TaskDisplayState): string {
     default:
       return status;
   }
+}
+
+function formatPsRowStatus(row: AgentTaskPsView["rows"][number]): string {
+  const displayState = row.state ?? row.status;
+  if (displayState !== "running") {
+    return formatPsStatus(displayState);
+  }
+
+  if (row.session) {
+    switch (row.session.state) {
+      case "idle":
+        return "idle";
+      case "turn_running":
+        return "turn";
+      case "goal_running":
+        return "goal";
+      case "stopping":
+        return "stopping";
+      case "closed":
+        return "closed";
+      case "starting":
+        return "starting";
+    }
+  }
+  return formatPsStatus(displayState);
 }
 
 function formatPsLast(row: AgentTaskPsView["rows"][number]): string {

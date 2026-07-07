@@ -215,12 +215,14 @@ async function printGoalControlJson(
       ? {
           action,
           source: result.source,
+          exists: false,
           cleared: "cleared" in result ? result.cleared : false,
           ...(result.provider ? { provider: result.provider } : {}),
         }
       : {
           action,
           source: result.source,
+          exists: Boolean("goal" in result && result.goal),
           ...(result.provider ? { provider: result.provider } : {}),
           ...("goal" in result && result.goal ? { state: result.goal } : {}),
         };

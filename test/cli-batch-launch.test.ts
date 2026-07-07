@@ -215,6 +215,48 @@ test("CLI launch -f supports per-task workspace and cwd", async () => {
   }, "orchestrator-cli-batch-cross-workspace-");
 });
 
+test("CLI launch -f accepts a bare task array as manifest shorthand", async () => {
+  await withTempWorkspace(async (workspaceRoot) => {
+    const manifestPath = `${workspaceRoot}/agents-array.json`;
+    await writeFile(
+      manifestPath,
+      JSON.stringify([
+        {
+          runtime: "shell",
+          name: "array one",
+          task: "printf array-one",
+        },
+      ]),
+    );
+
+    const launch = await runCli(workspaceRoot, [
+      "launch",
+      "-f",
+      manifestPath,
+      "--workspace",
+      workspaceRoot,
+      "--json",
+      "--compact",
+      "--brief",
+    ]);
+    const parsed = JSON.parse(launch.stdout) as {
+      summary: { requested: number; launched: number };
+      tasks: Array<{ id: string; name: string; runtime: string }>;
+      commands: { waitPreview: { args: string[] } };
+    };
+
+    assert.equal(parsed.summary.requested, 1);
+    assert.equal(parsed.summary.launched, 1);
+    assert.equal(parsed.tasks[0]?.name, "array one");
+    assert.equal(parsed.tasks[0]?.runtime, "shell");
+
+    const read = await runCli(workspaceRoot, parsed.commands.waitPreview.args, 10_000);
+    const completed = JSON.parse(read.stdout) as { output: string; status: string };
+    assert.equal(completed.status, "succeeded");
+    assert.equal(completed.output, "array-one");
+  }, "orchestrator-cli-batch-array-");
+});
+
 test("CLI launch -f loads custom runtimes from each task workspace", async () => {
   await withTempWorkspace(async (workspaceRoot) => {
     const repoA = `${workspaceRoot}/repo-a`;
@@ -452,6 +494,11 @@ test("CLI launch -f validates manifest shape before launch", async () => {
       {
         name: "missing-tasks",
         body: JSON.stringify({ schemaVersion: 1 }),
+        pattern: /tasks must be a non-empty array/,
+      },
+      {
+        name: "empty-array",
+        body: JSON.stringify([]),
         pattern: /tasks must be a non-empty array/,
       },
       {
