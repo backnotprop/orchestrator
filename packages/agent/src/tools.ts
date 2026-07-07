@@ -21,7 +21,7 @@ import {
   readTaskOutput,
   readTaskRecord,
   resolveTaskId,
-  selectTaskUsage,
+  selectVisibleTaskUsage,
   sendTaskMessage,
   setTaskGoal,
   startTaskGoal,
@@ -39,7 +39,6 @@ import {
   type TaskObservation,
   type TaskOperation,
   type TaskProviderMetadata,
-  type TaskUsage,
   type TaskStatus,
   type WaitForTaskProgress,
   type WaitForTaskRetrievalStatus,
@@ -971,17 +970,12 @@ async function readLatestTaskUsage(
   taskId: string,
 ): Promise<TokenUsage | undefined> {
   const task = await readTaskRecord(store, taskId);
-  const taskUsage = selectTaskUsage(undefined, task.usage);
-  if (taskUsage) {
-    return taskUsage;
-  }
-
   const events = await readTaskEvents({ ...store, taskId, agentOnly: true });
-  let selected: TaskUsage | undefined;
+  let selected = selectVisibleTaskUsage(undefined, task.usage);
   for (const event of events) {
     const usage = tokenUsageFromUnknown(event.data.usage);
     if (usage) {
-      selected = selectTaskUsage(selected, usageWithUpdatedAt(usage, event.ts));
+      selected = selectVisibleTaskUsage(selected, usageWithUpdatedAt(usage, event.ts));
     }
   }
   return selected;

@@ -93,6 +93,42 @@ export function selectTaskUsage(
   return candidate.updatedAt >= validCurrent.updatedAt ? candidate : validCurrent;
 }
 
+/**
+ * Select usage for live/operator views.
+ *
+ * Final task accounting prefers completed provider totals, but live views should
+ * show a newer active turn as soon as a runtime emits it. This keeps stale final
+ * usage from a previous operation from hiding the current operation's growing
+ * token count.
+ */
+export function selectVisibleTaskUsage(
+  current: TaskUsage | undefined,
+  candidate: TaskUsage | undefined,
+): TaskUsage | undefined {
+  const validCurrent = current && isTaskSummaryCandidate(current) ? current : undefined;
+  if (!candidate || !isTaskSummaryCandidate(candidate)) {
+    return validCurrent;
+  }
+  if (!validCurrent) {
+    return candidate;
+  }
+
+  const currentTier = visibleScopeTier(validCurrent.scope);
+  const candidateTier = visibleScopeTier(candidate.scope);
+  if (candidateTier > currentTier) {
+    return candidate;
+  }
+  if (candidateTier < currentTier) {
+    return validCurrent;
+  }
+
+  if (candidateTier === VISIBLE_TASK_OPERATION_TIER) {
+    return candidate.updatedAt >= validCurrent.updatedAt ? candidate : validCurrent;
+  }
+
+  return selectTaskUsage(validCurrent, candidate);
+}
+
 export function sumTaskUsage(values: readonly TaskUsage[]): TaskUsage | undefined {
   const candidates = aggregateCandidates(values);
   if (candidates.length === 0) {
@@ -144,6 +180,21 @@ function aggregateCandidates(values: readonly TaskUsage[]): TaskUsage[] {
     return taskOrTurn;
   }
   return nonEstimated.filter((usage) => usage.scope === "session");
+}
+
+const VISIBLE_TASK_OPERATION_TIER = 2;
+
+function visibleScopeTier(scope: TaskUsage["scope"]): number {
+  switch (scope) {
+    case "task":
+    case "turn":
+    case undefined:
+      return VISIBLE_TASK_OPERATION_TIER;
+    case "session":
+      return 1;
+    case "account":
+      return 0;
+  }
 }
 
 function usageScore(usage: TaskUsage): number {

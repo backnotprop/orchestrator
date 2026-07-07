@@ -14,12 +14,19 @@ export type FakeSharedCodexAppServerOptions = {
   resultText?: string;
   goalResultText?: string;
   goalTimestampUnit?: "milliseconds" | "seconds";
+  turnUsages?: readonly FakeTokenUsage[];
   threadReadStatus?: string;
   turnDelayMs?: number;
   goalDelayMs?: number;
   notifyOnlySubscribers?: boolean;
   resumeRequiresCompletedRollout?: boolean;
   readRequiresCompletedRollout?: boolean;
+};
+
+type FakeTokenUsage = {
+  inputTokens: number;
+  outputTokens: number;
+  totalTokens: number;
 };
 
 type FakeThread = {
@@ -34,11 +41,7 @@ type FakeTurn = {
   id: string;
   status: "inProgress" | "completed" | "interrupted" | "failed";
   text?: string;
-  usage?: {
-    inputTokens: number;
-    outputTokens: number;
-    totalTokens: number;
-  };
+  usage?: FakeTokenUsage;
 };
 
 type FakeGoal = {
@@ -172,7 +175,8 @@ function handleFakeMessage(
     case "turn/start": {
       const threadId = requireString(message.params?.threadId, "threadId");
       const thread = requireThread(threads, threadId);
-      const turnId = `turn-fake-${thread.turnCounter++}`;
+      const turnNumber = thread.turnCounter++;
+      const turnId = `turn-fake-${turnNumber}`;
       thread.turns.push({ id: turnId, status: "inProgress" });
       respond(webSocket, message.id, { turn: { id: turnId, status: "inProgress" } });
       emitCompletedTurn(
@@ -182,6 +186,7 @@ function handleFakeMessage(
         threadId,
         turnId,
         options.resultText ?? "Hello from shared Codex.",
+        turnUsage(options, turnNumber),
         options.turnDelayMs,
       );
       return;
@@ -272,6 +277,7 @@ function emitCompletedTurn(
   threadId: string,
   turnId: string,
   text: string,
+  usage: FakeTokenUsage,
   delayMs: number | undefined,
 ): void {
   schedule(() => {
@@ -294,11 +300,7 @@ function emitCompletedTurn(
       threadId,
       turnId,
       tokenUsage: {
-        last: {
-          inputTokens: 10,
-          outputTokens: 5,
-          totalTokens: 15,
-        },
+        last: usage,
       },
     });
     notifyAll(clients, "item/agentMessage/delta", {
@@ -321,11 +323,7 @@ function emitCompletedTurn(
     if (turn) {
       turn.status = "completed";
       turn.text = text;
-      turn.usage = {
-        inputTokens: 10,
-        outputTokens: 5,
-        totalTokens: 15,
-      };
+      turn.usage = usage;
     }
     notifyThread(clients, thread, options, "turn/completed", {
       threadId,
@@ -352,6 +350,16 @@ function fakeGoal(
     createdAt: goalTimestamp(options),
     updatedAt: goalTimestamp(options),
   };
+}
+
+function turnUsage(options: FakeSharedCodexAppServerOptions, turnNumber: number): FakeTokenUsage {
+  return (
+    options.turnUsages?.[turnNumber - 1] ?? {
+      inputTokens: 10,
+      outputTokens: 5,
+      totalTokens: 15,
+    }
+  );
 }
 
 function threadResponse(

@@ -3,6 +3,7 @@ import test from "node:test";
 import {
   normalizeTaskUsage,
   selectTaskUsage,
+  selectVisibleTaskUsage,
   sumTaskUsage,
   usageWithUpdatedAt,
   type TaskUsage,
@@ -55,6 +56,54 @@ test("usage selection keeps account and estimated usage out of task summaries", 
     partial,
   );
   assert.equal(selectTaskUsage(partial, finalTask), finalTask);
+});
+
+test("visible usage selection prefers newer task or turn usage over older final usage", () => {
+  const previousFinal = usage(
+    {
+      totalTokens: 100,
+      source: "provider",
+      scope: "turn",
+      final: true,
+    },
+    "2026-06-19T12:00:00.000Z",
+  );
+  const currentLive = usage(
+    {
+      totalTokens: 150,
+      source: "provider",
+      scope: "turn",
+      final: false,
+    },
+    "2026-06-19T12:01:00.000Z",
+  );
+
+  assert.equal(selectTaskUsage(previousFinal, currentLive), previousFinal);
+  assert.equal(selectVisibleTaskUsage(previousFinal, currentLive), currentLive);
+});
+
+test("visible usage selection does not let session usage replace task or turn usage", () => {
+  const turn = usage(
+    {
+      totalTokens: 100,
+      source: "provider",
+      scope: "turn",
+      final: true,
+    },
+    "2026-06-19T12:00:00.000Z",
+  );
+  const newerSession = usage(
+    {
+      totalTokens: 1000,
+      source: "provider",
+      scope: "session",
+      final: true,
+    },
+    "2026-06-19T12:01:00.000Z",
+  );
+
+  assert.equal(selectVisibleTaskUsage(turn, newerSession), turn);
+  assert.equal(selectVisibleTaskUsage(undefined, newerSession), newerSession);
 });
 
 test("usage aggregation sums task usage before falling back to session usage", () => {
@@ -119,6 +168,9 @@ test("usage normalization leaves provider-specific aliases to runtime adapters",
   );
 });
 
-function usage(input: Omit<TaskUsage, "updatedAt">): TaskUsage {
-  return usageWithUpdatedAt(input, "2026-06-19T12:00:00.000Z");
+function usage(
+  input: Omit<TaskUsage, "updatedAt">,
+  updatedAt = "2026-06-19T12:00:00.000Z",
+): TaskUsage {
+  return usageWithUpdatedAt(input, updatedAt);
 }

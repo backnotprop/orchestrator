@@ -75,6 +75,7 @@ export {
 export {
   normalizeTaskUsage,
   selectTaskUsage,
+  selectVisibleTaskUsage,
   sumTaskUsage,
   usageWithUpdatedAt,
   type NormalizedTaskUsage,

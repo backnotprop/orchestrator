@@ -3,6 +3,7 @@ import test from "node:test";
 import { createOrchestratorAgentTools } from "@backnotprop/orchestrator-agent/tools";
 import { buildAgentLaunchPlan } from "@backnotprop/orchestrator-core/runtime";
 import {
+  buildAgentTaskPsView,
   interruptTask,
   launchSharedCodexAppServerSessionTask,
   monitorSharedCodexAppServerSessionOperation,
@@ -92,6 +93,65 @@ test("shared codex-app-server session launches sends goals and interrupts throug
       assert.equal(cancelled.session?.state, "closed");
     });
   });
+});
+
+test("shared codex-app-server usage advances for later send across task ps and read_agent", async () => {
+  await withFakeSharedCodexAppServer(
+    async ({ socketPath }) => {
+      await withTempWorkspace(async (workspaceRoot) => {
+        const task = await launchSharedCodexAppServerSessionTask({
+          workspaceRoot,
+          plan: sessionPlan(workspaceRoot, socketPath),
+          name: "visible usage session",
+        });
+
+        const first = await sendTaskMessage({
+          workspaceRoot,
+          taskId: task.taskId,
+          text: "First turn.",
+          wait: true,
+          timeoutMs: 5_000,
+        });
+        assert.equal(first.status, "completed");
+        const afterFirst = await readTaskRecord({ workspaceRoot }, task.taskId);
+        assert.equal(afterFirst.usage?.totalTokens, 15);
+
+        const second = await sendTaskMessage({
+          workspaceRoot,
+          taskId: task.taskId,
+          text: "Second turn.",
+          wait: true,
+          timeoutMs: 5_000,
+        });
+        assert.equal(second.status, "completed");
+
+        const afterSecond = await readTaskRecord({ workspaceRoot }, task.taskId);
+        assert.equal(afterSecond.usage?.totalTokens, 42);
+
+        const ps = await buildAgentTaskPsView({
+          workspaceRoot,
+          now: new Date("2026-06-19T12:00:00.000Z"),
+        });
+        const row = ps.rows.find((candidate) => candidate.taskId === task.taskId);
+        assert.equal(row?.usage?.totalTokens, 42);
+
+        const tools = createOrchestratorAgentTools({ workspaceRoot });
+        const read = await executeTool<{ usage?: { totalTokens?: number } }>(
+          getTool(tools, "read_agent"),
+          {
+            taskId: task.taskId.slice(0, 8),
+          },
+        );
+        assert.equal(read.details.usage?.totalTokens, 42);
+      });
+    },
+    {
+      turnUsages: [
+        { inputTokens: 10, outputTokens: 5, totalTokens: 15 },
+        { inputTokens: 30, outputTokens: 12, totalTokens: 42 },
+      ],
+    },
+  );
 });
 
 test("interrupting one shared codex-app-server session does not stop another session", async () => {

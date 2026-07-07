@@ -5,7 +5,12 @@ import { readTaskEvents } from "./readers.ts";
 import { UNGROUPED_GROUP_ID, taskGroupId, uniqueIdPrefix } from "./groups.ts";
 import { observeTaskState } from "./observation.ts";
 import { isTerminalTaskStatus } from "./types.ts";
-import { normalizeTaskUsage, selectTaskUsage, sumTaskUsage, usageWithUpdatedAt } from "./usage.ts";
+import {
+  normalizeTaskUsage,
+  selectVisibleTaskUsage,
+  sumTaskUsage,
+  usageWithUpdatedAt,
+} from "./usage.ts";
 import { DEFAULT_WAIT_TIMEOUT_MS } from "./wait.ts";
 import type {
   AgentTaskRecord,
@@ -427,7 +432,7 @@ async function buildAgentTaskRow(
     ...(input.maxEventBytes ? { maxBytes: input.maxEventBytes } : {}),
   });
   const eventSummary = summarizeEvents(events);
-  const usage = selectTaskUsage(eventSummary.usage, task.usage);
+  const usage = selectVisibleTaskUsage(eventSummary.usage, task.usage);
   const stderrFailureDetail =
     task.error || eventSummary.error ? undefined : await failedTaskStderrDetail(task);
   const error = task.error ?? eventSummary.error ?? stderrFailureDetail;
@@ -760,7 +765,7 @@ function summarizeEvents(events: readonly TaskEvent[]): {
       }
       const eventUsage = usageFromUnknown(event.data.usage, event.ts);
       if (eventUsage) {
-        usage = selectTaskUsage(usage, eventUsage);
+        usage = selectVisibleTaskUsage(usage, eventUsage);
       }
       if (kind === "runtime.error" && message) {
         error = message;

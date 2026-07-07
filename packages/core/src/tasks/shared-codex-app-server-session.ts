@@ -19,7 +19,7 @@ import {
   resolveTaskId,
   updateTaskStatus,
 } from "./store.ts";
-import { selectTaskUsage } from "./usage.ts";
+import { selectVisibleTaskUsage } from "./usage.ts";
 import type {
   AgentTaskRecord,
   LaunchTaskInput,
@@ -892,7 +892,7 @@ function makeSharedSessionContext(
       });
     },
     async updateUsage(usage) {
-      const selected = selectTaskUsage(context.task.usage, usage);
+      const selected = selectVisibleTaskUsage(context.task.usage, usage);
       if (selected === context.task.usage) {
         return;
       }
@@ -1685,6 +1685,7 @@ function usageFromTokenRecord(record: Record<string, unknown> | undefined): Task
     inputTokens,
     outputTokens,
     totalTokens,
+    source: "provider",
     scope: "turn",
     final: false,
     updatedAt: now(),

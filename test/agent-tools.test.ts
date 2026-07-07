@@ -17,6 +17,7 @@ import {
   type HeadlessAgentRuntimeConfig,
 } from "@backnotprop/orchestrator-core/runtime";
 import {
+  appendAgentTaskEvent,
   launchTask,
   interruptTask,
   isTerminalTaskStatus,
@@ -987,6 +988,67 @@ test("read_agent event fallback keeps final task usage over later session usage"
     assert.equal(read.details.usage?.totalTokens, 5);
     assert.equal(read.details.usage?.scope, "task");
     assert.equal(read.details.usage?.final, true);
+  });
+});
+
+test("read_agent event fallback shows newer turn usage over older final task usage", async () => {
+  await withTempWorkspace(async (workspaceRoot) => {
+    const fixturePath = join(workspaceRoot, "custom-agent-newer-usage.jsonl");
+    await writeFile(
+      fixturePath,
+      JSON.stringify({
+        type: "final",
+        text: "custom done",
+        usage: {
+          totalTokens: 5,
+          source: "provider",
+          scope: "turn",
+          final: true,
+        },
+      }),
+    );
+    const handle = await launchTask({
+      workspaceRoot,
+      plan: {
+        runtime: "custom",
+        displayName: "custom",
+        executable: "sh",
+        args: ["-lc", `cat ${quoteShellArg(fixturePath)}`],
+        env: {},
+        cwd: workspaceRoot,
+        promptTransport: { kind: "argv", position: "last" },
+        outputTransport: { kind: "jsonl_events", finalEvent: "final" },
+        expectedProcesses: ["sh"],
+        interrupt: "process_group",
+        canSteerRunning: false,
+        handlesOwnAuth: false,
+        enabled: true,
+        safety: {
+          acceptsShellCommand: false,
+        },
+      },
+    });
+    const completed = await handle.completed;
+    assert.equal(completed.status, "succeeded");
+
+    await appendAgentTaskEvent({ workspaceRoot }, completed.taskId, {
+      kind: "usage.updated",
+      usage: {
+        totalTokens: 25,
+        source: "provider",
+        scope: "turn",
+        final: false,
+      },
+    });
+
+    const tools = createOrchestratorAgentTools({ workspaceRoot });
+    const read = await executeTool<ToolDetails>(getTool(tools, "read_agent"), {
+      taskId: completed.taskId,
+    });
+
+    assert.equal(read.details.usage?.totalTokens, 25);
+    assert.equal(read.details.usage?.scope, "turn");
+    assert.equal(read.details.usage?.final, false);
   });
 });
 
