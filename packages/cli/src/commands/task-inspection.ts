@@ -20,6 +20,7 @@ import { taskEventsJsonPayload, taskLogsJsonPayload } from "../task-json.ts";
 import {
   compactTaskReadJsonPayload,
   emptyTailRead,
+  readLatestTaskEventSummary,
   readNewFileText,
   readTail,
   readTailMetadataIfExists,
@@ -92,12 +93,14 @@ export async function commandRead(options: ReadOptions): Promise<void> {
   }
 
   if (retrievalStatus === "timeout") {
+    const latest = await latestTaskEventText(task);
     process.stderr.write(
-      `Timed out waiting for task ${task.taskId}; state is ${observation.state}.\n`,
+      `Timed out waiting for task ${task.taskId}; state is ${observation.state}.${latest ? ` Latest: ${latest}.` : ""}\n`,
     );
   } else if (retrievalStatus === "unavailable") {
+    const latest = await latestTaskEventText(task);
     process.stderr.write(
-      `Task ${task.taskId} is ${observation.state}; final outcome is unavailable.${observation.reason ? ` ${observation.reason}.` : ""}\n`,
+      `Task ${task.taskId} is ${observation.state}; final outcome is unavailable.${observation.reason ? ` ${observation.reason}.` : ""}${latest ? ` Latest: ${latest}.` : ""}\n`,
     );
   }
 
@@ -120,12 +123,20 @@ export async function commandRead(options: ReadOptions): Promise<void> {
     }
 
     if (retrievalStatus !== "timeout" && retrievalStatus !== "unavailable") {
-      process.stderr.write(`No output yet; task ${task.taskId} is ${observation.state}.\n`);
+      const latest = await latestTaskEventText(task);
+      process.stderr.write(
+        `No output yet; task ${task.taskId} is ${observation.state}.${latest ? ` Latest: ${latest}.` : ""}\n`,
+      );
     }
     return;
   }
 
   writeHumanReadOutput(output);
+}
+
+async function latestTaskEventText(task: AgentTaskRecord): Promise<string | undefined> {
+  const eventSummary = await readLatestTaskEventSummary(task.paths.eventsJsonl);
+  return eventSummary.lastMessage ?? eventSummary.lastEvent;
 }
 
 export async function commandLogs(options: LogsOptions): Promise<void> {

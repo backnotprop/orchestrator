@@ -195,6 +195,77 @@ test("CLI resume creates a new Claude Code task from the stored session id", asy
   }, "orchestrator-cli-resume-claude-");
 });
 
+test("CLI resume creates a new Copilot task from the stored session id", async () => {
+  await withTempWorkspace(async (workspaceRoot) => {
+    const env = await installFakeRuntime(workspaceRoot, "copilot", fakeCopilotScript());
+    const sourceLaunch = await runCli(
+      workspaceRoot,
+      ["launch", "copilot", "--workspace", workspaceRoot, "--wait", "--json", "first copilot"],
+      10_000,
+      env,
+    );
+    const source = JSON.parse(sourceLaunch.stdout) as AgentTaskRecord;
+    assert.equal(source.status, "succeeded");
+    assert.deepEqual(source.provider, {
+      provider: "copilot",
+      sessionId: "session-cli-copilot",
+    });
+
+    const resumedLaunch = await runCli(
+      workspaceRoot,
+      [
+        "resume",
+        source.taskId.slice(0, 8),
+        "--workspace",
+        workspaceRoot,
+        "--wait",
+        "--json",
+        "--model",
+        "claude-sonnet-5",
+        "second copilot",
+      ],
+      10_000,
+      env,
+    );
+    const resumed = JSON.parse(resumedLaunch.stdout) as AgentTaskRecord;
+    const stored = await readTaskRecord({ workspaceRoot }, resumed.taskId);
+
+    assert.equal(resumed.status, "succeeded");
+    assert.equal(resumed.runtime, "copilot");
+    assert.deepEqual(stored.provider, {
+      provider: "copilot",
+      sessionId: "session-cli-copilot",
+    });
+    assert.deepEqual(stored.resume, {
+      fromTaskId: source.taskId,
+      rootTaskId: source.taskId,
+      attempt: 1,
+    });
+    assert.deepEqual(stored.launchPlan.args, [
+      "--no-ask-user",
+      "--yolo",
+      "--resume",
+      "session-cli-copilot",
+      "--model",
+      "claude-sonnet-5",
+      "--output-format",
+      "json",
+      "--stream",
+      "off",
+      "-p",
+      "second copilot",
+    ]);
+
+    const read = await runCli(workspaceRoot, [
+      "read",
+      resumed.taskId,
+      "--workspace",
+      workspaceRoot,
+    ]);
+    assert.equal(read.stdout.trim(), "copilot resumed second copilot");
+  }, "orchestrator-cli-resume-copilot-");
+});
+
 test("CLI resume rejects tasks without real provider resume support", async () => {
   await withTempWorkspace(async (workspaceRoot) => {
     const sourceLaunch = await runCli(workspaceRoot, [
@@ -233,7 +304,7 @@ test("CLI resume rejects tasks without real provider resume support", async () =
 
 async function installFakeRuntime(
   workspaceRoot: string,
-  name: "codex" | "claude",
+  name: "codex" | "claude" | "copilot",
   script: string,
 ): Promise<Record<string, string>> {
   const binDir = `${workspaceRoot}/bin`;
@@ -291,5 +362,21 @@ const text = isResume ? \`claude resumed \${prompt}\` : "claude source";
 console.log(JSON.stringify({ type: "system", subtype: "init", session_id: sessionId, model: "fake-claude" }));
 console.log(JSON.stringify({ type: "assistant", message: { content: [{ type: "text", text }] }, session_id: sessionId }));
 console.log(JSON.stringify({ type: "result", subtype: "success", result: text, session_id: sessionId, terminal_reason: "completed" }));
+`;
+}
+
+function fakeCopilotScript(): string {
+  return `#!/usr/bin/env node
+const args = process.argv.slice(2);
+const resumeIndex = args.indexOf("--resume");
+const promptIndex = args.indexOf("-p");
+const isResume = resumeIndex !== -1;
+const sessionId = isResume ? args[resumeIndex + 1] : "session-cli-copilot";
+const prompt = promptIndex === -1 ? args.at(-1) : args[promptIndex + 1];
+const text = isResume ? \`copilot resumed \${prompt}\` : "copilot source";
+console.log(JSON.stringify({ type: "assistant.turn_start", data: { model: "fake-copilot" } }));
+console.log(JSON.stringify({ type: "assistant.message", data: { content: text, model: "fake-copilot", outputTokens: 4 } }));
+console.log(JSON.stringify({ type: "assistant.turn_end", data: { model: "fake-copilot" } }));
+console.log(JSON.stringify({ type: "result", sessionId, exitCode: 0, usage: { premiumRequests: 1, totalApiDurationMs: 10, sessionDurationMs: 20 } }));
 `;
 }

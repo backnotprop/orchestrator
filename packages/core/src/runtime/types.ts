@@ -2,6 +2,7 @@ export const BUILT_IN_RUNTIME_IDS = [
   "codex",
   "codex-app-server",
   "claude-code",
+  "copilot",
   "pi",
   "shell",
 ] as const;
@@ -136,7 +137,7 @@ export type AgentLaunchPlan = {
     acceptsShellCommand: boolean;
   };
   resume?: {
-    provider: "codex" | "claude-code";
+    provider: "codex" | "claude-code" | "copilot";
     threadId?: string;
     sessionId?: string;
   };

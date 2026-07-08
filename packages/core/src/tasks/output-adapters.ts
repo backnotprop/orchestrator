@@ -259,6 +259,11 @@ function providerMetadataFromRuntimeEvent(
     return sessionId ? { provider: "claude-code", sessionId } : undefined;
   }
 
+  if (runtime === "copilot") {
+    const sessionId = stringValue(event, "sessionId");
+    return sessionId ? { provider: "copilot", sessionId } : undefined;
+  }
+
   return undefined;
 }
 
@@ -270,15 +275,20 @@ function providerMetadataMismatch(
     return undefined;
   }
 
-  if (expected.provider === "codex") {
-    return actual.threadId && actual.threadId !== expected.threadId
-      ? `Codex resumed thread "${actual.threadId}" but Orchestrator requested "${expected.threadId}".`
-      : undefined;
+  switch (expected.provider) {
+    case "codex":
+      return actual.threadId && actual.threadId !== expected.threadId
+        ? `Codex resumed thread "${actual.threadId}" but Orchestrator requested "${expected.threadId}".`
+        : undefined;
+    case "claude-code":
+      return actual.sessionId && actual.sessionId !== expected.sessionId
+        ? `Claude Code resumed session "${actual.sessionId}" but Orchestrator requested "${expected.sessionId}".`
+        : undefined;
+    case "copilot":
+      return actual.sessionId && actual.sessionId !== expected.sessionId
+        ? `Copilot resumed session "${actual.sessionId}" but Orchestrator requested "${expected.sessionId}".`
+        : undefined;
   }
-
-  return actual.sessionId && actual.sessionId !== expected.sessionId
-    ? `Claude Code resumed session "${actual.sessionId}" but Orchestrator requested "${expected.sessionId}".`
-    : undefined;
 }
 
 function runtimeErrorMessage(event: Record<string, unknown>): string | undefined {
@@ -299,6 +309,10 @@ function normalizeRuntimeEvent(
 
   if (runtime === "codex") {
     return normalizeCodexEvent(runtime, event);
+  }
+
+  if (runtime === "copilot") {
+    return normalizeCopilotEvent(runtime, event);
   }
 
   const sourceType = stringValue(event, "type") ?? "event";
@@ -498,6 +512,148 @@ function normalizeCodexEvent(
   });
 }
 
+function normalizeCopilotEvent(
+  runtime: string,
+  event: Record<string, unknown>,
+): Record<string, unknown> {
+  const sourceType = stringValue(event, "type") ?? "event";
+  const data = recordValue(event, "data");
+  const result = recordValue(event, "result") ?? data;
+  const sessionId =
+    stringValue(event, "sessionId") ??
+    stringValue(event, "session_id") ??
+    (data ? stringValue(data, "sessionId") : undefined) ??
+    (result ? stringValue(result, "sessionId") : undefined);
+
+  if (sourceType === "assistant.message") {
+    return compactData({
+      runtime,
+      source: "stdout",
+      kind: "agent.message",
+      sourceType,
+      sessionId,
+      model: data ? stringValue(data, "model") : undefined,
+      message: data ? stringValue(data, "content") : undefined,
+      usage: extractCopilotUsage(data, {
+        source: "provider",
+        scope: "turn",
+        final: false,
+      }),
+    });
+  }
+
+  if (sourceType === "assistant.message_delta") {
+    return compactData({
+      runtime,
+      source: "stdout",
+      kind: "agent.message_delta",
+      sourceType,
+      sessionId,
+      message: data
+        ? (stringValue(data, "content") ??
+          stringValue(data, "deltaContent") ??
+          stringValue(data, "delta") ??
+          stringValue(data, "text"))
+        : undefined,
+    });
+  }
+
+  if (sourceType === "assistant.turn_start") {
+    return compactData({
+      runtime,
+      source: "stdout",
+      kind: "agent.turn.started",
+      sourceType,
+      sessionId,
+      model: data ? stringValue(data, "model") : undefined,
+      turnId: data ? stringValue(data, "turnId") : undefined,
+    });
+  }
+
+  if (sourceType === "assistant.turn_end") {
+    return compactData({
+      runtime,
+      source: "stdout",
+      kind: "agent.turn.completed",
+      sourceType,
+      sessionId,
+      model: data ? stringValue(data, "model") : undefined,
+      turnId: data ? stringValue(data, "turnId") : undefined,
+    });
+  }
+
+  if (sourceType === "result") {
+    const exitCode = result ? numberValue(result, "exitCode") : numberValue(event, "exitCode");
+    const usage = result ? recordValue(result, "usage") : recordValue(event, "usage");
+    const message =
+      (result ? stringValue(result, "message") : undefined) ??
+      stringValue(event, "message") ??
+      (result ? extractProviderErrorMessage(stringValue(result, "error")) : undefined);
+
+    if (exitCode !== undefined && exitCode !== 0) {
+      return compactData({
+        runtime,
+        source: "stdout",
+        kind: "runtime.error",
+        sourceType,
+        sessionId,
+        exitCode,
+        message: message ?? `Copilot exited with code ${exitCode}.`,
+        premiumRequests: usage ? numberValue(usage, "premiumRequests") : undefined,
+        sessionDurationMs: usage ? numberValue(usage, "sessionDurationMs") : undefined,
+        totalApiDurationMs: usage ? numberValue(usage, "totalApiDurationMs") : undefined,
+        usage: extractCopilotUsage(usage, {
+          source: "provider",
+          scope: "task",
+          final: true,
+        }),
+      });
+    }
+
+    return compactData({
+      runtime,
+      source: "stdout",
+      kind: "agent.result",
+      sourceType,
+      sessionId,
+      status: exitCode === undefined ? undefined : exitCode === 0 ? "succeeded" : "failed",
+      exitCode,
+      message,
+      premiumRequests: usage ? numberValue(usage, "premiumRequests") : undefined,
+      sessionDurationMs: usage ? numberValue(usage, "sessionDurationMs") : undefined,
+      totalApiDurationMs: usage ? numberValue(usage, "totalApiDurationMs") : undefined,
+      usage: extractCopilotUsage(usage, {
+        source: "provider",
+        scope: "task",
+        final: true,
+      }),
+    });
+  }
+
+  if (sourceType === "error") {
+    const error = recordValue(event, "error");
+    return compactData({
+      runtime,
+      source: "stdout",
+      kind: "runtime.error",
+      sourceType,
+      sessionId,
+      message:
+        extractProviderErrorMessage(stringValue(event, "message")) ??
+        (error ? stringValue(error, "message") : undefined),
+    });
+  }
+
+  return compactData({
+    runtime,
+    source: "stdout",
+    kind: `runtime.${sourceType}`,
+    sourceType,
+    sessionId,
+    status: data ? stringValue(data, "status") : undefined,
+  });
+}
+
 function extractRuntimeResultText(plan: AgentLaunchPlan, event: unknown): string | undefined {
   if (!isRecord(event)) {
     return undefined;
@@ -512,6 +668,11 @@ function extractRuntimeResultText(plan: AgentLaunchPlan, event: unknown): string
     if (item && stringValue(item, "type") === "agent_message") {
       return stringValue(item, "text");
     }
+  }
+
+  if (plan.runtime === "copilot" && stringValue(event, "type") === "assistant.message") {
+    const data = recordValue(event, "data");
+    return data ? stringValue(data, "content") : undefined;
   }
 
   if (plan.outputTransport.kind === "jsonl_events") {
@@ -781,6 +942,33 @@ function extractCodexUsage(
         numberValue(usage, "reasoning_output_tokens"),
       totalTokens: numberValue(usage, "totalTokens") ?? numberValue(usage, "total_tokens"),
       costUsd: numberValue(usage, "costUsd") ?? numberValue(usage, "cost_usd"),
+      source: stringValue(usage, "source"),
+      scope: stringValue(usage, "scope"),
+      final: booleanValue(usage, "final"),
+    }),
+    { defaults },
+  );
+}
+
+function extractCopilotUsage(
+  usage: Record<string, unknown> | undefined,
+  defaults: Partial<Pick<NormalizedTaskUsage, "source" | "scope" | "final">> = {},
+): NormalizedTaskUsage | undefined {
+  if (!usage) {
+    return undefined;
+  }
+
+  return normalizeTaskUsage(
+    compactData({
+      inputTokens: numberValue(usage, "inputTokens") ?? numberValue(usage, "input_tokens"),
+      outputTokens: numberValue(usage, "outputTokens") ?? numberValue(usage, "output_tokens"),
+      cacheReadTokens:
+        numberValue(usage, "cacheReadTokens") ?? numberValue(usage, "cache_read_tokens"),
+      cacheWriteTokens:
+        numberValue(usage, "cacheWriteTokens") ?? numberValue(usage, "cache_write_tokens"),
+      reasoningTokens:
+        numberValue(usage, "reasoningTokens") ?? numberValue(usage, "reasoning_tokens"),
+      totalTokens: numberValue(usage, "totalTokens") ?? numberValue(usage, "total_tokens"),
       source: stringValue(usage, "source"),
       scope: stringValue(usage, "scope"),
       final: booleanValue(usage, "final"),

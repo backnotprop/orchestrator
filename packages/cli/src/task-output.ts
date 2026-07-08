@@ -12,6 +12,7 @@ import {
   type WaitForTaskRetrievalStatus,
 } from "@backnotprop/orchestrator-core";
 import { jsonLine } from "./json-output.ts";
+import { parseTaskEventLine } from "./task-events.ts";
 import { taskCommandSummary, type TaskCommandSummary, type TailRead } from "./task-json.ts";
 
 const DEFAULT_READ_MAX_BYTES = 200_000;
@@ -99,6 +100,8 @@ export async function taskReadJsonPayload(
     maxBytes: number;
     captureMaxBytes?: number;
     usage?: TaskUsage;
+    lastEvent?: string;
+    lastMessage?: string;
     error?: string;
     errorTruncated?: boolean;
     errorTruncatedByReadLimit?: boolean;
@@ -138,6 +141,7 @@ export async function taskReadJsonPayload(
         : false;
   const errorCaptureTruncated =
     Boolean(error && !task.error) && (task.outputCapture?.stderrTruncated ?? false);
+  const eventSummary = await readLatestTaskEventSummary(task.paths.eventsJsonl);
 
   return {
     ...taskCommandSummary(task, aliases, {
@@ -145,6 +149,8 @@ export async function taskReadJsonPayload(
       observation,
     }),
     ...(metadata.retrievalStatus ? { retrievalStatus: metadata.retrievalStatus } : {}),
+    ...(eventSummary.lastEvent ? { lastEvent: eventSummary.lastEvent } : {}),
+    ...(eventSummary.lastMessage ? { lastMessage: eventSummary.lastMessage } : {}),
     output: renderedOutput.text,
     outputAvailable: renderedOutput.text.length > 0,
     outputKind,
@@ -190,6 +196,60 @@ export function compactTaskReadJsonPayload(
     return { ...compact, commands: failedReadFollowupCommands(commands) };
   }
   return compact;
+}
+
+export type TaskEventSummary = {
+  lastEvent?: string;
+  lastMessage?: string;
+};
+
+export async function readLatestTaskEventSummary(
+  eventsJsonlPath: string,
+): Promise<TaskEventSummary> {
+  const raw = await readTailMetadataIfExists(eventsJsonlPath, 64_000);
+  const lines = raw.text.trim() ? raw.text.trimEnd().split("\n") : [];
+  let lastEvent: string | undefined;
+  let lastMessage: string | undefined;
+
+  for (const line of lines) {
+    const event = parseTaskEventLine(line);
+    if (!event) {
+      continue;
+    }
+
+    if (event.type === "agent_event") {
+      const kind = stringValue(event.data, "kind");
+      if (kind) {
+        lastEvent = kind;
+      }
+      const message = stringValue(event.data, "message");
+      if (message) {
+        lastMessage = message;
+      }
+      continue;
+    }
+
+    if (event.type !== "stdout" && event.type !== "stderr") {
+      lastEvent = event.type;
+      const message = stringValue(event.data, "error") ?? stringValue(event.data, "reason");
+      if (message) {
+        lastMessage = message;
+      }
+    }
+  }
+
+  return {
+    ...(lastEvent ? { lastEvent } : {}),
+    ...(lastMessage ? { lastMessage } : {}),
+  };
+}
+
+function stringValue(value: unknown, key: string): string | undefined {
+  if (!value || typeof value !== "object" || !(key in value)) {
+    return undefined;
+  }
+  const candidate = (value as Record<string, unknown>)[key];
+  return typeof candidate === "string" ? candidate : undefined;
 }
 
 function readCanRecoverTruncatedOutput(payload: TaskReadJsonPayload): boolean {

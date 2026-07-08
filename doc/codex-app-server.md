@@ -3,13 +3,12 @@
 Orchestrator has two Codex runtimes:
 
 - `codex`: the stable headless process runtime backed by `codex exec`.
-- `codex-app-server`: the experimental protocol runtime backed by Codex
-  app-server.
+- `codex-app-server`: the protocol runtime backed by Codex app-server.
 
-Use `codex` when you want the normal, stable Codex path. Use `codex-app-server`
-when you specifically want to exercise the protocol runtime: provider metadata,
-normalized protocol events, provider-side usage when emitted, and protocol-aware
-interrupts.
+Use `codex` for short, one-shot Codex tasks where a single prompt should finish
+the work. Use `codex-app-server --session` for meaningful or long-running Codex
+work, especially when the task may need follow-up messages, native Codex goals,
+steering while a turn is active, provider metadata, or closer observation.
 
 `codex-app-server` has two modes:
 

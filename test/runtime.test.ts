@@ -23,6 +23,7 @@ test("built-in runtime registry is exhaustive and internally consistent", () => 
     "claude-code",
     "codex",
     "codex-app-server",
+    "copilot",
     "pi",
     "shell",
   ]);
@@ -127,6 +128,60 @@ test("codex default plan uses exec JSONL events for observable headless runs", (
   assert.deepEqual(plan.outputTransport, { kind: "jsonl_events", finalEvent: "turn.completed" });
 });
 
+test("copilot default plan uses programmatic JSONL mode for observable headless runs", () => {
+  const plan = buildAgentLaunchPlan({
+    runtime: "copilot",
+    task: sampleTask,
+    cwd: sampleCwd,
+  });
+
+  assert.equal(plan.executable, "copilot");
+  assert.deepEqual(plan.args, [
+    "--no-ask-user",
+    "--yolo",
+    "--output-format",
+    "json",
+    "--stream",
+    "off",
+    "-p",
+    sampleTask,
+  ]);
+  assert.deepEqual(plan.outputTransport, { kind: "jsonl_events", finalEvent: "result" });
+  assert.equal(plan.promptTransport.kind, "flag");
+  assert.equal(plan.safety.acceptsShellCommand, false);
+});
+
+test("copilot output modes are adapter transport details", () => {
+  const textPlan = buildAgentLaunchPlan({
+    runtime: "copilot",
+    task: sampleTask,
+    cwd: sampleCwd,
+    outputMode: "text",
+  });
+
+  assert.deepEqual(textPlan.args, ["--no-ask-user", "--yolo", "-s", "-p", sampleTask]);
+  assert.deepEqual(textPlan.outputTransport, { kind: "stdout_text" });
+
+  const jsonlPlan = buildAgentLaunchPlan({
+    runtime: "copilot",
+    task: sampleTask,
+    cwd: sampleCwd,
+    outputMode: "jsonl",
+  });
+
+  assert.deepEqual(jsonlPlan.args, [
+    "--no-ask-user",
+    "--yolo",
+    "--output-format",
+    "json",
+    "--stream",
+    "off",
+    "-p",
+    sampleTask,
+  ]);
+  assert.deepEqual(jsonlPlan.outputTransport, { kind: "jsonl_events", finalEvent: "result" });
+});
+
 test("codex-app-server plan uses protocol execution without putting prompt in argv", () => {
   const plan = buildAgentLaunchPlan({
     runtime: "codex-app-server",
@@ -227,6 +282,26 @@ test("model hints are mapped by runtime config when supported", () => {
     "--model",
     "account-supported-codex-model",
     "--json",
+    sampleTask,
+  ]);
+
+  const copilotPlan = buildAgentLaunchPlan({
+    runtime: "copilot",
+    task: sampleTask,
+    cwd: sampleCwd,
+    model: "claude-sonnet-5",
+  });
+
+  assert.deepEqual(copilotPlan.args, [
+    "--no-ask-user",
+    "--yolo",
+    "--model",
+    "claude-sonnet-5",
+    "--output-format",
+    "json",
+    "--stream",
+    "off",
+    "-p",
     sampleTask,
   ]);
 });

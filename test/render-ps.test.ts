@@ -51,6 +51,52 @@ test("ps renderer shows session activity without hiding observed health state", 
   assert.match(rendered, /stale session\s+stale/);
 });
 
+test("ps renderer shows provider output tokens when total tokens are unavailable", () => {
+  const now = "2026-07-07T12:00:00.000Z";
+  const view: AgentTaskPsView = {
+    generatedAt: now,
+    scope: { workspaces: "current", workspaceRoot: "/tmp/orchestrator-render-ps" },
+    rows: [
+      {
+        ...psRow({
+          taskId: "44444444-4444-4444-8444-444444444444",
+          name: "copilot output",
+        }),
+        runtime: "copilot",
+        model: "claude-sonnet-5",
+        usage: {
+          outputTokens: 162,
+          source: "provider",
+          scope: "turn",
+          final: false,
+          updatedAt: now,
+        },
+      },
+    ],
+    groups: [
+      {
+        groupId: "ungrouped",
+        label: "manual launches",
+        status: "running",
+        total: 1,
+        running: 1,
+        succeeded: 0,
+        failed: 0,
+        stopped: 0,
+        timedOut: 0,
+        rows: [],
+      },
+    ],
+  };
+  view.groups[0]!.rows = view.rows;
+
+  const rendered = renderPsView(view, { columns: 140 });
+
+  assert.match(rendered, /copilot output/);
+  assert.match(rendered, /claude-sonn\.\.\./);
+  assert.match(rendered, /\s162\s+session\.idle/);
+});
+
 function psRow(input: {
   taskId: string;
   name: string;

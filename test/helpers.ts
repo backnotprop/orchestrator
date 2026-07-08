@@ -195,6 +195,10 @@ export async function assertCodexAvailable(): Promise<void> {
   await execFileAsync("codex", ["--version"], { timeout: 10_000 });
 }
 
+export async function assertCopilotAvailable(): Promise<void> {
+  await execFileAsync("copilot", ["--version"], { timeout: 10_000 });
+}
+
 async function waitForTask(
   workspaceRoot: string,
   taskId: string,

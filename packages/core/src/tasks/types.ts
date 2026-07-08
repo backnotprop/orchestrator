@@ -197,6 +197,8 @@ export type ProviderTaskSupervision = {
   transport: "unix" | "websocket" | "http";
   socketPath?: string;
   backendPid?: number;
+  backendStdoutLogPath?: string;
+  backendStderrLogPath?: string;
   startedAt: string;
   staleAfterMs: number;
   lastVerifiedAt?: string;
@@ -445,6 +447,7 @@ export type TaskSendMessageFailureReason =
   | "not_running"
   | "not_ready"
   | "provider_rejected"
+  | "interrupted"
   | "turn_mismatch"
   | "invalid_request"
   | "timeout"

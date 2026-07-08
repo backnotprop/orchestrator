@@ -48,8 +48,9 @@ pnpm check
 - `pnpm test`: run `test/**/*.test.ts` with Node’s built-in test runner.
 - `pnpm check`: run lint, format check, typecheck, and tests.
 
-Provider smoke tests are opt-in. Use `RUN_CLAUDE_SMOKE=1` or
-`RUN_CODEX_SMOKE=1` only with credentials and CLIs available.
+Provider smoke tests are opt-in. Use `RUN_CLAUDE_SMOKE=1`,
+`RUN_CODEX_SMOKE=1`, or `RUN_COPILOT_SMOKE=1` only with credentials and CLIs
+available.
 
 ## Coding Style & Naming Conventions
 

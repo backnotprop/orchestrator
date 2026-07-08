@@ -150,6 +150,57 @@ export const CODEX_APP_SERVER_RUNTIME = {
   },
 } satisfies HeadlessAgentRuntimeConfig;
 
+export const COPILOT_RUNTIME = {
+  id: "copilot",
+  displayName: "GitHub Copilot CLI",
+  enabled: true,
+  detect: {
+    command: "copilot",
+    versionArgs: ["--version"],
+    expectedProcesses: ["copilot"],
+  },
+  launch: {
+    executable: "copilot",
+    baseArgs: ["--no-ask-user", "--yolo"],
+    prompt: { kind: "flag", flag: "-p" },
+    output: { kind: "stdout_text" },
+    defaultOutputMode: "jsonl",
+    outputModes: {
+      text: {
+        extraArgs: ["-s"],
+        output: { kind: "stdout_text" },
+      },
+      jsonl: {
+        extraArgs: ["--output-format", "json", "--stream", "off"],
+        output: { kind: "jsonl_events", finalEvent: "result" },
+      },
+    },
+    cwdPolicy: "workspace",
+    modelFlag: "--model",
+  },
+  resume: {
+    supported: true,
+  },
+  control: {
+    interrupt: "process_group",
+    steerRunning: false,
+  },
+  capabilities: {
+    supportsStreaming: true,
+    supportsRunningSteer: false,
+    supportsResume: true,
+    supportsStructuredEvents: true,
+    supportsWorktree: true,
+    handlesOwnAuth: true,
+    supportsPersistentSession: false,
+  },
+  defaults: {
+    timeoutMs: 900_000,
+    maxOutputBytes: 200_000,
+    isolation: "shared",
+  },
+} satisfies HeadlessAgentRuntimeConfig;
+
 export const PI_RUNTIME = {
   id: "pi",
   displayName: "Pi",
@@ -239,6 +290,7 @@ export const BUILT_IN_AGENT_RUNTIMES = {
   codex: CODEX_RUNTIME,
   "codex-app-server": CODEX_APP_SERVER_RUNTIME,
   "claude-code": CLAUDE_CODE_RUNTIME,
+  copilot: COPILOT_RUNTIME,
   pi: PI_RUNTIME,
   shell: SHELL_RUNTIME,
 } satisfies Record<BuiltInAgentRuntimeId, HeadlessAgentRuntimeConfig>;

@@ -443,7 +443,7 @@ async function buildAgentTaskRow(
   const lastMessage =
     error ?? eventSummary.lastMessage ?? succeededOutputDetail ?? input.observation.reason;
   const taskDurationMs = durationMs(task, input.now);
-  const model = taskModel(task);
+  const model = taskModel(task) ?? eventSummary.model;
   const workspaceRoot = taskWorkspaceRoot(task, input.workspaceRoot);
   const cwd = taskCwd(task);
   const relativeCwd = relativeCwdForDisplay(workspaceRoot, cwd);
@@ -744,11 +744,13 @@ function truncateCompactText(value: string, maxLength: number): string {
 
 function summarizeEvents(events: readonly TaskEvent[]): {
   usage?: TaskUsage;
+  model?: string;
   lastEvent?: string;
   lastMessage?: string;
   error?: string;
 } {
   let usage: TaskUsage | undefined;
+  let model: string | undefined;
   let lastEvent: string | undefined;
   let lastMessage: string | undefined;
   let error: string | undefined;
@@ -767,6 +769,10 @@ function summarizeEvents(events: readonly TaskEvent[]): {
       if (eventUsage) {
         usage = selectVisibleTaskUsage(usage, eventUsage);
       }
+      const eventModel = stringValue(event.data, "model");
+      if (eventModel) {
+        model = eventModel;
+      }
       if (kind === "runtime.error" && message) {
         error = message;
       }
@@ -784,6 +790,7 @@ function summarizeEvents(events: readonly TaskEvent[]): {
 
   return {
     ...(usage ? { usage } : {}),
+    ...(model ? { model } : {}),
     ...(lastEvent ? { lastEvent } : {}),
     ...(lastMessage ? { lastMessage } : {}),
     ...(error ? { error } : {}),

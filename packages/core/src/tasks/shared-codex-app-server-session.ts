@@ -2,6 +2,15 @@ import { randomUUID } from "node:crypto";
 import { appendFile, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { AgentLaunchPlan } from "../runtime/index.ts";
+import {
+  assertCodexGoalOperationDidNotFail,
+  assertSuccessfulCodexTurnOperation,
+} from "./codex-app-server-operation-result.ts";
+import {
+  codexAppServerBackendDiagnosticOffset,
+  readCodexAppServerBackendDiagnostic,
+  type CodexAppServerBackendDiagnostic,
+} from "./codex-app-server-backend-diagnostics.ts";
 import type { TaskControlResponse } from "./control.ts";
 import {
   connectCodexAppServer,
@@ -63,6 +72,9 @@ type SharedOperationState = {
   completed: Deferred<TaskOperation>;
   settled: boolean;
   pendingRolloutReported?: boolean;
+  backendDiagnosticStartOffset?: number;
+  lastBackendDiagnostic?: CodexAppServerBackendDiagnostic;
+  reportedBackendDiagnosticCodes?: string[];
 };
 
 export type MonitorSharedCodexAppServerSessionOperationInput = TaskStoreOptions & {
@@ -170,6 +182,8 @@ export async function launchSharedCodexAppServerSessionTask(
           transport: "unix",
           socketPath: endpoint.socketPath,
           ...(endpoint.pid ? { backendPid: endpoint.pid } : {}),
+          ...(endpoint.stdoutLogPath ? { backendStdoutLogPath: endpoint.stdoutLogPath } : {}),
+          ...(endpoint.stderrLogPath ? { backendStderrLogPath: endpoint.stderrLogPath } : {}),
           startedAt,
           staleAfterMs: HEARTBEAT_STALE_AFTER_MS,
           lastVerifiedAt: now(),
@@ -213,11 +227,15 @@ export async function sendSharedCodexAppServerSessionMessage(input: {
     const endpoint = endpointForTask(input.task);
     const connection = await connectSharedCodexAppServer(endpoint);
     const operation = createSessionTurnOperation(threadId, input.text);
+    const backendDiagnosticStartOffset = await codexAppServerBackendDiagnosticOffset(
+      endpoint.stderrLogPath,
+    );
     const operationState: SharedOperationState = {
       operation,
       deltaBuffer: "",
       completed: deferred<TaskOperation>(),
       settled: false,
+      ...(backendDiagnosticStartOffset !== undefined ? { backendDiagnosticStartOffset } : {}),
     };
     const subscription = subscribeOperationNotifications(context, connection, operationState);
 
@@ -297,6 +315,7 @@ export async function sendSharedCodexAppServerSessionMessage(input: {
         operationId: operation.operationId,
         clientMessageId: input.clientMessageId,
       });
+      await reportBackendDiagnostic(context, connection.endpoint, operationState);
 
       if (input.wait) {
         const completed = await waitForOperationWithReconcile(
@@ -305,6 +324,7 @@ export async function sendSharedCodexAppServerSessionMessage(input: {
           operationState,
           input.timeoutMs,
         );
+        assertSuccessfulCodexTurnOperation(completed);
         return {
           status: "completed",
           provider: codexProvider(threadId, completed.turnId ?? turnId),
@@ -342,11 +362,15 @@ export async function startSharedCodexAppServerSessionGoal(input: {
     const endpoint = endpointForTask(input.task);
     const connection = await connectSharedCodexAppServer(endpoint);
     const operation = createSessionGoalOperation(threadId, input.goal);
+    const backendDiagnosticStartOffset = await codexAppServerBackendDiagnosticOffset(
+      endpoint.stderrLogPath,
+    );
     const operationState: SharedOperationState = {
       operation,
       deltaBuffer: "",
       completed: deferred<TaskOperation>(),
       settled: false,
+      ...(backendDiagnosticStartOffset !== undefined ? { backendDiagnosticStartOffset } : {}),
     };
     const subscription = subscribeOperationNotifications(context, connection, operationState);
 
@@ -432,6 +456,7 @@ export async function startSharedCodexAppServerSessionGoal(input: {
           operationState,
           input.timeoutMs,
         );
+        assertCodexGoalOperationDidNotFail(completed);
         return {
           status: "completed",
           provider: codexProvider(threadId, completed.turnId),
@@ -682,12 +707,10 @@ async function waitForOperationWithReconcile(
 ): Promise<TaskOperation> {
   const deadline = timeoutMs === undefined ? undefined : Date.now() + timeoutMs;
   while (!operationState.settled) {
+    await reportBackendDiagnostic(context, connection.endpoint, operationState);
     const remainingMs = deadline === undefined ? undefined : deadline - Date.now();
     if (remainingMs !== undefined && remainingMs <= 0) {
-      throw new TaskSendMessageError(
-        "timeout",
-        `Timed out monitoring operation "${operationState.operation.operationId}".`,
-      );
+      throw new TaskSendMessageError("timeout", operationTimeoutMessage(operationState));
     }
 
     const waitMs =
@@ -707,6 +730,44 @@ async function waitForOperationWithReconcile(
     await reconcileOperation(context, connection, operationState);
   }
   return await operationState.completed.promise;
+}
+
+function operationTimeoutMessage(operationState: SharedOperationState): string {
+  const base = `Timed out monitoring operation "${operationState.operation.operationId}".`;
+  return operationState.lastBackendDiagnostic
+    ? `${base} ${operationState.lastBackendDiagnostic.message}`
+    : base;
+}
+
+async function reportBackendDiagnostic(
+  context: SharedSessionContext,
+  endpoint: CodexAppServerEndpoint,
+  operationState: SharedOperationState,
+): Promise<void> {
+  const diagnostic = await readCodexAppServerBackendDiagnostic(endpoint.stderrLogPath, {
+    fromOffset: operationState.backendDiagnosticStartOffset,
+  }).catch(() => undefined);
+  if (!diagnostic) {
+    return;
+  }
+  operationState.lastBackendDiagnostic = diagnostic;
+  if (operationState.reportedBackendDiagnosticCodes?.includes(diagnostic.code)) {
+    return;
+  }
+  operationState.reportedBackendDiagnosticCodes = [
+    ...(operationState.reportedBackendDiagnosticCodes ?? []),
+    diagnostic.code,
+  ];
+  await appendAgentEvent(context, context.task.runtime, diagnostic.kind, {
+    code: diagnostic.code,
+    severity: diagnostic.severity,
+    message: diagnostic.message,
+    logPath: diagnostic.logPath,
+    operationId: operationState.operation.operationId,
+    operationKind: operationState.operation.kind,
+    threadId: operationState.operation.threadId,
+    turnId: operationState.operation.turnId,
+  });
 }
 
 async function reconcileOperation(
@@ -1054,8 +1115,14 @@ async function hydrateGoalOperationFromThread(
 function endpointForTask(task: AgentTaskRecord): CodexAppServerEndpoint {
   const socketPath =
     task.supervision?.kind === "provider" ? task.supervision.socketPath : undefined;
+  const stdoutLogPath =
+    task.supervision?.kind === "provider" ? task.supervision.backendStdoutLogPath : undefined;
+  const stderrLogPath =
+    task.supervision?.kind === "provider" ? task.supervision.backendStderrLogPath : undefined;
   return {
     socketPath: socketPath ?? process.env[TEST_SOCKET_PATH_ENV] ?? "",
+    ...(stdoutLogPath ? { stdoutLogPath } : {}),
+    ...(stderrLogPath ? { stderrLogPath } : {}),
   };
 }
 

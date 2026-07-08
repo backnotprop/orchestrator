@@ -967,6 +967,54 @@ test("codex app-server session send steers an active session turn", async () => 
   }, "orchestrator-codex-app-server-session-steer-");
 });
 
+test("codex app-server session send wait fails when interrupted", async () => {
+  await withTempWorkspace(async (workspaceRoot) => {
+    const handle = await launchTask({
+      workspaceRoot,
+      plan: codexAppServerSessionPlan(workspaceRoot, { FAKE_CODEX_APP_SERVER_MODE: "hang" }),
+      name: "interrupted send app-server session",
+      model: "fake-model",
+      timeoutMs: 10_000,
+    });
+
+    await waitFor(async () => {
+      const task = await readTaskRecord({ workspaceRoot }, handle.task.taskId);
+      return task.status === "running" && task.session?.state === "idle";
+    }, 5_000);
+
+    const pendingSend = sendTaskMessage({
+      workspaceRoot,
+      taskId: handle.task.taskId,
+      text: "Start a long turn.",
+      wait: true,
+      timeoutMs: 5_000,
+    });
+
+    await waitFor(async () => {
+      const task = await readTaskRecord({ workspaceRoot }, handle.task.taskId);
+      return task.session?.state === "turn_running" && task.currentOperation?.kind === "turn";
+    }, 5_000);
+
+    await interruptTask({
+      workspaceRoot,
+      taskId: handle.task.taskId,
+      reason: "stop waited send",
+    });
+
+    await assert.rejects(pendingSend, (error: unknown) => {
+      assert.ok(error instanceof Error);
+      assert.equal("reason" in error ? error.reason : undefined, "interrupted");
+      assert.equal(error.message, "stop waited send");
+      return true;
+    });
+
+    const completed = await handle.completed;
+    assert.equal(completed.status, "cancelled");
+    assert.equal(completed.lastOperation?.kind, "turn");
+    assert.equal(completed.lastOperation?.status, "interrupted");
+  }, "orchestrator-codex-app-server-session-send-wait-interrupt-");
+});
+
 test("codex app-server session interrupt settles a running goal operation", async () => {
   await withTempWorkspace(async (workspaceRoot) => {
     const handle = await launchTask({
@@ -1014,6 +1062,56 @@ test("codex app-server session interrupt settles a running goal operation", asyn
     assert.equal(completed.lastOperation?.error, "stop hanging goal");
     assert.equal(completed.goal?.status, "active");
   }, "orchestrator-codex-app-server-session-goal-interrupt-");
+});
+
+test("codex app-server session goal wait fails when interrupted", async () => {
+  await withTempWorkspace(async (workspaceRoot) => {
+    const handle = await launchTask({
+      workspaceRoot,
+      plan: codexAppServerSessionPlan(workspaceRoot, {
+        FAKE_CODEX_APP_SERVER_MODE: "goal-hang",
+      }),
+      name: "interrupted goal app-server session",
+      model: "fake-model",
+      timeoutMs: 10_000,
+    });
+
+    await waitFor(async () => {
+      const task = await readTaskRecord({ workspaceRoot }, handle.task.taskId);
+      return task.status === "running" && task.session?.state === "idle";
+    }, 5_000);
+
+    const pendingGoal = startTaskGoal({
+      workspaceRoot,
+      taskId: handle.task.taskId,
+      goal: "Keep the goal running.",
+      wait: true,
+      timeoutMs: 5_000,
+    });
+
+    await waitFor(async () => {
+      const task = await readTaskRecord({ workspaceRoot }, handle.task.taskId);
+      return task.session?.state === "goal_running" && task.currentOperation?.kind === "goal";
+    }, 5_000);
+
+    await interruptTask({
+      workspaceRoot,
+      taskId: handle.task.taskId,
+      reason: "stop waited goal",
+    });
+
+    await assert.rejects(pendingGoal, (error: unknown) => {
+      assert.ok(error instanceof Error);
+      assert.equal("reason" in error ? error.reason : undefined, "interrupted");
+      assert.equal(error.message, "stop waited goal");
+      return true;
+    });
+
+    const completed = await handle.completed;
+    assert.equal(completed.status, "cancelled");
+    assert.equal(completed.lastOperation?.kind, "goal");
+    assert.equal(completed.lastOperation?.status, "interrupted");
+  }, "orchestrator-codex-app-server-session-goal-wait-interrupt-");
 });
 
 test("codex app-server executor maps failed turns to failed tasks", async () => {

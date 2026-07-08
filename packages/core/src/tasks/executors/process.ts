@@ -10,6 +10,7 @@ import type { TaskExecutionContext, TaskExecutionHandle, TaskExecutor } from "./
 
 const HEARTBEAT_INTERVAL_MS = 5_000;
 const HEARTBEAT_STALE_AFTER_MS = 20_000;
+const FAILED_STDERR_ERROR_MAX_CHARS = 4_000;
 
 export class ProcessTaskExecutor implements TaskExecutor {
   start(context: TaskExecutionContext): TaskExecutionHandle {
@@ -243,6 +244,7 @@ function startProcessTask(context: TaskExecutionContext): TaskExecutionHandle {
 
         const current = await readTaskRecord(input, taskId);
         const stdout = await readFile(paths.stdoutLog, "utf8");
+        const stderr = await readFile(paths.stderrLog, "utf8");
         const fallbackToStdout = adapterResult.fallbackToStdout ?? true;
         const resultTruncated =
           adapterResult.resultText === undefined &&
@@ -268,7 +270,7 @@ function startProcessTask(context: TaskExecutionContext): TaskExecutionHandle {
               : signal
                 ? `Process exited from signal ${signal}.`
                 : finalStatus === "failed"
-                  ? adapterResult.errorText
+                  ? processFailureError(input.plan.runtime, adapterResult.errorText, stderr)
                   : undefined;
 
         const finished = await updateTaskStatus(current, finalStatus, {
@@ -403,6 +405,42 @@ function startProcessTask(context: TaskExecutionContext): TaskExecutionHandle {
       killProcessGroup(child, signal);
     },
   };
+}
+
+function processFailureError(
+  runtime: string,
+  adapterError: string | undefined,
+  stderr: string,
+): string | undefined {
+  const stderrError = stderrPreview(stderr);
+  if (!stderrError) {
+    return adapterError;
+  }
+
+  if (!adapterError || isGenericStructuredOutputError(runtime, adapterError)) {
+    return stderrError;
+  }
+
+  return adapterError;
+}
+
+function isGenericStructuredOutputError(runtime: string, error: string): boolean {
+  return (
+    error === `Runtime "${runtime}" did not emit structured output.` ||
+    error === `Runtime "${runtime}" did not emit final event "result".` ||
+    /^Runtime ".+" did not emit final event ".+"\.$/.test(error)
+  );
+}
+
+function stderrPreview(stderr: string): string | undefined {
+  const trimmed = stderr.trim();
+  if (!trimmed) {
+    return undefined;
+  }
+  if (trimmed.length <= FAILED_STDERR_ERROR_MAX_CHARS) {
+    return trimmed;
+  }
+  return `...${trimmed.slice(trimmed.length - FAILED_STDERR_ERROR_MAX_CHARS)}`;
 }
 
 function killProcessGroup(

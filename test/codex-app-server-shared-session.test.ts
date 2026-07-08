@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import { readFile, writeFile } from "node:fs/promises";
+import { join } from "node:path";
 import test from "node:test";
 import { createOrchestratorAgentTools } from "@backnotprop/orchestrator-agent/tools";
 import { buildAgentLaunchPlan } from "@backnotprop/orchestrator-core/runtime";
@@ -12,6 +14,7 @@ import {
   readTaskRecord,
   sendTaskMessage,
   startTaskGoal,
+  type TaskEvent,
 } from "@backnotprop/orchestrator-core/tasks";
 import {
   FAKE_SHARED_CODEX_APP_SERVER_SOCKET_ENV as TEST_SOCKET_PATH_ENV,
@@ -223,6 +226,326 @@ test("shared codex-app-server monitor settles a no-wait send operation", async (
       });
     },
     { turnDelayMs: 50 },
+  );
+});
+
+test("shared codex-app-server send wait fails when the operation is interrupted", async () => {
+  await withFakeSharedCodexAppServer(
+    async ({ socketPath }) => {
+      await withTempWorkspace(async (workspaceRoot) => {
+        const task = await launchSharedCodexAppServerSessionTask({
+          workspaceRoot,
+          plan: sessionPlan(workspaceRoot, socketPath),
+          name: "interrupted send session",
+        });
+
+        const pendingSend = sendTaskMessage({
+          workspaceRoot,
+          taskId: task.taskId,
+          text: "Start a delayed turn.",
+          wait: true,
+          timeoutMs: 5_000,
+        });
+
+        await waitForTask(
+          workspaceRoot,
+          task.taskId,
+          (record) => record.session?.state === "turn_running",
+        );
+
+        await interruptTask({
+          workspaceRoot,
+          taskId: task.taskId,
+          reason: "operator stopped wait",
+        });
+
+        await assert.rejects(pendingSend, (error: unknown) => {
+          assert.ok(error instanceof Error);
+          assert.equal("reason" in error ? error.reason : undefined, "interrupted");
+          assert.equal(error.message, "operator stopped wait");
+          return true;
+        });
+
+        const interrupted = await readTaskRecord({ workspaceRoot }, task.taskId);
+        assert.equal(interrupted.status, "cancelled");
+        assert.equal(interrupted.lastOperation?.status, "interrupted");
+      });
+    },
+    { turnDelayMs: 1_000 },
+  );
+});
+
+test("shared codex-app-server send surfaces backend auth diagnostics while active", async () => {
+  await withFakeSharedCodexAppServer(
+    async ({ socketPath }) => {
+      await withTempWorkspace(async (workspaceRoot) => {
+        const task = await launchSharedCodexAppServerSessionTask({
+          workspaceRoot,
+          plan: sessionPlan(workspaceRoot, socketPath),
+          name: "backend auth diagnostic session",
+        });
+        const backendStderrLogPath = `${task.paths.taskDir}/backend.stderr.log`;
+        await patchTaskJson(task.taskId, task.paths.taskJson, {
+          supervision: {
+            ...task.supervision,
+            backendStderrLogPath,
+          },
+        });
+
+        const pendingSend = sendTaskMessage({
+          workspaceRoot,
+          taskId: task.taskId,
+          text: "Start a delayed turn.",
+          wait: true,
+          timeoutMs: 10_000,
+        });
+
+        await waitForTask(
+          workspaceRoot,
+          task.taskId,
+          (record) => record.session?.state === "turn_running",
+        );
+        await writeFile(
+          backendStderrLogPath,
+          "2026-07-07T20:26:53.560722Z ERROR rmcp::transport::worker: worker quit with fatal: Transport channel closed, when Auth(AuthorizationRequired)\n",
+        );
+        const diagnostic = await waitForAgentEvent(
+          workspaceRoot,
+          task.taskId,
+          (event) => event.data.kind === "protocol.backend.auth_required",
+        );
+        assert.equal(diagnostic.data.code, "authorization_required");
+        assert.match(String(diagnostic.data.message), /AuthorizationRequired/);
+        assert.equal(diagnostic.data.logPath, backendStderrLogPath);
+
+        const ps = await buildAgentTaskPsView({
+          workspaceRoot,
+          now: new Date("2026-07-07T20:27:01.000Z"),
+        });
+        const row = ps.rows.find((candidate) => candidate.taskId === task.taskId);
+        assert.equal(row?.lastEvent, "protocol.backend.auth_required");
+        assert.match(row?.lastMessage ?? "", /AuthorizationRequired/);
+
+        const compactRead = await runCli(
+          workspaceRoot,
+          ["read", task.taskId, "--json", "--compact"],
+          10_000,
+        );
+        const parsedRead = JSON.parse(compactRead.stdout) as {
+          lastEvent?: string;
+          lastMessage?: string;
+        };
+        assert.equal(parsedRead.lastEvent, "protocol.backend.auth_required");
+        assert.match(parsedRead.lastMessage ?? "", /AuthorizationRequired/);
+
+        const humanRead = await runCli(workspaceRoot, ["read", task.taskId], 10_000);
+        assert.match(humanRead.stderr, /AuthorizationRequired/);
+
+        const waitRead = await runCli(
+          workspaceRoot,
+          ["read", task.taskId, "--wait", "--timeout-ms", "50"],
+          10_000,
+        );
+        assert.match(waitRead.stderr, /AuthorizationRequired/);
+
+        await interruptTask({
+          workspaceRoot,
+          taskId: task.taskId,
+          reason: "diagnostic test cleanup",
+        });
+        await assert.rejects(pendingSend, (error: unknown) => {
+          assert.equal(
+            error instanceof Error && "reason" in error ? error.reason : undefined,
+            "interrupted",
+          );
+          return true;
+        });
+      });
+    },
+    { turnDelayMs: 5_000 },
+  );
+});
+
+test("shared codex-app-server send timeout includes backend auth diagnostic", async () => {
+  await withFakeSharedCodexAppServer(
+    async ({ socketPath }) => {
+      await withTempWorkspace(async (workspaceRoot) => {
+        const task = await launchSharedCodexAppServerSessionTask({
+          workspaceRoot,
+          plan: sessionPlan(workspaceRoot, socketPath),
+          name: "auth timeout session",
+        });
+        const backendStderrLogPath = join(task.paths.taskDir, "backend.stderr.log");
+        await patchTaskJson(task.taskId, task.paths.taskJson, {
+          supervision: {
+            kind: "provider",
+            provider: "codex-app-server",
+            socketPath,
+            backendStderrLogPath,
+          },
+        });
+
+        const pendingSend = sendTaskMessage({
+          workspaceRoot,
+          taskId: task.taskId,
+          text: "Start a delayed turn.",
+          wait: true,
+          timeoutMs: 1_000,
+        });
+
+        await waitForTask(
+          workspaceRoot,
+          task.taskId,
+          (record) => record.session?.state === "turn_running",
+        );
+        await writeFile(
+          backendStderrLogPath,
+          "ERROR rmcp::transport::worker: worker quit with fatal: Transport channel closed, when Auth(AuthorizationRequired)\n",
+        );
+
+        await assert.rejects(pendingSend, (error: unknown) => {
+          assert.equal(
+            error instanceof Error && "reason" in error ? error.reason : undefined,
+            "timeout",
+          );
+          assert.match(
+            String(error instanceof Error ? error.message : error),
+            /AuthorizationRequired/,
+          );
+          return true;
+        });
+
+        await interruptTask({
+          workspaceRoot,
+          taskId: task.taskId,
+          reason: "diagnostic timeout test cleanup",
+        });
+      });
+    },
+    { turnDelayMs: 5_000 },
+  );
+});
+
+test("shared codex-app-server send ignores stale backend auth diagnostics", async () => {
+  await withFakeSharedCodexAppServer(
+    async ({ socketPath }) => {
+      await withTempWorkspace(async (workspaceRoot) => {
+        const task = await launchSharedCodexAppServerSessionTask({
+          workspaceRoot,
+          plan: sessionPlan(workspaceRoot, socketPath),
+          name: "stale auth diagnostic session",
+        });
+        const backendStderrLogPath = join(task.paths.taskDir, "backend.stderr.log");
+        await writeFile(
+          backendStderrLogPath,
+          "ERROR old operation failed with Auth(AuthorizationRequired)\n",
+        );
+        await patchTaskJson(task.taskId, task.paths.taskJson, {
+          supervision: {
+            kind: "provider",
+            provider: "codex-app-server",
+            socketPath,
+            backendStderrLogPath,
+          },
+        });
+
+        await assert.rejects(
+          sendTaskMessage({
+            workspaceRoot,
+            taskId: task.taskId,
+            text: "Start a delayed turn.",
+            wait: true,
+            timeoutMs: 200,
+          }),
+          (error: unknown) => {
+            assert.equal(
+              error instanceof Error && "reason" in error ? error.reason : undefined,
+              "timeout",
+            );
+            assert.doesNotMatch(
+              String(error instanceof Error ? error.message : error),
+              /AuthorizationRequired/,
+            );
+            return true;
+          },
+        );
+
+        await interruptTask({
+          workspaceRoot,
+          taskId: task.taskId,
+          reason: "stale diagnostic test cleanup",
+        });
+      });
+    },
+    { turnDelayMs: 5_000 },
+  );
+});
+
+test("CLI send wait reports interrupted when another operator stops the session", async () => {
+  await withFakeSharedCodexAppServer(
+    async ({ socketPath }) => {
+      await withTempWorkspace(async (workspaceRoot) => {
+        const fakeEnv = { [TEST_SOCKET_PATH_ENV]: socketPath };
+        const launch = await runCli(
+          workspaceRoot,
+          [
+            "launch",
+            "codex-app-server",
+            "--workspace",
+            workspaceRoot,
+            "--session",
+            "--name",
+            "cli interrupted send",
+            "--json",
+          ],
+          10_000,
+          fakeEnv,
+        );
+        const task = JSON.parse(launch.stdout) as { taskId: string };
+
+        const pendingSend = runCli(
+          workspaceRoot,
+          [
+            "send",
+            task.taskId.slice(0, 8),
+            "--workspace",
+            workspaceRoot,
+            "--wait",
+            "--json",
+            "--compact",
+            "Start a delayed turn.",
+          ],
+          10_000,
+          fakeEnv,
+        );
+
+        await waitForTask(
+          workspaceRoot,
+          task.taskId,
+          (record) => record.session?.state === "turn_running",
+        );
+
+        await runCli(
+          workspaceRoot,
+          ["interrupt", task.taskId, "--workspace", workspaceRoot, "--reason", "operator stopped"],
+          10_000,
+          fakeEnv,
+        );
+
+        await assert.rejects(pendingSend, (error: unknown) => {
+          const stderr = error instanceof Error && "stderr" in error ? String(error.stderr) : "";
+          const parsed = JSON.parse(stderr) as {
+            error: { message?: string; reason?: string; input?: string; hint?: string };
+          };
+          assert.equal(parsed.error.reason, "interrupted");
+          assert.equal(parsed.error.message, "operator stopped");
+          assert.equal(parsed.error.input, task.taskId);
+          assert.match(parsed.error.hint ?? "", /interrupted/);
+          return true;
+        });
+      });
+    },
+    { turnDelayMs: 5_000 },
   );
 });
 
@@ -797,6 +1120,41 @@ async function waitForTask(
     await delay(25);
   }
   assert.fail(`Timed out waiting for task ${taskId}.`);
+}
+
+async function waitForAgentEvent(
+  workspaceRoot: string,
+  taskId: string,
+  predicate: (event: TaskEvent) => boolean,
+  timeoutMs = 5_000,
+): Promise<TaskEvent> {
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < timeoutMs) {
+    const event = (
+      await readTaskEvents({
+        workspaceRoot,
+        taskId,
+        agentOnly: true,
+      })
+    ).find(predicate);
+    if (event) {
+      return event;
+    }
+    await delay(25);
+  }
+  assert.fail(`Timed out waiting for task event ${taskId}.`);
+}
+
+async function patchTaskJson(
+  taskId: string,
+  taskJsonPath: string,
+  patch: Record<string, unknown>,
+): Promise<void> {
+  const raw = JSON.parse(await readFile(taskJsonPath, "utf8")) as Record<string, unknown>;
+  if (raw.taskId !== taskId) {
+    assert.fail(`Unexpected task id in ${taskJsonPath}.`);
+  }
+  await writeFile(taskJsonPath, `${JSON.stringify({ ...raw, ...patch }, null, 2)}\n`);
 }
 
 async function delay(ms: number): Promise<void> {

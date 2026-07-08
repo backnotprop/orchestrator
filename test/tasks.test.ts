@@ -58,7 +58,7 @@ function orchestratorPlan(command: string, cwd: string): AgentLaunchPlan {
 }
 
 function jsonlFixturePlan(input: {
-  runtime: "claude-code" | "codex";
+  runtime: "claude-code" | "codex" | "copilot";
   fixturePath: string;
   cwd: string;
 }): AgentLaunchPlan {
@@ -71,7 +71,7 @@ function jsonlFixturePlan(input: {
 }
 
 function jsonlCommandPlan(input: {
-  runtime: "claude-code" | "codex";
+  runtime: "claude-code" | "codex" | "copilot";
   command: string;
   cwd: string;
 }): AgentLaunchPlan {
@@ -85,7 +85,10 @@ function jsonlCommandPlan(input: {
     promptTransport: { kind: "argv", position: "last" },
     outputTransport: {
       kind: "jsonl_events",
-      finalEvent: input.runtime === "claude-code" ? "result" : "turn.completed",
+      finalEvent:
+        input.runtime === "claude-code" || input.runtime === "copilot"
+          ? "result"
+          : "turn.completed",
     },
     expectedProcesses: ["sh"],
     interrupt: "process_group",
@@ -1243,6 +1246,149 @@ test("launchTask normalizes Codex exec JSONL fixtures and extracts final result"
     assert.equal(task.usage?.scope, "task");
     assert.equal(task.usage?.final, true);
     assert.match(task.usage?.updatedAt ?? "", /^\d{4}-\d{2}-\d{2}T/);
+  });
+});
+
+test("launchTask normalizes Copilot CLI JSONL fixtures and extracts final result", async () => {
+  await withTempWorkspace(async (workspaceRoot) => {
+    const handle = await launchTask({
+      workspaceRoot,
+      plan: jsonlFixturePlan({
+        runtime: "copilot",
+        fixturePath: join(fixturesDir, "copilot-jsonl.jsonl"),
+        cwd: workspaceRoot,
+      }),
+    });
+
+    const completed = await handle.completed;
+    assert.equal(completed.status, "succeeded");
+    assert.equal(
+      await readTaskOutput({ workspaceRoot, taskId: completed.taskId }),
+      "fixture-copilot-ok",
+    );
+
+    const transcript = await readFile(completed.paths.transcriptJsonl, "utf8");
+    assert.match(transcript, /"type":"assistant.message"/);
+    assert.match(transcript, /fixture-copilot-ok/);
+
+    const events = await readTaskEvents(completed.paths.eventsJsonl);
+    const agentEvents = events.filter((event) => event.type === "agent_event");
+    assert.ok(agentEvents.some((event) => event.data.kind === "agent.message"));
+    assert.ok(agentEvents.some((event) => event.data.kind === "agent.result"));
+
+    const turnStarted = agentEvents.find((event) => event.data.kind === "agent.turn.started");
+    assert.ok(turnStarted);
+    assert.equal(turnStarted.data.model, "fake-copilot-model");
+    assert.equal(turnStarted.data.turnId, "fixture-turn");
+
+    const turnCompleted = agentEvents.find((event) => event.data.kind === "agent.turn.completed");
+    assert.ok(turnCompleted);
+    assert.equal(turnCompleted.data.model, "fake-copilot-model");
+    assert.equal(turnCompleted.data.turnId, "fixture-turn");
+
+    const message = agentEvents.find((event) => event.data.kind === "agent.message");
+    assert.ok(message);
+    assert.deepEqual(message.data.usage, {
+      outputTokens: 7,
+      source: "provider",
+      scope: "turn",
+      final: false,
+    });
+
+    const result = agentEvents.find((event) => event.data.kind === "agent.result");
+    assert.ok(result);
+    assert.equal(result.data.premiumRequests, 1);
+    assert.equal(result.data.sessionDurationMs, 456);
+    assert.equal(result.data.totalApiDurationMs, 123);
+
+    const task = await readTaskRecord({ workspaceRoot }, completed.taskId);
+    assert.deepEqual(task.provider, {
+      provider: "copilot",
+      sessionId: "fixture-copilot-session",
+    });
+    assert.equal(task.usage?.outputTokens, 7);
+    assert.equal(task.usage?.totalTokens, undefined);
+    assert.equal(task.usage?.source, "provider");
+    assert.equal(task.usage?.scope, "turn");
+    assert.equal(task.usage?.final, false);
+    assert.match(task.usage?.updatedAt ?? "", /^\d{4}-\d{2}-\d{2}T/);
+
+    const view = await buildAgentTaskPsView({ workspaceRoot });
+    assert.equal(view.rows[0]?.model, "fake-copilot-model");
+    assert.equal(view.rows[0]?.usage?.outputTokens, 7);
+  });
+});
+
+test("launchTask fails Copilot JSONL when final result exitCode is nonzero", async () => {
+  await withTempWorkspace(async (workspaceRoot) => {
+    const lines = [
+      {
+        type: "assistant.message",
+        data: {
+          content: "partial copilot answer",
+          model: "fake-copilot-model",
+          outputTokens: 2,
+        },
+      },
+      {
+        type: "result",
+        sessionId: "fixture-copilot-session",
+        exitCode: 1,
+        message: "Copilot failed.",
+      },
+    ];
+    const command = `printf '%s\\n' ${lines.map((line) => quoteShellArg(JSON.stringify(line))).join(" ")}`;
+    const handle = await launchTask({
+      workspaceRoot,
+      plan: jsonlCommandPlan({
+        runtime: "copilot",
+        command,
+        cwd: workspaceRoot,
+      }),
+    });
+
+    const completed = await handle.completed;
+    assert.equal(completed.status, "failed");
+    assert.match(completed.error ?? "", /Copilot failed/);
+
+    const task = await readTaskRecord({ workspaceRoot }, completed.taskId);
+    assert.deepEqual(task.provider, {
+      provider: "copilot",
+      sessionId: "fixture-copilot-session",
+    });
+  });
+});
+
+test("launchTask surfaces stderr for Copilot setup failures without final JSONL result", async () => {
+  await withTempWorkspace(async (workspaceRoot) => {
+    const event = {
+      type: "session.mcp_server_status_changed",
+      data: { serverName: "github-mcp-server", status: "connected" },
+    };
+    const command = [
+      `printf '%s\\n' ${quoteShellArg(JSON.stringify(event))}`,
+      `printf '%s\\n' ${quoteShellArg('Error: Model "bad-model" from --model flag is not available.')} >&2`,
+      "exit 1",
+    ].join("; ");
+    const handle = await launchTask({
+      workspaceRoot,
+      plan: jsonlCommandPlan({
+        runtime: "copilot",
+        command,
+        cwd: workspaceRoot,
+      }),
+    });
+
+    const completed = await handle.completed;
+    assert.equal(completed.status, "failed");
+    assert.match(completed.error ?? "", /bad-model/);
+    assert.doesNotMatch(completed.error ?? "", /did not emit final event/);
+
+    const view = await buildAgentTaskPsView({ workspaceRoot });
+    assert.equal(
+      view.rows[0]?.error,
+      'Error: Model "bad-model" from --model flag is not available.',
+    );
   });
 });
 

@@ -37,6 +37,7 @@ export function formatTokenUsage(tokens: number | undefined): string {
 
 export type TokenUsageDisplay = {
   totalTokens?: number;
+  outputTokens?: number;
   source?: string;
   final?: boolean;
 };
@@ -46,7 +47,7 @@ export function formatTokenUsageCompact(usage: TokenUsageDisplay | undefined): s
     return "-";
   }
 
-  const value = formatTokenUsage(usage.totalTokens);
+  const value = formatTokenUsage(usage.totalTokens ?? usage.outputTokens);
   if (value === "-") {
     return value;
   }

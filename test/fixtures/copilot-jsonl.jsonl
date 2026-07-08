@@ -1,0 +1,5 @@
+{"type":"assistant.turn_start","data":{"model":"fake-copilot-model","turnId":"fixture-turn"}}
+{"type":"assistant.message_delta","data":{"content":"fixture-copilot-ok"}}
+{"type":"assistant.message","data":{"content":"fixture-copilot-ok","model":"fake-copilot-model","turnId":"fixture-turn","outputTokens":7}}
+{"type":"assistant.turn_end","data":{"model":"fake-copilot-model","turnId":"fixture-turn"}}
+{"type":"result","sessionId":"fixture-copilot-session","exitCode":0,"usage":{"premiumRequests":1,"totalApiDurationMs":123,"sessionDurationMs":456}}

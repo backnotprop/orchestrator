@@ -916,6 +916,8 @@ function hintForSendFailure(reason: TaskSendMessageFailureReason, taskId: string
       return "Use read, logs, events, interrupt, resume, or launch a new task instead.";
     case "timeout":
       return "Use events, logs, or ps to inspect the running task, then retry if it is still active.";
+    case "interrupted":
+      return "The operation was interrupted. Use read, events, or launch a new task if more work is needed.";
     case "stale":
     case "orphaned":
     case "lost":
@@ -939,6 +941,8 @@ function hintForGoalFailure(reason: TaskSendMessageFailureReason, taskId: string
       return "Use goal start only with a running codex-app-server --session task.";
     case "timeout":
       return "Use events, logs, or ps to inspect the running goal, then retry if it is still active.";
+    case "interrupted":
+      return "The goal operation was interrupted. Use goal get, read, or start a new goal if more work is needed.";
     case "stale":
     case "orphaned":
     case "lost":
@@ -962,6 +966,8 @@ function hintForGoalControlFailure(reason: TaskSendMessageFailureReason, taskId:
       return "Use goal commands only with a running codex-app-server --session task.";
     case "timeout":
       return "Use events, logs, or ps to inspect the session, then retry if it is still active.";
+    case "interrupted":
+      return "The goal control operation was interrupted. Use goal get, read, or retry when the session is idle.";
     case "stale":
     case "orphaned":
     case "lost":

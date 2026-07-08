@@ -1,4 +1,8 @@
 import { randomUUID } from "node:crypto";
+import {
+  assertCodexGoalOperationDidNotFail,
+  assertSuccessfulCodexTurnOperation,
+} from "../../codex-app-server-operation-result.ts";
 import { captureProcessIdentity } from "../../observation.ts";
 import { readTaskRecord, writeTaskHeartbeat } from "../../store.ts";
 import type {
@@ -470,6 +474,7 @@ async function startSessionGoal(
 
     if (operationState.settled) {
       const completed = await operationState.completed.promise;
+      assertCodexGoalOperationDidNotFail(completed);
       if (completed.turnId) {
         await appendAgentEvent(
           context,
@@ -502,6 +507,7 @@ async function startSessionGoal(
 
     if (operationState.settled) {
       const completed = await operationState.completed.promise;
+      assertCodexGoalOperationDidNotFail(completed);
       return {
         status: "completed",
         provider: codexProvider(threadId, completed.turnId ?? turnId),
@@ -512,6 +518,7 @@ async function startSessionGoal(
 
     if (input.wait) {
       const completed = await waitForSessionOperation(operationState, input.timeoutMs);
+      assertCodexGoalOperationDidNotFail(completed);
       return {
         status: "completed",
         provider: codexProvider(threadId, completed.turnId ?? turnId),
@@ -663,6 +670,7 @@ async function startSessionTurn(
 
     if (input.wait) {
       const completed = await waitForSessionOperation(operationState, input.timeoutMs);
+      assertSuccessfulCodexTurnOperation(completed);
       return {
         status: "completed",
         provider: codexProvider(threadId, completed.turnId ?? turnId),
@@ -766,6 +774,7 @@ async function steerActiveTurn(
         state.currentSessionOperation,
         input.timeoutMs,
       );
+      assertSuccessfulCodexTurnOperation(completed);
       return {
         status: "completed",
         provider: codexProvider(state.threadId, completed.turnId ?? responseTurnId),

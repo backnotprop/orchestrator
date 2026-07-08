@@ -141,11 +141,13 @@ export function buildAgentResumeLaunchPlan(
       return buildCodexAppServerResumePlan(input, runtime);
     case "claude-code":
       return buildClaudeCodeResumePlan(input, runtime);
+    case "copilot":
+      return buildCopilotResumePlan(input, runtime);
     default:
       throw new LaunchPlanError(`Runtime "${input.runtime}" does not support provider resume.`, {
         reason: "unsupported_resume",
         input: input.runtime,
-        hint: "This release supports provider resume for codex, codex-app-server, and claude-code only.",
+        hint: "This release supports provider resume for codex, codex-app-server, claude-code, and copilot only.",
       });
   }
 }
@@ -294,6 +296,40 @@ function buildClaudeCodeResumePlan(
     ],
     resume: {
       provider: "claude-code",
+      sessionId,
+    },
+  });
+}
+
+function buildCopilotResumePlan(
+  input: BuildAgentResumeLaunchPlanInput,
+  runtime: HeadlessAgentRuntimeConfig,
+): AgentLaunchPlan {
+  const sessionId = input.provider.sessionId?.trim();
+  if (!sessionId) {
+    throw new LaunchPlanError(`Runtime "${runtime.id}" resume requires provider.sessionId.`, {
+      reason: "missing_resume_provider_id",
+      input: runtime.id,
+      hint: "Resume a Copilot task only after its task record has provider.sessionId from result.sessionId.",
+    });
+  }
+
+  const outputMode = resolveOutputMode(runtime, input.outputMode);
+  return baseResumePlan({
+    input,
+    runtime,
+    outputMode,
+    args: [
+      ...runtime.launch.baseArgs,
+      "--resume",
+      sessionId,
+      ...modelArgs(runtime, input.model),
+      ...outputMode.extraArgs,
+      "-p",
+      input.task,
+    ],
+    resume: {
+      provider: "copilot",
       sessionId,
     },
   });

@@ -933,6 +933,7 @@ function parseFailureReason(value: unknown): TaskSendMessageFailureReason {
     case "not_running":
     case "not_ready":
     case "provider_rejected":
+    case "interrupted":
     case "turn_mismatch":
     case "invalid_request":
     case "timeout":

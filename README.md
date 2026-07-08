@@ -116,8 +116,9 @@ orchestrator interrupt <task-id|prefix> <task-id|prefix> --json --compact
 orchestrator interrupt <task-id|prefix>
 ```
 
-For persistent Codex sessions, `send`, and native Codex goals, use
-`codex-app-server`.
+Use `codex` for short, one-shot Codex tasks. Use `codex-app-server --session`
+for meaningful or long-running Codex work that may need follow-up messages,
+native Codex goals, steering, provider metadata, or closer observation.
 [Codex App Server](doc/codex-app-server.md)
 
 Do not set a goal token budget by default. Goals are open-ended provider work,
@@ -239,7 +240,7 @@ The CLI package is `@backnotprop/orchestrator-cli`. The reusable runtime package
 - `help --json --compact`: get the small command contract for agents/scripts; use `help --json` when you need the full contract
 - `run`: start the parent AI agent; add `--background` to manage it like a task, `--trace-tools` to see tool calls live, or `--stream-json` for a full JSONL stream
 - `launch`: start one agent in the background; add `--json --compact` for a small machine-readable result, or use `launch -f agents.json --json --compact --brief` to start several agents from one manifest
-- `resume`: start a new task that resumes a finished Codex, Codex app-server, or Claude Code provider session
+- `resume`: start a new task that resumes a finished Codex, Codex app-server, Claude Code, or Copilot provider session
   Resume needs stored provider metadata. Keep the default runtime output mode
   when you want reliable results, provider ids, token usage, or resume.
   Provider text modes are mainly diagnostic or provider-specific.
@@ -285,11 +286,14 @@ First-class targets:
 
 - Claude Code
 - Codex
+- GitHub Copilot CLI
 
-`codex` is the stable headless Codex runtime backed by `codex exec`.
-`codex-app-server` is the experimental protocol runtime backed by
-Codex app-server. One-shot tasks use `codex app-server --listen stdio://`;
-`--session` tasks use an Orchestrator-managed
+`codex` is the stable headless Codex runtime backed by `codex exec`. Use it for
+short, one-shot Codex tasks. `codex-app-server` is the protocol runtime backed
+by Codex app-server. One-shot tasks use `codex app-server --listen stdio://`;
+`--session` tasks are the preferred path for meaningful or long-running Codex
+work that may need follow-up messages, native goals, steering, provider
+metadata, or closer observation. They use an Orchestrator-managed
 `codex app-server --listen unix://<socket>` backend and one provider thread per
 Orchestrator task. It supports provider-thread resume, running messages through
 `orchestrator send`, and native Codex goals through `orchestrator goal start` on
@@ -298,9 +302,12 @@ persistent sessions. `orchestrator goal get`, `orchestrator goal set`, and
 tracked goal work. Do not set a goal token budget by default; use one only when
 you intentionally want a hard cap.
 
-The runtime layer is generic, but the first release is focused on Claude Code
-and Codex. `shell` is also enabled as a local-command runtime for research,
-tests, and operator utility tasks.
+`copilot` is the process runtime backed by GitHub Copilot CLI programmatic mode.
+Use it when Copilot is the desired backend for one-shot or resumable AI work.
+
+The runtime layer is generic, but the first release is focused on Claude Code,
+Codex, and Copilot. `shell` is also enabled as a local-command runtime for
+research, tests, and operator utility tasks.
 Built-in runtimes can also be disabled in config. See
 [doc/disable-agents.md](doc/disable-agents.md).
 For the app-server runtime distinction and current limits, see
