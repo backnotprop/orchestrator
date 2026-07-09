@@ -1,171 +1,87 @@
 <p>
-  <img src="./orchestrator_tp.webp" alt="Orchestrator - run agents" width="320">
+  <img src="./orchestrator_tp.webp" alt="Orchestrator" width="280">
 </p>
 
 # Orchestrator
 
-**Agents orchestrating agents.**
+**One agent. Many models. Any provider.**
 
-Orchestrator is a portable skill backed by a local CLI. Install the skill in
-the agent you already use. That agent can then launch, observe, iterate with,
-and stop other agents without pretending their work happened in its own
-context.
+<p>
+  <a href="https://openai.com/codex/"><img src="./assets/providers/openai-wordmark.webp" alt="OpenAI Codex" height="44"></a>
+  &nbsp;&nbsp;
+  <a href="https://claude.com/product/claude-code"><img src="./assets/providers/claude-icon.png" alt="Claude Code" width="32" height="32"></a>
+  &nbsp;&nbsp;
+  <a href="https://github.com/features/copilot/cli"><picture><source media="(prefers-color-scheme: dark)" srcset="./assets/providers/github-copilot-lockup-white.svg"><img src="./assets/providers/github-copilot-lockup-black.svg" alt="GitHub Copilot CLI" height="28"></picture></a>
+  &nbsp;&nbsp;
+  <a href="https://grok.com/"><img src="./assets/providers/grok-app-icon.svg" alt="Grok" width="32" height="32"></a>
+  &nbsp;&nbsp;
+  <a href="https://pi.dev/"><img src="./assets/providers/pi-badge.svg" alt="Pi" width="32" height="32"></a>
+</p>
 
-Claude can orchestrate Codex. Codex can orchestrate Claude and Grok. Pi can
-launch Copilot. Any agent that can read a skill and run a command can use the
-same control plane.
+<sub>Codex &middot; Claude Code &middot; Copilot CLI &middot; Grok Build &middot; Pi</sub>
+
+Orchestrator is a dead-simple skill built on a powerful local CLI. Work with
+one agent; it orchestrates many models across providers and brings their
+results back into one place.
+
+You speak in models and outcomes, not provider CLI syntax:
+
+> Use Fable for the UI, GPT-5.6 Sol for the implementation, and Grok 4.5 for
+> the small fixes. Run independent work in parallel, then have Opus review the
+> result.
+
+> Explore the repository with Kimi 2.7. Give the plan to GPT-5.6 Sol, then use
+> Fable only where the interface needs real design work.
+
+Orchestrator discovers current model names and IDs from installed runtimes
+instead of relying on stale model slugs.
 
 ## Install
 
-Install the skill:
-
 ```sh
 npx skills add backnotprop/orchestrator
-```
-
-Install the CLI now, or let the skill install it when first used:
-
-```sh
 npm install -g @backnotprop/orchestrator-cli
 ```
 
-<details>
-<summary>Codex and Claude plugin installs</summary>
-
-```sh
-# Codex
-codex plugin marketplace add backnotprop/orchestrator
-codex plugin add orchestrator@orchestrator
-```
-
-```text
-# Claude Code
-/plugin marketplace add backnotprop/orchestrator
-/plugin install orchestrator@orchestrator
-```
-
-</details>
-
-## Use It
-
-Talk to your current agent:
-
-> Use Orchestrator. Launch Codex to inspect the data layer and Claude Code to
-> review the API. Run them in parallel, wait for both, then synthesize the
-> result.
-
-Or be specific without looking up provider slugs yourself:
-
-> Launch Grok with its current default model to fix the small test failure.
-
-> Launch Claude Code with Opus for the UI implementation. Have Codex review the
-> result afterward.
-
-> Explore this repo with Pi, then give the implementation to Codex.
-
-Your agent uses the skill. The skill uses the CLI. The CLI keeps each worker as
-a named task with real status, logs, events, output, and stop controls.
-
-## Crawl, Walk, Run
-
-### Crawl: One Delegation
-
-> Use Orchestrator to launch Codex to inspect the task store. Wait for the
-> answer.
-
-### Walk: Parallel Specialists
-
-> Launch Claude Code for architecture review, Grok for a focused bug hunt, and
-> Pi for exploration. Keep the jobs separate and collect every result.
-
-### Run: Policy-Driven Orchestration
-
-Add preferences once. Then ask:
-
-> Use Orchestrator to handle this with my normal agent and model preferences.
-> Fan out independent work, stop duplicates, and wait for the useful results.
-
-Orchestrator can start one task or many, operate across workspaces, and keep
-long-running work out of the caller's context until its result is needed.
+The CLI install is optional up front. The skill can install it on first use.
 
 ## Preferences
 
-Preferences are optional. Orchestrator works without them.
+Preferences are optional. Edit
+[`skills/orchestrator/PREFERENCES.md`](skills/orchestrator/PREFERENCES.md), or
+tell your agent what to put there:
 
-The skill ships with
-[`PREFERENCES.md`](skills/orchestrator/PREFERENCES.md) beside
-`SKILL.md`. Edit it directly, or tell your agent:
+```text
+Use Fable for extensive UI work.
+Use GPT-5.6 Sol for deep execution.
+Use Grok 4.5 for small coding tasks.
+Use Kimi 2.7 for exploration.
+When Fable is unavailable, use GPT-5.6 Sol.
+When GPT-5.6 Sol is unavailable, use Opus.
+When every preferred model is unavailable, pause and notify me.
+```
 
-> Open the Orchestrator skill preferences and set these rules:
->
-> Use Fable only for extensive UI work. Use GPT-5.6 Sol for most deep execution
-> work. Use Grok 4.5 Agent for simple coding tasks. Use Pi with Kimi 2.7 for
-> exploration. When Fable is out of usage, use GPT-5.6. When GPT-5.6 is out,
-> use Opus. When every allowed provider is out of usage, pause new work until
-> limits reset and notify me.
-
-Preferences can use human model names. The skill asks installed runtimes for
-current ids, aliases, routers, and defaults before it passes a model value
-through to the provider CLI.
-
-Preferences are plain language. They can define:
-
-- runtime and model choices by type of work;
-- fallback order;
-- when to use one agent or fan out;
-- what to do when usage is exhausted.
-
-The current request wins over saved preferences. The skill checks live runtime
-availability and uses provider limit snapshots when available. Unknown limit
-data stays unknown; it is not treated as exhausted.
-
-## What Agents Can Do
-
-- Launch Claude Code, Codex, Copilot CLI, Grok Build, Pi, shell commands, or
-  custom runtimes.
-- Discover current provider models instead of relying on remembered slugs.
-- Select a model for each worker.
-- Start independent jobs in parallel.
-- Watch normalized progress or raw logs.
-- Wait for one result or collect many.
-- Resume supported provider sessions.
-- Send follow-up work to persistent Codex sessions.
-- Stop one task, a selected group, a workspace, or deliberate machine-wide
-  work.
-- Check configured runtimes and supported provider limits before routing.
+Human model names are fine. The skill resolves them against live runtime
+catalogs, checks available provider limits when supported, and follows the
+current request before saved preferences.
 
 ## Under The Hood
 
-Agents use a small command loop:
+Every worker is a named task with status, logs, output, follow-up, resume, and
+stop controls. Agents use a small JSON command loop:
 
 ```sh
 orchestrator doctor --json --compact
 orchestrator models <runtime> --json --compact
-orchestrator launch <runtime> --name "<job>" --json --compact --brief "<task>"
-orchestrator launch -f agents.json --json --compact --brief
+orchestrator launch <runtime> --json --compact --brief "<task>"
 orchestrator ps --json --compact --active --brief
 orchestrator read <task-id>... --wait --json --compact
-orchestrator resume <task-id> --json --compact "<next task>"
 orchestrator interrupt <task-id> --json --compact --reason "<reason>"
 ```
 
-The CLI owns process supervision and task state under
-`~/.orchestrator/tasks`. The calling agent owns judgment, delegation, and
-synthesis.
+The CLI owns process supervision and task state. The calling agent owns
+judgment, delegation, and synthesis.
 
-Read the [Operator Guide](doc/operator-guide.md) for task storage, supervision,
-the JSON control contract, runtime behavior, sessions, configuration, and
-diagnostics.
-
-## Extend It
-
-Built-in runtimes cover Claude Code, Codex, Copilot, Grok, Pi, and shell.
-Register any other headless process as a
-[custom agent](doc/custom-agents.md). Use
-[`codex-app-server --session`](doc/codex-app-server.md) when Codex work needs
-repeated messages, steering, or native goals.
-
-Run `orchestrator help --json --compact` for the live agent-facing contract.
-Architecture decisions live in [`adr/`](adr/README.md).
-Official provider artwork and source notes live in
-[`assets/providers/`](assets/providers/README.md).
+Read the [Operator Guide](doc/operator-guide.md) for the full control contract,
+or see [custom agents](doc/custom-agents.md), [architecture decisions](adr/README.md),
+and [provider artwork](assets/providers/README.md).

@@ -19,13 +19,14 @@ test("Orchestrator skill ships optional preferences beside its instructions", as
   assert.match(preferences, /## User Preferences\s+No preferences set\./);
 });
 
-test("README presents the skill-first path and links the operator contract", async () => {
+test("README presents the model-first skill path and links the operator contract", async () => {
   const [readme, operatorGuide] = await Promise.all([
     readFile(new URL("../README.md", import.meta.url), "utf8"),
     readFile(new URL("../doc/operator-guide.md", import.meta.url), "utf8"),
   ]);
 
-  assert.match(readme, /portable skill backed by a local CLI/);
+  assert.match(readme, /dead-simple skill built on a powerful local CLI/);
+  assert.match(readme, /You speak in models and outcomes/);
   assert.match(readme, /\[Operator Guide\]\(doc\/operator-guide\.md\)/);
   assert.match(operatorGuide, /## Task Lifecycle/);
   assert.match(operatorGuide, /## JSON Control Contract/);
