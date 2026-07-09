@@ -24,7 +24,7 @@ Orchestrator is a dead-simple skill built on a powerful local CLI. Work with
 one agent; it orchestrates many models across providers and brings their
 results back into one place.
 
-You speak in models and outcomes, not provider CLI syntax:
+You speak in models and outcomes:
 
 > Use Fable for the UI, GPT-5.6 Sol for the implementation, and Grok 4.5 for
 > the small fixes. Run independent work in parallel, then have Opus review the
