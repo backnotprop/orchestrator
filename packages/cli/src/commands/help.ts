@@ -125,6 +125,7 @@ Usage:
   orchestrator goal get <task-id|prefix> [--timeout-ms <ms>] [--json [--compact]]
   orchestrator goal set <task-id|prefix> [--objective <text>] [--status paused|blocked|usage-limited|budget-limited|complete] [--token-budget <tokens|none>] [--timeout-ms <ms>] [--json [--compact]]
   orchestrator goal clear <task-id|prefix> [--timeout-ms <ms>] [--json [--compact]]
+  orchestrator models [runtime] [--timeout-ms <ms>] [--json [--compact]]
   orchestrator limits [--provider codex|copilot|claude] [--timeout-ms <ms>] [--json [--compact]]
   orchestrator list [--status <status>] [-A|--all-workspaces] [--json]
   orchestrator ps [--all] [-A|--all-workspaces] [--cwd <path>] [--watch] [--runtime <runtime>] [--status <status>] [--parent <run-id>] [--json [--compact [--active] [--brief]]]
@@ -147,7 +148,7 @@ Agent instructions:
   5. Use run --background when the parent agent should be a managed background task.
   6. Use run --trace-tools when you need to see parent tool calls live.
   7. Use run --stream-json when another program needs the full run event stream.
-  8. Use limits --json --compact to read provider limit snapshots for supported providers.
+  8. Use models <runtime> --json --compact before choosing an exact model id; use limits --json --compact to read provider limit snapshots.
   9. Treat launch as a background job by default. Capture taskId from stdout.
   10. ${shellRuntimeInstruction}
   11. ${modelRuntimeInstruction}
@@ -190,7 +191,7 @@ Agent instructions:
   48. Use interrupt to cancel running agents. Use interrupt <id> <id> --json --compact to stop a selected subset.
   49. Use --children for parent runs with children.
   50. Use interrupt --active only for deliberate workspace cleanup; use interrupt -A --active --yes only for deliberate all-workspace cleanup.
-  51. Model values are passed through to the provider CLI; aliases are not normalized yet.
+  51. Model values are passed through to the provider CLI. Prefer a live id, alias, router, or default returned by models; never guess the newest model from memory or sort version-like names.
 
 Common options:
   --workspace <path>          Workspace scope. Defaults to the nearest git repo, then current directory.
@@ -201,7 +202,7 @@ Common options:
 Launch options:
   -f, --file <path|->       Launch several tasks from a JSON manifest file or stdin.
   --name <name>               Short label shown in list output.
-  --model <model>             Runtime model hint, for example sonnet or gpt-5.4-mini.
+  --model <model>             Runtime model override. Discover exact ids with models <runtime>.
   --cwd <path>                Process directory. Defaults to the workspace; relative paths resolve inside the workspace.
   --output-mode <mode>        Adapter-selected output mode.
   --timeout-ms <ms>           Override runtime timeout.
@@ -273,6 +274,11 @@ Limits options:
   --timeout-ms <ms>                Per-provider read timeout.
   --compact                        With --json, print a small provider-limit report.
 
+Models options:
+  <runtime>                        Optional configured runtime id. Omit to inspect every model-capable runtime.
+  --timeout-ms <ms>               Per-runtime discovery timeout.
+  --compact                       With --json, print launchable ids, kinds, defaults, and discovery status.
+
 Runtime ids:
 ${renderedRuntimeLines}
 
@@ -311,6 +317,7 @@ function buildCliHelpDocument(
       "Use run --trace-tools when you need to see parent tool calls live.",
       "Use run --stream-json when a plugin, script, TUI, or other program needs the full live run stream.",
       "Use launch to start a registered runtime.",
+      "Use models <runtime> --json --compact before selecting an exact model id. If no override is required, omit --model and let the runtime use its default.",
       "Use limits --json --compact to read provider limit snapshots for supported providers.",
       shellRuntimeInstruction,
       modelRuntimeInstruction,
@@ -355,7 +362,7 @@ function buildCliHelpDocument(
       "Use logs --json --compact for a one-line raw stdout/stderr snapshot and events --json --compact for a one-line task timeline.",
       "Use logs --follow --stream all when live stdout/stderr order matters.",
       "Use watch to follow one task live. Use watch --agent-only --json for normalized agent event JSONL.",
-      "Pass model names exactly as the underlying provider CLI expects; this CLI does not normalize model aliases yet.",
+      "Pass model values exactly as the provider CLI expects. Prefer values returned by models; never guess the newest model from memory or sort version-like names.",
       "Use interrupt to cancel a running task by process group.",
       "Use interrupt --active --json --compact only for deliberate workspace cleanup when every active task in the selected workspace should stop; it is safe when none are active.",
       "Use interrupt -A --active --yes --json --compact only for deliberate all-workspace cleanup.",
@@ -492,6 +499,20 @@ function buildCliHelpDocument(
           "--objective <text>",
           "--status paused|blocked|usage-limited|budget-limited|complete",
           "--compact",
+        ],
+      },
+      {
+        name: "models",
+        usage: "orchestrator models [runtime] [--timeout-ms <ms>] [--json [--compact]]",
+        semantics:
+          "Discovers current launchable model ids, stable aliases, routers, and defaults from configured provider runtimes.",
+        options: [
+          "--workspace <path>",
+          "--orchestrator-dir <path>",
+          "--config <path>",
+          "--json",
+          "--compact",
+          "--timeout-ms <ms>",
         ],
       },
       {
@@ -650,6 +671,7 @@ function buildCliHelpDocument(
           "Run help --json when software needs full command options, workflows, and examples.",
           "Use fullHelp.args from compact help to fetch the full contract.",
           "Use runtimeIds from compact help to choose a configured runtime quickly.",
+          "Run models <runtime> --json --compact before choosing an exact model id.",
           "Run limits --json --compact when software needs provider limit snapshots.",
         ],
       },
@@ -689,7 +711,8 @@ function buildCliHelpDocument(
       {
         name: "start-and-watch",
         steps: [
-          'Run launch with a short name, runtime, model, and task: orchestrator launch codex --name "inspect store" --model gpt-5.4-mini --json --compact "task".',
+          'Run launch with a short name, runtime, and task: orchestrator launch codex --name "inspect store" --json --compact "task".',
+          "Run models <runtime> --json --compact first when the task requires an exact model override.",
           "Add --brief to compact launch when one task only needs id/status/stop.",
           "Use launch -f <manifest.json|-> --json --compact --brief when several tasks should start from one manifest.",
           "Use resume <task-id|prefix> --json --compact only when you need true provider resume from a finished task whose runtime reports resumeSupported and has stored provider metadata.",
@@ -848,6 +871,8 @@ function compactCliHelpDocument(
 ): CliCompactHelpDocument {
   const preferredExamples = new Set([
     "orchestrator doctor",
+    "orchestrator models --json --compact",
+    "orchestrator models codex --json --compact",
     "orchestrator limits --json --compact",
     "orchestrator ps --json --compact --active --brief",
     "orchestrator ps -A --json --compact --active --brief",
@@ -871,6 +896,7 @@ function compactCliHelpDocument(
     fullHelp: { args: ["help", "--json", ...helpArgsSuffix(options)] },
     agentQuickStart: [
       "Run doctor --json --compact when runtime availability is uncertain.",
+      "Run models <runtime> --json --compact before selecting an exact model id; omit --model to use the runtime default.",
       "Run limits --json --compact to read provider limit snapshots for supported providers.",
       "If compact doctor returns parent.canRun: true, append the request to parent.run.argsPrefix or parent.run.backgroundArgsPrefix.",
       compactRuntimeInstruction,
@@ -940,6 +966,9 @@ function buildCliExamples(registry: RuntimeRegistry): string[] {
 
   examples.push("orchestrator doctor");
   examples.push("orchestrator doctor --json --compact");
+  examples.push("orchestrator models");
+  examples.push("orchestrator models --json --compact");
+  examples.push("orchestrator models codex --json --compact");
   examples.push("orchestrator limits");
   examples.push("orchestrator limits --json --compact");
   examples.push("orchestrator limits --provider codex --json --compact");
@@ -957,7 +986,7 @@ function buildCliExamples(registry: RuntimeRegistry): string[] {
   }
   if (registry.codex?.enabled) {
     examples.push(
-      'orchestrator launch codex --name "write tests" --model gpt-5.4-mini --json --compact "write tests for the task store"',
+      'orchestrator launch codex --name "write tests" --json --compact "write tests for the task store"',
     );
     examples.push(
       'orchestrator resume <task-id|prefix> --json --compact "continue from the prior result"',

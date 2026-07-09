@@ -12,7 +12,10 @@ test("Orchestrator skill ships optional preferences beside its instructions", as
 
   assert.match(skill, /Read `PREFERENCES\.md` beside this file/);
   assert.match(skill, /explicit instructions in the current request/);
+  assert.match(skill, /orchestrator models <runtime> --json --compact/);
+  assert.match(skill, /Do not sort version-like names or guess from memory/);
   assert.match(skill, /orchestrator limits --json --compact/);
+  assert.match(preferences, /resolves them against live\s+runtime catalogs and aliases/);
   assert.match(preferences, /## User Preferences\s+No preferences set\./);
 });
 
@@ -26,5 +29,6 @@ test("README presents the skill-first path and links the operator contract", asy
   assert.match(readme, /\[Operator Guide\]\(doc\/operator-guide\.md\)/);
   assert.match(operatorGuide, /## Task Lifecycle/);
   assert.match(operatorGuide, /## JSON Control Contract/);
+  assert.match(operatorGuide, /## Model Discovery/);
   assert.match(operatorGuide, /## Diagnostics/);
 });

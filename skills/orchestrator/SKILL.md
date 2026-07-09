@@ -20,6 +20,8 @@ underneath it.
 4. Run `orchestrator help --json --compact` for the current command contract.
 5. Run `orchestrator doctor --json --compact` when runtime availability is
    uncertain. Choose only from `runtimeSummary.availableIds`.
+6. Run `orchestrator models <runtime> --json --compact` before choosing an
+   exact model value.
 
 Do not assume a runtime or model exists because it appears in an example.
 
@@ -49,12 +51,37 @@ fallbacks only when the preferred choice is unavailable, exhausted, or fails
 clearly. If the policy says to pause when all choices are exhausted, launch
 nothing and notify the user.
 
+## Choose Models
+
+Omit `--model` when the user has no model requirement. The installed runtime
+then chooses its current default.
+
+Before passing an exact model value, run:
+
+```sh
+orchestrator models <runtime> --json --compact
+```
+
+- Match user requests and preference labels against `models[].id` or
+  `models[].displayName`; pass the matched `id` to `--model`.
+- Resolve "latest" or "best" through a returned `defaultModel`, `alias`, or
+  `router`. Do not sort version-like names or guess from memory.
+- Treat `partial` as useful but incomplete discovery. Claude Code, for example,
+  exposes current family aliases instead of an exact catalog.
+- If discovery is unavailable, omit `--model` unless the request requires an
+  exact choice.
+- Do not silently replace an unavailable exact model unless the current request
+  or preferences define a fallback.
+- Run the returned `fullModels.args` when descriptions or capabilities matter.
+
+Model values remain provider-native and are passed through unchanged.
+
 ## Delegate One Job
 
 Use a named task and keep its returned id:
 
 ```sh
-orchestrator launch codex --name "inspect store" --model gpt-5.4-mini --json --compact --brief "Inspect the task store."
+orchestrator launch codex --name "inspect store" --json --compact --brief "Inspect the task store."
 orchestrator read <task-id|prefix> --wait --json --compact
 ```
 
@@ -72,7 +99,6 @@ should start together:
   "tasks": [
     {
       "runtime": "claude-code",
-      "model": "sonnet",
       "name": "review tests",
       "task": "Find the highest-risk missing tests."
     },
@@ -139,7 +165,7 @@ Use `codex` for one-shot Codex work. Prefer
 goals, steering, or a persistent provider thread:
 
 ```sh
-orchestrator launch codex-app-server --session --name "deep worker" --model gpt-5.4-mini --json --compact --brief
+orchestrator launch codex-app-server --session --name "deep worker" --json --compact --brief
 orchestrator send <task-id> --wait --json --compact "Inspect the current bottlenecks."
 orchestrator goal start <task-id> --wait --json --compact "Improve the system."
 ```

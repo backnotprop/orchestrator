@@ -5,7 +5,7 @@ Now the parent agent can actually wait for a child result before answering.
 Example request:
 
 ```sh
-orchestrator run 'Launch a Claude Code child to review the API package, launch a Codex child using model gpt-5.4-mini to inspect the task store, wait for both, then summarize what they found.'
+orchestrator run 'Launch a Claude Code child to review the API package, launch a Codex child to inspect the task store, wait for both, then summarize what they found.'
 ```
 
 ## What Happens
@@ -181,13 +181,13 @@ So the parent can say "it’s still running," inspect logs/events, wait again, o
 `orchestrator run` stays foreground by default:
 
 ```sh
-orchestrator run "Launch a Claude Code child to review the API package, launch a Codex child using model gpt-5.4-mini to inspect the task store, wait for both, then summarize what they found."
+orchestrator run "Launch a Claude Code child to review the API package, launch a Codex child to inspect the task store, wait for both, then summarize what they found."
 ```
 
 Use `--background` when the parent agent itself should be a managed task:
 
 ```sh
-orchestrator run --background --name "api and store review" "Launch a Claude Code child to review the API package, launch a Codex child using model gpt-5.4-mini to inspect the task store, wait for both, then summarize what they found."
+orchestrator run --background --name "api and store review" "Launch a Claude Code child to review the API package, launch a Codex child to inspect the task store, wait for both, then summarize what they found."
 ```
 
 That returns a task id immediately. The parent task uses runtime id `orchestrator`

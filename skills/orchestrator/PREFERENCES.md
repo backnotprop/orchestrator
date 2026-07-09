@@ -6,6 +6,9 @@ instructions for choosing agents, models, fallbacks, and limit behavior.
 The current user request always wins. The skill still checks live runtime
 availability and provider limits before applying a preference.
 
+Preferences may use human model names. The skill resolves them against live
+runtime catalogs and aliases instead of relying on remembered model slugs.
+
 <!--
 Example:
 

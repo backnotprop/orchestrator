@@ -37,7 +37,7 @@ The live view shows one row per agent task:
 ```text
 agent        work           status   model          started  dur   tok   last
 claude-code  review tests   running  sonnet         22:50:42 2m    77k   agent.reasoning
-codex        inspect store  running  gpt-5.4-mini   22:51:12 1m    18k   agent.message
+codex        inspect store  running  provider-model 22:51:12 1m    18k   agent.message
 custom       check email    running  glm-5.2        22:51:42 30s   -     stdout
 ```
 

@@ -54,9 +54,9 @@ Talk to your current agent:
 > review the API. Run them in parallel, wait for both, then synthesize the
 > result.
 
-Or be specific:
+Or be specific without looking up provider slugs yourself:
 
-> Launch Grok with model `grok-code-fast-1` to fix the small test failure.
+> Launch Grok with its current default model to fix the small test failure.
 
 > Launch Claude Code with Opus for the UI implementation. Have Codex review the
 > result afterward.
@@ -104,8 +104,9 @@ The skill ships with
 > use Opus. When every allowed provider is out of usage, pause new work until
 > limits reset and notify me.
 
-Runtime and model names are passed through to installed CLIs. Use names those
-CLIs accept.
+Preferences can use human model names. The skill asks installed runtimes for
+current ids, aliases, routers, and defaults before it passes a model value
+through to the provider CLI.
 
 Preferences are plain language. They can define:
 
@@ -122,6 +123,7 @@ data stays unknown; it is not treated as exhausted.
 
 - Launch Claude Code, Codex, Copilot CLI, Grok Build, Pi, shell commands, or
   custom runtimes.
+- Discover current provider models instead of relying on remembered slugs.
 - Select a model for each worker.
 - Start independent jobs in parallel.
 - Watch normalized progress or raw logs.
@@ -138,7 +140,8 @@ Agents use a small command loop:
 
 ```sh
 orchestrator doctor --json --compact
-orchestrator launch <runtime> --name "<job>" --model <model> --json --compact --brief "<task>"
+orchestrator models <runtime> --json --compact
+orchestrator launch <runtime> --name "<job>" --json --compact --brief "<task>"
 orchestrator launch -f agents.json --json --compact --brief
 orchestrator ps --json --compact --active --brief
 orchestrator read <task-id>... --wait --json --compact

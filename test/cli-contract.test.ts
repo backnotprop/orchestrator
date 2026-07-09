@@ -127,6 +127,8 @@ test("CLI help teaches agents the job-control contract", async () => {
     );
     assert.match(result.stdout.toString(), /doctor --json --compact/);
     assert.match(result.stdout.toString(), /orchestrator ps/);
+    assert.match(result.stdout.toString(), /orchestrator models \[runtime\]/);
+    assert.match(result.stdout.toString(), /models <runtime> --json --compact/);
     assert.match(
       result.stdout.toString(),
       /orchestrator limits \[--provider codex\|copilot\|claude\]/,
@@ -192,7 +194,7 @@ test("CLI help teaches agents the job-control contract", async () => {
     );
     assert.match(
       result.stdout.toString(),
-      /orchestrator launch codex --name "write tests" --model gpt-5\.4-mini/,
+      /orchestrator launch codex --name "write tests" --json --compact/,
     );
     assert.match(result.stdout.toString(), /orchestrator launch grok --name "grok review"/);
     assert.match(
@@ -504,6 +506,14 @@ test("CLI JSON help exposes a machine-readable agent contract", async () => {
     assert.ok(
       help.commands.some(
         (command) =>
+          command.name === "models" &&
+          command.usage.includes("[runtime]") &&
+          command.options.includes("--compact"),
+      ),
+    );
+    assert.ok(
+      help.commands.some(
+        (command) =>
           command.name === "limits" &&
           command.usage.includes("--provider codex|copilot|claude") &&
           command.options.includes("--timeout-ms <ms>"),
@@ -681,6 +691,7 @@ test("CLI compact JSON help exposes a small agent command contract", async () =>
     assert.ok(help.runtimeIds.includes("grok"));
     assert.ok(help.runtimeIds.includes("scratch-agent"));
     assert.ok(help.commands.some((command) => command.name === "launch"));
+    assert.ok(help.commands.some((command) => command.name === "models"));
     assert.ok(help.commands.some((command) => command.name === "limits"));
     assert.ok(help.commands.some((command) => command.name === "help"));
     assert.ok(
@@ -693,6 +704,7 @@ test("CLI compact JSON help exposes a small agent command contract", async () =>
     );
     assert.ok(help.commands.every((command) => command.options === undefined));
     assert.ok(help.agentQuickStart.some((step) => step.includes("launch -f <manifest.json|->")));
+    assert.ok(help.agentQuickStart.some((step) => step.includes("models <runtime>")));
     assert.ok(help.agentQuickStart.some((step) => step.includes("limits --json --compact")));
     assert.ok(
       help.agentQuickStart.some(

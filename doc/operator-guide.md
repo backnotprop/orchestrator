@@ -13,6 +13,7 @@ and which operational boundaries matter.
 - [Views, output, and JSON control](#views-and-observation)
 - [Interrupt and parent orchestration](#interrupt-and-cleanup)
 - [Runtimes, resume, and sessions](#runtimes)
+- [Model discovery](#model-discovery)
 - [Limits and configuration](#limits-and-preferences)
 - [App integration and diagnostics](#app-integration)
 
@@ -59,12 +60,14 @@ Before operating an unfamiliar machine or workspace:
 ```sh
 orchestrator help --json --compact
 orchestrator doctor --json --compact
+orchestrator models --json --compact
 orchestrator limits --json --compact
 ```
 
 - `help --json --compact` is the current machine-facing command contract.
 - `doctor` checks runtime executables and parent-agent configuration.
 - `runtimeSummary.availableIds` lists launchable runtime ids.
+- `models` reads current provider catalogs, aliases, routers, and defaults.
 - `limits` reads supported provider limit snapshots. It does not route or
   block work.
 
@@ -97,7 +100,6 @@ A normal launch returns immediately with a task id:
 ```sh
 orchestrator launch codex \
   --name "inspect store" \
-  --model gpt-5.4-mini \
   --json --compact --brief \
   "Inspect the task store."
 ```
@@ -156,7 +158,6 @@ The files are useful for diagnostics and app integration.
 ```sh
 orchestrator launch claude-code \
   --name "review tests" \
-  --model sonnet \
   "Review this repo and find the highest-risk missing tests."
 ```
 
@@ -180,8 +181,7 @@ Use a manifest to preflight and launch several independent jobs in one call:
 {
   "schemaVersion": 1,
   "defaults": {
-    "runtime": "codex",
-    "model": "gpt-5.4-mini"
+    "runtime": "codex"
   },
   "tasks": [
     {
@@ -190,7 +190,6 @@ Use a manifest to preflight and launch several independent jobs in one call:
     },
     {
       "runtime": "claude-code",
-      "model": "sonnet",
       "name": "review tests",
       "task": "Find missing tests."
     },
@@ -374,6 +373,42 @@ Built-ins can be disabled. Custom process runtimes can be added without core
 code changes. See [Custom Agents](custom-agents.md) and
 [Disable Agents](disable-agents.md).
 
+## Model Discovery
+
+Do not keep a model registry in docs or infer "latest" by sorting model names.
+Ask the configured runtime:
+
+```sh
+orchestrator models <runtime> --json --compact
+orchestrator models --json
+```
+
+The compact response contains launchable `models[].id` values, nonredundant
+display names, each value's kind, the runtime default when known, discovery
+status, source, and CLI version. Use `fullModels.args` when descriptions, input
+modalities, or reasoning options are needed.
+
+| Runtime            | Discovery source                 |
+| ------------------ | -------------------------------- |
+| `codex`            | App-server `model/list` protocol |
+| `codex-app-server` | App-server `model/list` protocol |
+| `claude-code`      | Latest-family aliases from help  |
+| `copilot`          | Current CLI catalog plus `auto`  |
+| `grok`             | Authenticated `grok models`      |
+| `pi`               | Authenticated `pi --list-models` |
+
+Claude Code reports `partial` because it exposes stable current-family aliases
+instead of an exact catalog. Unsupported custom runtimes report `unsupported`
+without blocking peer discovery.
+
+Selection rules are intentionally small:
+
+- omit `--model` when no override is required;
+- validate an exact requested id against live output;
+- use a returned default, alias, or router for "latest" or "best";
+- never silently substitute an exact requested id unless preferences allow a
+  fallback.
+
 ## Resume
 
 `resume` creates a new Orchestrator task linked to a completed source task
@@ -401,7 +436,6 @@ needs repeated messages, steering, provider-thread continuity, or native goals:
 ```sh
 orchestrator launch codex-app-server --session \
   --name "performance worker" \
-  --model gpt-5.4-mini \
   --json --compact --brief
 
 orchestrator send <id> --wait --json --compact "Inspect the bottlenecks."
@@ -478,8 +512,8 @@ npm install @backnotprop/orchestrator-core
 npm install @backnotprop/orchestrator-agent
 ```
 
-- `@backnotprop/orchestrator-core` provides runtime config, launch plans, task
-  storage, supervision, observation, and control.
+- `@backnotprop/orchestrator-core` provides runtime config, model discovery,
+  launch plans, task storage, supervision, observation, and control.
 - `@backnotprop/orchestrator-agent` provides the Pi-backed parent agent and
   Orchestrator tools.
 - `@backnotprop/orchestrator-cli` provides the command-line surface.

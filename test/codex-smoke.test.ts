@@ -15,7 +15,7 @@ test(
     await assertCodexAvailable();
 
     await withTempWorkspace(async (workspaceRoot) => {
-      const model = process.env.CODEX_SMOKE_MODEL ?? "gpt-5.4-mini";
+      const model = process.env.CODEX_SMOKE_MODEL;
       const prompt = "Reply with exactly this text and no markdown: orchestrator-codex-smoke-ok";
       const args = [
         "launch",
@@ -27,7 +27,9 @@ test(
         "--json",
       ];
 
-      args.push("--model", model);
+      if (model) {
+        args.push("--model", model);
+      }
       args.push(prompt);
 
       const launch = await runCli(workspaceRoot, args, 130_000);
@@ -38,8 +40,7 @@ test(
       assert.deepEqual(launched.launchPlan.args, [
         "exec",
         "--skip-git-repo-check",
-        "--model",
-        model,
+        ...(model ? ["--model", model] : []),
         "--json",
         prompt,
       ]);
