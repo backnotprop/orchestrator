@@ -11,7 +11,7 @@
         "source": "github",
         "repo": "backnotprop/orchestrator"
       },
-      "description": "Teach agents how to use the Orchestrator CLI for background agent tasks.",
+      "description": "Let agents orchestrate other agents through a portable skill and local CLI.",
       "homepage": "https://github.com/backnotprop/orchestrator",
       "repository": "https://github.com/backnotprop/orchestrator",
       "license": "MIT",

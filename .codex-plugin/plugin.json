@@ -1,7 +1,7 @@
 {
   "name": "orchestrator",
   "version": "0.1.0",
-  "description": "Teach agents how to use the Orchestrator CLI for background agent tasks.",
+  "description": "Let agents orchestrate other agents through a portable skill and local CLI.",
   "author": {
     "name": "backnotprop",
     "url": "https://github.com/backnotprop"
@@ -13,11 +13,11 @@
   "skills": "./skills/",
   "interface": {
     "displayName": "Orchestrator",
-    "shortDescription": "Use the Orchestrator CLI to manage background agents.",
-    "longDescription": "Adds a compact skill that teaches agents how to install and use Orchestrator as a CLI for launching, watching, reading, logging, and interrupting background agent tasks.",
+    "shortDescription": "Let agents orchestrate other agents.",
+    "longDescription": "Adds a portable skill for coordinating Claude Code, Codex, Copilot, Grok, Pi, shell, and custom agents through the Orchestrator CLI.",
     "developerName": "backnotprop",
     "category": "Productivity",
     "capabilities": ["Write"],
-    "defaultPrompt": ["Use Orchestrator to launch and manage background agent work."]
+    "defaultPrompt": ["Use Orchestrator to delegate this work to the right agents."]
   }
 }
