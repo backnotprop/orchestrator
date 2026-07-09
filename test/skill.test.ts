@@ -27,6 +27,18 @@ test("README presents the model-first skill path and links the operator contract
 
   assert.match(readme, /dead-simple skill built on a powerful local CLI/);
   assert.match(readme, /You speak in models and outcomes/);
+  assert.deepEqual(
+    [
+      ...readme.matchAll(
+        /alt="(?:Codex|Claude Code|GitHub Copilot CLI|Grok|Pi)"[^>]*height="(\d+)"/g,
+      ),
+    ].map(([, height]) => height),
+    ["32", "32", "32", "32", "32"],
+  );
+  assert.match(
+    readme,
+    /npx skills add backnotprop\/orchestrator\s+```\s+```sh\s+npm install -g @backnotprop\/orchestrator-cli/,
+  );
   assert.match(readme, /\[Operator Guide\]\(doc\/operator-guide\.md\)/);
   assert.match(operatorGuide, /## Task Lifecycle/);
   assert.match(operatorGuide, /## JSON Control Contract/);
