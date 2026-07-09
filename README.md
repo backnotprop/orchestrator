@@ -20,7 +20,7 @@
 
 <sub>Codex &middot; Claude Code &middot; Copilot CLI &middot; Grok Build &middot; Pi</sub>
 
-Orchestrator is a dead-simple skill built on a powerful local CLI. Work with
+Orchestrator is a simple skill built on a powerful local CLI. Work with
 one agent; it orchestrates many models across providers and brings their
 results back into one place.
 
@@ -47,6 +47,10 @@ npm install -g @backnotprop/orchestrator-cli
 ```
 
 The CLI install is optional up front. The skill can install it on first use.
+
+```sh
+/orchestrator launch a gpt5.6 sol agent to do the backend, a fable agent to design the frontend wireframes, and then a grok4.5 agent to build the frontend after
+```
 
 ## Preferences
 
@@ -86,8 +90,7 @@ The CLI owns process supervision and task state. The calling agent owns
 judgment, delegation, and synthesis.
 
 Read the [Operator Guide](doc/operator-guide.md) for the full control contract,
-or see [custom agents](doc/custom-agents.md), [architecture decisions](adr/README.md),
-and [provider artwork](assets/providers/README.md).
+or see [custom agents](doc/custom-agents.md), [architecture decisions](adr/README.md)
 
 ## License
 
