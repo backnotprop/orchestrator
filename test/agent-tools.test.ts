@@ -1271,7 +1271,7 @@ test("parent AI session starts with only Orchestrator tools enabled", async () =
       assert.match(buildOrchestratorParentPrompt("Clean up this repo."), /runtime: "shell"/);
       assert.match(
         buildOrchestratorParentPrompt("Clean up this repo."),
-        /Do not launch Codex or Claude just to run a deterministic shell command\./,
+        /Do not launch an AI runtime just to run a deterministic shell command\./,
       );
     } finally {
       created.session.dispose();
@@ -1298,14 +1298,14 @@ test("launch_agent metadata teaches shell versus model runtime choice", async ()
         (guideline) =>
           guideline.includes('runtime: "codex"') &&
           guideline.includes('runtime: "claude-code"') &&
+          guideline.includes('runtime: "copilot"') &&
+          guideline.includes('runtime: "grok"') &&
           guideline.includes("AI work"),
       ),
     );
     assert.ok(
       promptGuidelines.some((guideline) =>
-        guideline.includes(
-          "Do not launch Codex or Claude just to run a deterministic shell command",
-        ),
+        guideline.includes("Do not launch an AI runtime just to run a deterministic shell command"),
       ),
     );
   });

@@ -58,7 +58,7 @@ function orchestratorPlan(command: string, cwd: string): AgentLaunchPlan {
 }
 
 function jsonlFixturePlan(input: {
-  runtime: "claude-code" | "codex" | "copilot";
+  runtime: "claude-code" | "codex" | "copilot" | "grok";
   fixturePath: string;
   cwd: string;
 }): AgentLaunchPlan {
@@ -71,7 +71,7 @@ function jsonlFixturePlan(input: {
 }
 
 function jsonlCommandPlan(input: {
-  runtime: "claude-code" | "codex" | "copilot";
+  runtime: "claude-code" | "codex" | "copilot" | "grok";
   command: string;
   cwd: string;
 }): AgentLaunchPlan {
@@ -86,9 +86,11 @@ function jsonlCommandPlan(input: {
     outputTransport: {
       kind: "jsonl_events",
       finalEvent:
-        input.runtime === "claude-code" || input.runtime === "copilot"
-          ? "result"
-          : "turn.completed",
+        input.runtime === "grok"
+          ? "end"
+          : input.runtime === "claude-code" || input.runtime === "copilot"
+            ? "result"
+            : "turn.completed",
     },
     expectedProcesses: ["sh"],
     interrupt: "process_group",
@@ -1319,6 +1321,80 @@ test("launchTask normalizes Copilot CLI JSONL fixtures and extracts final result
   });
 });
 
+test("launchTask normalizes Grok streaming JSON chunks and extracts final result", async () => {
+  await withTempWorkspace(async (workspaceRoot) => {
+    const handle = await launchTask({
+      workspaceRoot,
+      plan: jsonlFixturePlan({
+        runtime: "grok",
+        fixturePath: join(fixturesDir, "grok-streaming-json.jsonl"),
+        cwd: workspaceRoot,
+      }),
+    });
+
+    const completed = await handle.completed;
+    assert.equal(completed.status, "succeeded");
+    assert.equal(await readTaskOutput({ workspaceRoot, taskId: completed.taskId }), "GROK_OK");
+
+    const events = await readTaskEvents(completed.paths.eventsJsonl);
+    const agentEvents = events.filter((event) => event.type === "agent_event");
+    assert.ok(agentEvents.some((event) => event.data.kind === "agent.reasoning_delta"));
+    assert.ok(agentEvents.some((event) => event.data.kind === "agent.message_delta"));
+    assert.ok(agentEvents.some((event) => event.data.kind === "agent.result"));
+
+    const result = agentEvents.find((event) => event.data.kind === "agent.result");
+    assert.ok(result);
+    assert.equal(result.data.terminalReason, "EndTurn");
+    assert.equal(result.data.requestId, "fixture-grok-request");
+
+    const task = await readTaskRecord({ workspaceRoot }, completed.taskId);
+    assert.deepEqual(task.provider, {
+      provider: "grok",
+      sessionId: "fixture-grok-session",
+    });
+  });
+});
+
+test("launchTask fails Grok streaming JSON when end is missing", async () => {
+  await withTempWorkspace(async (workspaceRoot) => {
+    const lines = [
+      JSON.stringify({ type: "thought", data: "thinking" }),
+      JSON.stringify({ type: "text", data: "partial answer" }),
+    ];
+    const handle = await launchTask({
+      workspaceRoot,
+      plan: jsonlCommandPlan({
+        runtime: "grok",
+        command: `printf '%s\\n' ${lines.map(quoteShellArg).join(" ")}`,
+        cwd: workspaceRoot,
+      }),
+    });
+
+    const completed = await handle.completed;
+    assert.equal(completed.status, "failed");
+    assert.match(completed.error ?? "", /did not emit final event "end"/);
+    assert.equal(await readTaskOutput({ workspaceRoot, taskId: completed.taskId }), "");
+  });
+});
+
+test("launchTask fails Grok streaming JSON error events", async () => {
+  await withTempWorkspace(async (workspaceRoot) => {
+    const line = JSON.stringify({ type: "error", message: "Grok failed." });
+    const handle = await launchTask({
+      workspaceRoot,
+      plan: jsonlCommandPlan({
+        runtime: "grok",
+        command: `printf '%s\\n' ${quoteShellArg(line)}`,
+        cwd: workspaceRoot,
+      }),
+    });
+
+    const completed = await handle.completed;
+    assert.equal(completed.status, "failed");
+    assert.equal(completed.error, "Grok failed.");
+  });
+});
+
 test("launchTask fails Copilot JSONL when final result exitCode is nonzero", async () => {
   await withTempWorkspace(async (workspaceRoot) => {
     const lines = [
@@ -1440,6 +1516,40 @@ test("launchTask fails resumed process tasks when provider emits a different ses
           String(event.data.message).includes("requested-thread"),
       ),
     );
+  });
+});
+
+test("launchTask fails resumed Grok tasks when provider emits a different session id", async () => {
+  await withTempWorkspace(async (workspaceRoot) => {
+    const plan = jsonlFixturePlan({
+      runtime: "grok",
+      fixturePath: join(fixturesDir, "grok-streaming-json.jsonl"),
+      cwd: workspaceRoot,
+    });
+    const handle = await launchTask({
+      workspaceRoot,
+      plan: {
+        ...plan,
+        resume: {
+          provider: "grok",
+          sessionId: "requested-grok-session",
+        },
+      },
+      provider: {
+        provider: "grok",
+        sessionId: "requested-grok-session",
+      },
+      resume: {
+        fromTaskId: "source-task",
+        rootTaskId: "source-task",
+        attempt: 1,
+      },
+    });
+
+    const completed = await handle.completed;
+    assert.equal(completed.status, "failed");
+    assert.match(completed.error ?? "", /requested-grok-session/);
+    assert.match(completed.error ?? "", /fixture-grok-session/);
   });
 });
 

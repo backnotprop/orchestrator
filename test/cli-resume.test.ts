@@ -266,6 +266,134 @@ test("CLI resume creates a new Copilot task from the stored session id", async (
   }, "orchestrator-cli-resume-copilot-");
 });
 
+test("CLI resume creates a new Grok task from the stored session id", async () => {
+  await withTempWorkspace(async (workspaceRoot) => {
+    const env = await installFakeRuntime(workspaceRoot, "grok", fakeGrokScript());
+    const sourceLaunch = await runCli(
+      workspaceRoot,
+      ["launch", "grok", "--workspace", workspaceRoot, "--wait", "--json", "first grok"],
+      10_000,
+      env,
+    );
+    const source = JSON.parse(sourceLaunch.stdout) as AgentTaskRecord;
+    assert.equal(source.status, "succeeded");
+    assert.deepEqual(source.provider, {
+      provider: "grok",
+      sessionId: "session-cli-grok",
+    });
+
+    const resumedLaunch = await runCli(
+      workspaceRoot,
+      [
+        "resume",
+        source.taskId.slice(0, 8),
+        "--workspace",
+        workspaceRoot,
+        "--wait",
+        "--json",
+        "--model",
+        "grok-code-fast-1",
+        "second grok",
+      ],
+      10_000,
+      env,
+    );
+    const resumed = JSON.parse(resumedLaunch.stdout) as AgentTaskRecord;
+    const stored = await readTaskRecord({ workspaceRoot }, resumed.taskId);
+
+    assert.equal(resumed.status, "succeeded");
+    assert.equal(resumed.runtime, "grok");
+    assert.deepEqual(stored.provider, {
+      provider: "grok",
+      sessionId: "session-cli-grok",
+    });
+    assert.deepEqual(stored.resume, {
+      fromTaskId: source.taskId,
+      rootTaskId: source.taskId,
+      attempt: 1,
+    });
+    assert.deepEqual(stored.launchPlan.args, [
+      "--no-auto-update",
+      "--resume",
+      "session-cli-grok",
+      "-m",
+      "grok-code-fast-1",
+      "--output-format",
+      "streaming-json",
+      "-p",
+      "second grok",
+    ]);
+
+    const read = await runCli(workspaceRoot, [
+      "read",
+      resumed.taskId,
+      "--workspace",
+      workspaceRoot,
+    ]);
+    assert.equal(read.stdout.trim(), "grok resumed second grok");
+  }, "orchestrator-cli-resume-grok-");
+});
+
+test("CLI resume rejects an active Grok task on the same provider session", async () => {
+  await withTempWorkspace(async (workspaceRoot) => {
+    const env = await installFakeRuntime(workspaceRoot, "grok", fakeGrokScript());
+    const sourceLaunch = await runCli(
+      workspaceRoot,
+      ["launch", "grok", "--workspace", workspaceRoot, "--wait", "--json", "first grok"],
+      10_000,
+      env,
+    );
+    const source = JSON.parse(sourceLaunch.stdout) as AgentTaskRecord;
+    const activeLaunch = await runCli(
+      workspaceRoot,
+      ["resume", source.taskId.slice(0, 8), "--workspace", workspaceRoot, "--json", "hold grok"],
+      10_000,
+      env,
+    );
+    const active = JSON.parse(activeLaunch.stdout) as AgentTaskRecord;
+
+    try {
+      const storedActive = await readTaskRecord({ workspaceRoot }, active.taskId);
+      assert.deepEqual(storedActive.provider, {
+        provider: "grok",
+        sessionId: "session-cli-grok",
+      });
+
+      await assert.rejects(
+        runCli(
+          workspaceRoot,
+          [
+            "resume",
+            source.taskId.slice(0, 8),
+            "--workspace",
+            workspaceRoot,
+            "--json",
+            "second grok",
+          ],
+          10_000,
+          env,
+        ),
+        (error: unknown) => {
+          const stderr = error instanceof Error && "stderr" in error ? String(error.stderr) : "";
+          const parsed = JSON.parse(stderr) as {
+            error: { reason?: string; input?: string; hint?: string };
+          };
+          assert.equal(parsed.error.reason, "resume_session_active");
+          assert.equal(parsed.error.input, active.taskId);
+          return true;
+        },
+      );
+    } finally {
+      await runCli(
+        workspaceRoot,
+        ["interrupt", active.taskId, "--workspace", workspaceRoot, "--reason", "test cleanup"],
+        10_000,
+        env,
+      ).catch(() => {});
+    }
+  }, "orchestrator-cli-resume-grok-conflict-");
+});
+
 test("CLI resume rejects tasks without real provider resume support", async () => {
   await withTempWorkspace(async (workspaceRoot) => {
     const sourceLaunch = await runCli(workspaceRoot, [
@@ -304,7 +432,7 @@ test("CLI resume rejects tasks without real provider resume support", async () =
 
 async function installFakeRuntime(
   workspaceRoot: string,
-  name: "codex" | "claude" | "copilot",
+  name: "codex" | "claude" | "copilot" | "grok",
   script: string,
 ): Promise<Record<string, string>> {
   const binDir = `${workspaceRoot}/bin`;
@@ -378,5 +506,25 @@ console.log(JSON.stringify({ type: "assistant.turn_start", data: { model: "fake-
 console.log(JSON.stringify({ type: "assistant.message", data: { content: text, model: "fake-copilot", outputTokens: 4 } }));
 console.log(JSON.stringify({ type: "assistant.turn_end", data: { model: "fake-copilot" } }));
 console.log(JSON.stringify({ type: "result", sessionId, exitCode: 0, usage: { premiumRequests: 1, totalApiDurationMs: 10, sessionDurationMs: 20 } }));
+`;
+}
+
+function fakeGrokScript(): string {
+  return `#!/usr/bin/env node
+const args = process.argv.slice(2);
+const resumeIndex = args.indexOf("--resume");
+const promptIndex = args.indexOf("-p");
+const isResume = resumeIndex !== -1;
+const sessionId = isResume ? args[resumeIndex + 1] : "session-cli-grok";
+const prompt = promptIndex === -1 ? args.at(-1) : args[promptIndex + 1];
+if (prompt === "hold grok") {
+  console.log(JSON.stringify({ type: "thought", data: "holding" }));
+  setInterval(() => {}, 1000);
+} else {
+  const text = isResume ? \`grok resumed \${prompt}\` : "grok source";
+  console.log(JSON.stringify({ type: "thought", data: "thinking" }));
+  console.log(JSON.stringify({ type: "text", data: text }));
+  console.log(JSON.stringify({ type: "end", stopReason: "EndTurn", sessionId, requestId: "request-cli-grok" }));
+}
 `;
 }

@@ -752,7 +752,10 @@ function modelRuntimeChoiceInstruction(
     .map((runtime) => runtime.id)
     .filter(
       (runtimeId) =>
-        runtimeId === "codex" || runtimeId === "claude-code" || runtimeId === "copilot",
+        runtimeId === "codex" ||
+        runtimeId === "claude-code" ||
+        runtimeId === "copilot" ||
+        runtimeId === "grok",
     );
   if (modelRuntimeIds.length === 0) {
     return "Use a configured AI runtime for AI work only when one is enabled and clearly known from context.";
@@ -792,7 +795,10 @@ function compactRuntimeChoiceInstruction(runtimes: readonly { id: string }[]): s
     .map((runtime) => runtime.id)
     .filter(
       (runtimeId) =>
-        runtimeId === "codex" || runtimeId === "claude-code" || runtimeId === "copilot",
+        runtimeId === "codex" ||
+        runtimeId === "claude-code" ||
+        runtimeId === "copilot" ||
+        runtimeId === "grok",
     );
 
   if (!hasShellRuntime && modelRuntimeIds.length === 0) {
@@ -960,6 +966,11 @@ function buildCliExamples(registry: RuntimeRegistry): string[] {
   if (registry.copilot?.enabled) {
     examples.push(
       'orchestrator launch copilot --name "copilot review" --json --compact "review this repo"',
+    );
+  }
+  if (registry.grok?.enabled) {
+    examples.push(
+      'orchestrator launch grok --name "grok review" --json --compact "review this repo"',
     );
   }
   if (registry["codex-app-server"]?.enabled) {

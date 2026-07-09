@@ -563,6 +563,7 @@ test("CLI help handles an empty configured runtime list", async () => {
             codex: { enabled: false },
             "codex-app-server": { enabled: false },
             copilot: { enabled: false },
+            grok: { enabled: false },
             pi: { enabled: false },
             shell: { enabled: false },
           },

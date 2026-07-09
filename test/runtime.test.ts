@@ -24,6 +24,7 @@ test("built-in runtime registry is exhaustive and internally consistent", () => 
     "codex",
     "codex-app-server",
     "copilot",
+    "grok",
     "pi",
     "shell",
   ]);
@@ -182,6 +183,73 @@ test("copilot output modes are adapter transport details", () => {
   assert.deepEqual(jsonlPlan.outputTransport, { kind: "jsonl_events", finalEvent: "result" });
 });
 
+test("grok default plan uses streaming JSON for observable headless runs", () => {
+  const plan = buildAgentLaunchPlan({
+    runtime: "grok",
+    task: sampleTask,
+    cwd: sampleCwd,
+  });
+
+  assert.equal(plan.executable, "grok");
+  assert.deepEqual(plan.args, [
+    "--no-auto-update",
+    "--output-format",
+    "streaming-json",
+    "-p",
+    sampleTask,
+  ]);
+  assert.deepEqual(plan.outputTransport, { kind: "jsonl_events", finalEvent: "end" });
+  assert.equal(plan.promptTransport.kind, "flag");
+  assert.equal(plan.safety.acceptsShellCommand, false);
+});
+
+test("grok output modes are adapter transport details", () => {
+  const textPlan = buildAgentLaunchPlan({
+    runtime: "grok",
+    task: sampleTask,
+    cwd: sampleCwd,
+    outputMode: "text",
+  });
+  assert.deepEqual(textPlan.args, [
+    "--no-auto-update",
+    "--output-format",
+    "plain",
+    "-p",
+    sampleTask,
+  ]);
+  assert.deepEqual(textPlan.outputTransport, { kind: "stdout_text" });
+
+  const jsonPlan = buildAgentLaunchPlan({
+    runtime: "grok",
+    task: sampleTask,
+    cwd: sampleCwd,
+    outputMode: "json",
+  });
+  assert.deepEqual(jsonPlan.args, [
+    "--no-auto-update",
+    "--output-format",
+    "json",
+    "-p",
+    sampleTask,
+  ]);
+  assert.deepEqual(jsonPlan.outputTransport, { kind: "stdout_json" });
+
+  const streamingPlan = buildAgentLaunchPlan({
+    runtime: "grok",
+    task: sampleTask,
+    cwd: sampleCwd,
+    outputMode: "streaming_json",
+  });
+  assert.deepEqual(streamingPlan.args, [
+    "--no-auto-update",
+    "--output-format",
+    "streaming-json",
+    "-p",
+    sampleTask,
+  ]);
+  assert.deepEqual(streamingPlan.outputTransport, { kind: "jsonl_events", finalEvent: "end" });
+});
+
 test("codex-app-server plan uses protocol execution without putting prompt in argv", () => {
   const plan = buildAgentLaunchPlan({
     runtime: "codex-app-server",
@@ -301,6 +369,23 @@ test("model hints are mapped by runtime config when supported", () => {
     "json",
     "--stream",
     "off",
+    "-p",
+    sampleTask,
+  ]);
+
+  const grokPlan = buildAgentLaunchPlan({
+    runtime: "grok",
+    task: sampleTask,
+    cwd: sampleCwd,
+    model: "grok-code-fast-1",
+  });
+
+  assert.deepEqual(grokPlan.args, [
+    "--no-auto-update",
+    "-m",
+    "grok-code-fast-1",
+    "--output-format",
+    "streaming-json",
     "-p",
     sampleTask,
   ]);
@@ -850,6 +935,27 @@ test("resume launch plans use explicit provider handles", () => {
   ]);
   assert.deepEqual(claude.resume, { provider: "claude-code", sessionId: "session-123" });
   assert.equal(claude.taskForProtocol, undefined);
+
+  const grok = buildAgentResumeLaunchPlan({
+    runtime: "grok",
+    task: "continue grok",
+    cwd: sampleCwd,
+    model: "grok-code-fast-1",
+    provider: { sessionId: "session-123" },
+  });
+  assert.deepEqual(grok.args, [
+    "--no-auto-update",
+    "--resume",
+    "session-123",
+    "-m",
+    "grok-code-fast-1",
+    "--output-format",
+    "streaming-json",
+    "-p",
+    "continue grok",
+  ]);
+  assert.deepEqual(grok.resume, { provider: "grok", sessionId: "session-123" });
+  assert.equal(grok.taskForProtocol, undefined);
 });
 
 test("resume launch plans reject unsupported runtimes and missing provider handles", () => {
@@ -880,6 +986,18 @@ test("resume launch plans reject unsupported runtimes and missing provider handl
     () =>
       buildAgentResumeLaunchPlan({
         runtime: "codex-app-server",
+        task: sampleTask,
+        cwd: sampleCwd,
+        provider: {},
+      }),
+    (error: unknown) =>
+      error instanceof LaunchPlanError && error.reason === "missing_resume_provider_id",
+  );
+
+  assert.throws(
+    () =>
+      buildAgentResumeLaunchPlan({
+        runtime: "grok",
         task: sampleTask,
         cwd: sampleCwd,
         provider: {},

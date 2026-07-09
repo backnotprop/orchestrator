@@ -1,0 +1,5 @@
+{"type":"thought","data":"Checking"}
+{"type":"text","data":"GROK"}
+{"type":"text","data":"_"}
+{"type":"text","data":"OK"}
+{"type":"end","stopReason":"EndTurn","sessionId":"fixture-grok-session","requestId":"fixture-grok-request"}

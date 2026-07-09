@@ -1,6 +1,6 @@
 ---
 name: orchestrator
-description: Use Orchestrator to launch, watch, read, log, and interrupt background agent tasks from any agent environment. Use when the user asks to delegate work to Claude Code, Codex, a custom agent, or another headless agent through the orchestrator CLI; when managing multiple background agents; or when installing and learning the Orchestrator CLI.
+description: Use Orchestrator to launch, watch, read, log, and interrupt background agent tasks from any agent environment. Use when the user asks to delegate work to Claude Code, Codex, Copilot, Grok, a custom agent, or another headless agent through the orchestrator CLI; when managing multiple background agents; or when installing and learning the Orchestrator CLI.
 ---
 
 # Orchestrator
@@ -31,7 +31,7 @@ orchestrator help --json --compact
 
 Use `help --json --compact` as the quick command contract. If you need the full
 contract, run `orchestrator` with `fullHelp.args`, or run `orchestrator help
---json`. Do not assume Claude Code, Codex, or any custom runtime is available;
+--json`. Do not assume Claude Code, Codex, Copilot, Grok, or any custom runtime is available;
 config can hide runtimes. Common options like `--workspace`,
 `--orchestrator-dir`, `--config`, and `--json` may appear before or after the
 command.
@@ -83,7 +83,7 @@ orchestrator launch codex --name "inspect store" --model gpt-5.4-mini --json --c
 orchestrator read <task-id|prefix> --wait --json --compact
 ```
 
-Use Claude Code, Codex, or Copilot for AI work such as code review,
+Use Claude Code, Codex, Copilot, or Grok for AI work such as code review,
 implementation, research, repo inspection, or analysis. Use `shell` for exact
 local commands. Do not launch an AI runtime just to run a deterministic shell
 command.
@@ -203,7 +203,7 @@ multi-task wait with `read <id> <id> --wait --json --compact`. Use
 `watch --agent-only --json` for normalized live events. Use `logs` for raw
 stdout/stderr. Use `events` for normalized task and agent events.
 Use `resume <task-id> --json --compact` only when you need true provider resume
-from a finished Codex, Claude Code, or Copilot task.
+from a finished Codex, Claude Code, Copilot, or Grok task.
 Resume needs stored provider metadata. Keep the default runtime output mode when
 you want reliable results, provider ids, token usage, or resume. Provider text
 modes are mainly diagnostic or provider-specific.
@@ -239,6 +239,7 @@ Common first-release runtimes are:
 orchestrator launch claude-code --name "review tests" --model sonnet --json --compact "Find missing tests."
 orchestrator launch codex --name "inspect store" --model gpt-5.4-mini --json --compact "Inspect the task store."
 orchestrator launch copilot --name "review repo" --json --compact "Review this repo."
+orchestrator launch grok --name "review api" --model grok-code-fast-1 --json --compact "Review the API package."
 ```
 
 Use `shell` for exact local shell commands and small local utility tasks:
@@ -248,7 +249,7 @@ orchestrator launch shell --name "local check" --json --compact 'printf "OK\n"'
 ```
 
 Do not launch an AI runtime just to run a deterministic shell command. Use
-Codex, Claude Code, or Copilot for AI work such as code review, implementation,
+Codex, Claude Code, Copilot, or Grok for AI work such as code review, implementation,
 research, repo inspection, or analysis.
 
 Custom agents launch by their configured runtime id:
@@ -269,13 +270,13 @@ instead of guessing.
   to start several tasks at once.
 - Use `shell` for exact local shell commands and small local utility tasks. Put
   the command itself in the task instructions.
-- Use `codex`, `claude-code`, or `copilot` for AI work such as code review,
+- Use `codex`, `claude-code`, `copilot`, or `grok` for AI work such as code review,
   implementation, research, repo inspection, or analysis.
 - Prefer `codex-app-server --session` over `codex` when Codex work is
   long-running, important, likely to need follow-up, or needs native goals.
 - Do not launch an AI runtime just to run a deterministic shell command.
-- Use `resume` only for true provider resume from a finished Codex or Claude
-  Code or Copilot task. For other runtimes, launch a new task with explicit context.
+- Use `resume` only for true provider resume from a finished Codex, Claude
+  Code, Copilot, or Grok task. For other runtimes, launch a new task with explicit context.
   Resume needs stored provider metadata. Keep the default runtime output mode
   when you want reliable results, provider ids, token usage, or resume.
   Provider text modes are mainly diagnostic or provider-specific.

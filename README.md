@@ -1,3 +1,7 @@
+<p>
+  <img src="./orchestrator_tp.webp" alt="Orchestrator - run agents" width="320">
+</p>
+
 # Orchestrator
 
 Manage background agents. Coding agents, agent assistants, any agent. <br/>
@@ -46,6 +50,7 @@ Use `launch` when you want to start agents directly.
 ```sh
 orchestrator launch claude-code --name "review tests" --model sonnet "Find missing tests."
 orchestrator launch codex --name "inspect store" --model gpt-5.4-mini "Inspect the task store."
+orchestrator launch grok --name "review api" --model grok-code-fast-1 "Review the API package."
 orchestrator launch custom --name "check email" --model glm-5.2 "Clean my inbox."
 ```
 
@@ -244,7 +249,7 @@ The CLI package is `@backnotprop/orchestrator-cli`. The reusable runtime package
 - `help --json --compact`: get the small command contract for agents/scripts; use `help --json` when you need the full contract
 - `run`: start the parent AI agent; add `--background` to manage it like a task, `--trace-tools` to see tool calls live, or `--stream-json` for a full JSONL stream
 - `launch`: start one agent in the background; add `--json --compact` for a small machine-readable result, or use `launch -f agents.json --json --compact --brief` to start several agents from one manifest
-- `resume`: start a new task that resumes a finished Codex, Codex app-server, Claude Code, or Copilot provider session
+- `resume`: start a new task that resumes a finished Codex, Codex app-server, Claude Code, Copilot, or Grok provider session
   Resume needs stored provider metadata. Keep the default runtime output mode
   when you want reliable results, provider ids, token usage, or resume.
   Provider text modes are mainly diagnostic or provider-specific.
@@ -291,6 +296,7 @@ First-class targets:
 - Claude Code
 - Codex
 - GitHub Copilot CLI
+- Grok Build
 
 `codex` is the stable headless Codex runtime backed by `codex exec`. Use it for
 short, one-shot Codex tasks. `codex-app-server` is the protocol runtime backed
@@ -309,8 +315,13 @@ you intentionally want a hard cap.
 `copilot` is the process runtime backed by GitHub Copilot CLI programmatic mode.
 Use it when Copilot is the desired backend for one-shot or resumable AI work.
 
+`grok` is the process runtime backed by Grok Build headless mode. Use it when
+Grok is the desired backend for one-shot or resumable AI work. The default
+streaming JSON mode stores normalized message and reasoning deltas, the final
+answer, and Grok provider session metadata. ACP is not part of this runtime.
+
 The runtime layer is generic, but the first release is focused on Claude Code,
-Codex, and Copilot. `shell` is also enabled as a local-command runtime for
+Codex, Copilot, and Grok. `shell` is also enabled as a local-command runtime for
 research, tests, and operator utility tasks.
 Built-in runtimes can also be disabled in config. See
 [doc/disable-agents.md](doc/disable-agents.md).

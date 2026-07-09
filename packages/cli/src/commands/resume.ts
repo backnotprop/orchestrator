@@ -155,7 +155,8 @@ function sameProviderSession(task: AgentTaskRecord, plan: AgentLaunchPlan): bool
     return false;
   }
   return (
-    task.provider?.provider === "claude-code" && task.provider.sessionId === plan.resume.sessionId
+    task.provider?.provider === plan.resume.provider &&
+    task.provider.sessionId === plan.resume.sessionId
   );
 }
 
@@ -164,7 +165,7 @@ function resumeProviderMetadata(
 ): NonNullable<LaunchTaskInput["provider"]> {
   return resume.provider === "codex"
     ? { provider: "codex", threadId: resume.threadId }
-    : { provider: "claude-code", sessionId: resume.sessionId };
+    : { provider: resume.provider, sessionId: resume.sessionId };
 }
 
 async function printResumeTask(task: AgentTaskRecord, options: ResumeOptions): Promise<void> {

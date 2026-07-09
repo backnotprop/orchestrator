@@ -143,11 +143,13 @@ export function buildAgentResumeLaunchPlan(
       return buildClaudeCodeResumePlan(input, runtime);
     case "copilot":
       return buildCopilotResumePlan(input, runtime);
+    case "grok":
+      return buildGrokResumePlan(input, runtime);
     default:
       throw new LaunchPlanError(`Runtime "${input.runtime}" does not support provider resume.`, {
         reason: "unsupported_resume",
         input: input.runtime,
-        hint: "This release supports provider resume for codex, codex-app-server, claude-code, and copilot only.",
+        hint: "This release supports provider resume for codex, codex-app-server, claude-code, copilot, and grok only.",
       });
   }
 }
@@ -330,6 +332,40 @@ function buildCopilotResumePlan(
     ],
     resume: {
       provider: "copilot",
+      sessionId,
+    },
+  });
+}
+
+function buildGrokResumePlan(
+  input: BuildAgentResumeLaunchPlanInput,
+  runtime: HeadlessAgentRuntimeConfig,
+): AgentLaunchPlan {
+  const sessionId = input.provider.sessionId?.trim();
+  if (!sessionId) {
+    throw new LaunchPlanError(`Runtime "${runtime.id}" resume requires provider.sessionId.`, {
+      reason: "missing_resume_provider_id",
+      input: runtime.id,
+      hint: "Resume a Grok task only after its task record has provider.sessionId from end.sessionId.",
+    });
+  }
+
+  const outputMode = resolveOutputMode(runtime, input.outputMode);
+  return baseResumePlan({
+    input,
+    runtime,
+    outputMode,
+    args: [
+      ...runtime.launch.baseArgs,
+      "--resume",
+      sessionId,
+      ...modelArgs(runtime, input.model),
+      ...outputMode.extraArgs,
+      "-p",
+      input.task,
+    ],
+    resume: {
+      provider: "grok",
       sessionId,
     },
   });

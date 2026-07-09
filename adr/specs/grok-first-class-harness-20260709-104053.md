@@ -196,7 +196,7 @@ Normalize these streaming event types:
 Input:
 
 ```json
-{"type":"text","data":"OK"}
+{ "type": "text", "data": "OK" }
 ```
 
 Output:
@@ -217,7 +217,7 @@ It must not mark the task as having a final result yet.
 Input:
 
 ```json
-{"type":"thought","data":"..."}
+{ "type": "thought", "data": "..." }
 ```
 
 Output:
@@ -235,7 +235,7 @@ Output:
 Input:
 
 ```json
-{"type":"end","stopReason":"EndTurn","sessionId":"...","requestId":"..."}
+{ "type": "end", "stopReason": "EndTurn", "sessionId": "...", "requestId": "..." }
 ```
 
 Output:
@@ -294,7 +294,7 @@ Update `test/runtime.test.ts`:
 
 - built-in runtime ids include `grok`;
 - Grok default launch uses `grok --no-auto-update --output-format
-  streaming-json -p <task>`;
+streaming-json -p <task>`;
 - `--model` maps to `-m <model>`;
 - text, JSON, and streaming JSON output modes resolve correctly;
 - Grok resume builds args with `--resume <session-id>`;

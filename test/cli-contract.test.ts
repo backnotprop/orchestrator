@@ -156,7 +156,10 @@ test("CLI help teaches agents the job-control contract", async () => {
       /Prefer launch --json --compact and ps --json --compact/,
     );
     assert.match(result.stdout.toString(), /Use runtime shell for exact local shell commands/);
-    assert.match(result.stdout.toString(), /Use runtime codex, claude-code or copilot for AI work/);
+    assert.match(
+      result.stdout.toString(),
+      /Use runtime codex, claude-code, copilot or grok for AI work/,
+    );
     assert.match(result.stdout.toString(), /Use runtime codex for short one-shot Codex tasks/);
     assert.match(result.stdout.toString(), /Prefer codex-app-server --session/);
     assert.match(
@@ -191,6 +194,7 @@ test("CLI help teaches agents the job-control contract", async () => {
       result.stdout.toString(),
       /orchestrator launch codex --name "write tests" --model gpt-5\.4-mini/,
     );
+    assert.match(result.stdout.toString(), /orchestrator launch grok --name "grok review"/);
     assert.match(
       result.stdout.toString(),
       /orchestrator logs <task-id\|prefix> --stream stderr --follow/,
@@ -257,6 +261,7 @@ test("CLI JSON help exposes a machine-readable agent contract", async () => {
           instruction.includes('runtime "codex"') &&
           instruction.includes('"claude-code"') &&
           instruction.includes('"copilot"') &&
+          instruction.includes('"grok"') &&
           instruction.includes("AI work"),
       ),
     );
@@ -673,6 +678,7 @@ test("CLI compact JSON help exposes a small agent command contract", async () =>
     assert.ok(help.runtimeIds.includes("claude-code"));
     assert.ok(!help.runtimeIds.includes("codex"));
     assert.ok(help.runtimeIds.includes("copilot"));
+    assert.ok(help.runtimeIds.includes("grok"));
     assert.ok(help.runtimeIds.includes("scratch-agent"));
     assert.ok(help.commands.some((command) => command.name === "launch"));
     assert.ok(help.commands.some((command) => command.name === "limits"));
@@ -694,6 +700,7 @@ test("CLI compact JSON help exposes a small agent command contract", async () =>
           step.includes('runtime "shell"') &&
           step.includes('runtime "claude-code"') &&
           step.includes('"copilot"') &&
+          step.includes('"grok"') &&
           !step.includes('"codex"'),
       ),
     );
@@ -1050,6 +1057,7 @@ test("CLI compact config discovery preserves explicit config and portable follow
             codex: { enabled: false },
             "codex-app-server": { enabled: false },
             copilot: { enabled: false },
+            grok: { enabled: false },
             pi: { enabled: false },
             "external-agent": {
               enabled: true,

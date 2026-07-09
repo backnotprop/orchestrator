@@ -201,6 +201,62 @@ export const COPILOT_RUNTIME = {
   },
 } satisfies HeadlessAgentRuntimeConfig;
 
+/** Built-in Grok Build process runtime. */
+export const GROK_RUNTIME = {
+  id: "grok",
+  displayName: "Grok Build",
+  enabled: true,
+  detect: {
+    command: "grok",
+    versionArgs: ["version"],
+    expectedProcesses: ["grok"],
+  },
+  launch: {
+    executable: "grok",
+    baseArgs: ["--no-auto-update"],
+    prompt: { kind: "flag", flag: "-p" },
+    output: { kind: "stdout_text" },
+    defaultOutputMode: "streaming_json",
+    outputModes: {
+      text: {
+        extraArgs: ["--output-format", "plain"],
+        output: { kind: "stdout_text" },
+      },
+      json: {
+        extraArgs: ["--output-format", "json"],
+        output: { kind: "stdout_json" },
+      },
+      streaming_json: {
+        extraArgs: ["--output-format", "streaming-json"],
+        output: { kind: "jsonl_events", finalEvent: "end" },
+      },
+    },
+    cwdPolicy: "workspace",
+    modelFlag: "-m",
+  },
+  resume: {
+    supported: true,
+  },
+  control: {
+    interrupt: "process_group",
+    steerRunning: false,
+  },
+  capabilities: {
+    supportsStreaming: true,
+    supportsRunningSteer: false,
+    supportsResume: true,
+    supportsStructuredEvents: true,
+    supportsWorktree: true,
+    handlesOwnAuth: true,
+    supportsPersistentSession: false,
+  },
+  defaults: {
+    timeoutMs: 900_000,
+    maxOutputBytes: 200_000,
+    isolation: "shared",
+  },
+} satisfies HeadlessAgentRuntimeConfig;
+
 export const PI_RUNTIME = {
   id: "pi",
   displayName: "Pi",
@@ -291,6 +347,7 @@ export const BUILT_IN_AGENT_RUNTIMES = {
   "codex-app-server": CODEX_APP_SERVER_RUNTIME,
   "claude-code": CLAUDE_CODE_RUNTIME,
   copilot: COPILOT_RUNTIME,
+  grok: GROK_RUNTIME,
   pi: PI_RUNTIME,
   shell: SHELL_RUNTIME,
 } satisfies Record<BuiltInAgentRuntimeId, HeadlessAgentRuntimeConfig>;

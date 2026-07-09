@@ -94,6 +94,7 @@ class JsonlRuntimeOutputAdapter implements RuntimeOutputAdapter {
   private usage: NormalizedTaskUsage | undefined;
   private parseErrorCount = 0;
   private eventCount = 0;
+  private grokResultText = "";
   private readonly plan: AgentLaunchPlan;
   private readonly paths: TaskPaths;
   private readonly appendEvent: AppendEvent;
@@ -172,7 +173,7 @@ class JsonlRuntimeOutputAdapter implements RuntimeOutputAdapter {
     }
 
     this.eventCount += 1;
-    const resultText = extractRuntimeResultText(this.plan, parsed);
+    const resultText = this.consumeRuntimeResultText(parsed);
     if (resultText !== undefined) {
       this.resultText = resultText;
     }
@@ -207,6 +208,23 @@ class JsonlRuntimeOutputAdapter implements RuntimeOutputAdapter {
         await this.onUsage?.(usageWithUpdatedAt(usage, event.ts));
       }
     }
+  }
+
+  private consumeRuntimeResultText(event: unknown): string | undefined {
+    if (this.plan.runtime !== "grok" || !isRecord(event)) {
+      return extractRuntimeResultText(this.plan, event);
+    }
+
+    const sourceType = stringValue(event, "type");
+    if (sourceType === "text") {
+      const chunk = stringValue(event, "data");
+      if (chunk !== undefined) {
+        this.grokResultText += chunk;
+      }
+      return undefined;
+    }
+
+    return sourceType === "end" ? this.grokResultText : undefined;
   }
 
   private finalError(): Pick<RuntimeOutputAdapterResult, "errorText" | "failed"> {
@@ -264,6 +282,11 @@ function providerMetadataFromRuntimeEvent(
     return sessionId ? { provider: "copilot", sessionId } : undefined;
   }
 
+  if (runtime === "grok") {
+    const sessionId = stringValue(event, "sessionId");
+    return sessionId ? { provider: "grok", sessionId } : undefined;
+  }
+
   return undefined;
 }
 
@@ -287,6 +310,10 @@ function providerMetadataMismatch(
     case "copilot":
       return actual.sessionId && actual.sessionId !== expected.sessionId
         ? `Copilot resumed session "${actual.sessionId}" but Orchestrator requested "${expected.sessionId}".`
+        : undefined;
+    case "grok":
+      return actual.sessionId && actual.sessionId !== expected.sessionId
+        ? `Grok resumed session "${actual.sessionId}" but Orchestrator requested "${expected.sessionId}".`
         : undefined;
   }
 }
@@ -313,6 +340,10 @@ function normalizeRuntimeEvent(
 
   if (runtime === "copilot") {
     return normalizeCopilotEvent(runtime, event);
+  }
+
+  if (runtime === "grok") {
+    return normalizeGrokEvent(runtime, event);
   }
 
   const sourceType = stringValue(event, "type") ?? "event";
@@ -651,6 +682,79 @@ function normalizeCopilotEvent(
     sourceType,
     sessionId,
     status: data ? stringValue(data, "status") : undefined,
+  });
+}
+
+function normalizeGrokEvent(
+  runtime: string,
+  event: Record<string, unknown>,
+): Record<string, unknown> {
+  const sourceType = stringValue(event, "type") ?? "event";
+  const sessionId = stringValue(event, "sessionId");
+
+  if (sourceType === "text") {
+    return compactData({
+      runtime,
+      source: "stdout",
+      kind: "agent.message_delta",
+      sourceType,
+      sessionId,
+      message: stringValue(event, "data"),
+    });
+  }
+
+  if (sourceType === "thought") {
+    return compactData({
+      runtime,
+      source: "stdout",
+      kind: "agent.reasoning_delta",
+      sourceType,
+      sessionId,
+      message: stringValue(event, "data"),
+    });
+  }
+
+  if (sourceType === "end") {
+    return compactData({
+      runtime,
+      source: "stdout",
+      kind: "agent.result",
+      sourceType,
+      status: "succeeded",
+      terminalReason: stringValue(event, "stopReason"),
+      sessionId,
+      requestId: stringValue(event, "requestId"),
+    });
+  }
+
+  if (sourceType === "error") {
+    const data = event.data;
+    const error = recordValue(event, "error");
+    const dataMessage =
+      typeof data === "string"
+        ? data
+        : isRecord(data)
+          ? (stringValue(data, "message") ?? stringValue(data, "error"))
+          : undefined;
+    return compactData({
+      runtime,
+      source: "stdout",
+      kind: "runtime.error",
+      sourceType,
+      sessionId,
+      message:
+        extractProviderErrorMessage(stringValue(event, "message") ?? dataMessage) ??
+        (error ? stringValue(error, "message") : undefined),
+    });
+  }
+
+  return compactData({
+    runtime,
+    source: "stdout",
+    kind: `runtime.${sourceType}`,
+    sourceType,
+    sessionId,
+    message: typeof event.data === "string" ? event.data : undefined,
   });
 }
 
