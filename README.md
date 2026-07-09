@@ -7,13 +7,13 @@
 **One agent. Many models. Any provider.**
 
 <p>
-  <a href="https://openai.com/codex/"><img src="./assets/providers/openai-wordmark.webp" alt="OpenAI Codex" height="44"></a>
+  <a href="https://openai.com/codex/"><picture><source media="(prefers-color-scheme: dark)" srcset="./assets/providers/codex-icon-dark.png"><img src="./assets/providers/codex-icon-light.png" alt="Codex" width="32" height="32"></picture></a>
   &nbsp;&nbsp;
   <a href="https://claude.com/product/claude-code"><img src="./assets/providers/claude-icon.png" alt="Claude Code" width="32" height="32"></a>
   &nbsp;&nbsp;
   <a href="https://github.com/features/copilot/cli"><picture><source media="(prefers-color-scheme: dark)" srcset="./assets/providers/github-copilot-lockup-white.svg"><img src="./assets/providers/github-copilot-lockup-black.svg" alt="GitHub Copilot CLI" height="28"></picture></a>
   &nbsp;&nbsp;
-  <a href="https://grok.com/"><img src="./assets/providers/grok-app-icon.svg" alt="Grok" width="32" height="32"></a>
+  <a href="https://grok.com/"><picture><source media="(prefers-color-scheme: dark)" srcset="./assets/providers/grok-logo-white.svg"><img src="./assets/providers/grok-logo-black.svg" alt="Grok" height="28"></picture></a>
   &nbsp;&nbsp;
   <a href="https://pi.dev/"><img src="./assets/providers/pi-badge.svg" alt="Pi" width="32" height="32"></a>
 </p>
