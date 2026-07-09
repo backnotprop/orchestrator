@@ -9,13 +9,13 @@
 <p>
   <a href="https://openai.com/codex/"><picture><source media="(prefers-color-scheme: dark)" srcset="./assets/providers/codex-icon-dark.png"><img src="./assets/providers/codex-icon-light.png" alt="Codex" width="32" height="32" align="middle"></picture></a>
   &nbsp;&nbsp;
-  <a href="https://claude.com/product/claude-code"><img src="./assets/providers/claude-icon.png" alt="Claude Code" width="32" height="32" align="middle"></a>
+  <a href="https://claude.com/product/claude-code"><img src="./assets/providers/claude-icon.png" alt="Claude Code" width="28" height="28" align="middle"></a>
   &nbsp;&nbsp;
-  <a href="https://github.com/features/copilot/cli"><picture><source media="(prefers-color-scheme: dark)" srcset="./assets/providers/copilot-icon-dark.svg"><img src="./assets/providers/copilot-icon-light.svg" alt="GitHub Copilot CLI" width="39" height="32" align="middle"></picture></a>
+  <a href="https://github.com/features/copilot/cli"><picture><source media="(prefers-color-scheme: dark)" srcset="./assets/providers/copilot-icon-dark.svg"><img src="./assets/providers/copilot-icon-light.svg" alt="GitHub Copilot CLI" width="32" height="26" align="middle"></picture></a>
   &nbsp;&nbsp;
-  <a href="https://grok.com/"><picture><source media="(prefers-color-scheme: dark)" srcset="./assets/providers/grok-logo-white.svg"><img src="./assets/providers/grok-logo-black.svg" alt="Grok" width="84" height="32" align="middle"></picture></a>
+  <a href="https://grok.com/"><picture><source media="(prefers-color-scheme: dark)" srcset="./assets/providers/grok-logo-white.svg"><img src="./assets/providers/grok-logo-black.svg" alt="Grok" width="63" height="24" align="middle"></picture></a>
   &nbsp;&nbsp;
-  <a href="https://pi.dev/"><img src="./assets/providers/pi-badge.svg" alt="Pi" width="32" height="32" align="middle"></a>
+  <a href="https://pi.dev/"><img src="./assets/providers/pi-badge.svg" alt="Pi" width="26" height="26" align="middle"></a>
 </p>
 
 <sub>Codex &middot; Claude Code &middot; Copilot CLI &middot; Grok Build &middot; Pi</sub>

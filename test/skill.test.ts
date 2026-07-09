@@ -30,10 +30,16 @@ test("README presents the model-first skill path and links the operator contract
   assert.deepEqual(
     [
       ...readme.matchAll(
-        /alt="(?:Codex|Claude Code|GitHub Copilot CLI|Grok|Pi)"[^>]*height="(\d+)"/g,
+        /alt="(Codex|Claude Code|GitHub Copilot CLI|Grok|Pi)" width="(\d+)" height="(\d+)"/g,
       ),
-    ].map(([, height]) => height),
-    ["32", "32", "32", "32", "32"],
+    ].map(([, name, width, height]) => [name, width, height]),
+    [
+      ["Codex", "32", "32"],
+      ["Claude Code", "28", "28"],
+      ["GitHub Copilot CLI", "32", "26"],
+      ["Grok", "63", "24"],
+      ["Pi", "26", "26"],
+    ],
   );
   assert.match(
     readme,
