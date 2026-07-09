@@ -2,6 +2,7 @@ import { readFile, stat } from "node:fs/promises";
 import {
   AGENT_CONTROL_PREVIEW_MAX_BYTES,
   isTerminalTaskStatus as isTerminalStatus,
+  latestSuccessfulCodexAppServerOperationMessage,
   listTaskIds,
   observeTaskState,
   taskDisplayState,
@@ -142,6 +143,7 @@ export async function taskReadJsonPayload(
   const errorCaptureTruncated =
     Boolean(error && !task.error) && (task.outputCapture?.stderrTruncated ?? false);
   const eventSummary = await readLatestTaskEventSummary(task.paths.eventsJsonl);
+  const operationDisplayMessage = latestSuccessfulCodexAppServerOperationMessage(task);
 
   return {
     ...taskCommandSummary(task, aliases, {
@@ -150,7 +152,9 @@ export async function taskReadJsonPayload(
     }),
     ...(metadata.retrievalStatus ? { retrievalStatus: metadata.retrievalStatus } : {}),
     ...(eventSummary.lastEvent ? { lastEvent: eventSummary.lastEvent } : {}),
-    ...(eventSummary.lastMessage ? { lastMessage: eventSummary.lastMessage } : {}),
+    ...(operationDisplayMessage || eventSummary.lastMessage
+      ? { lastMessage: operationDisplayMessage ?? eventSummary.lastMessage }
+      : {}),
     output: renderedOutput.text,
     outputAvailable: renderedOutput.text.length > 0,
     outputKind,

@@ -10,6 +10,7 @@ import { commandGoal } from "./commands/goal.ts";
 import { buildCliHelpText, commandHelp } from "./commands/help.ts";
 import { commandInterrupt } from "./commands/interrupt.ts";
 import { commandLaunch } from "./commands/launch.ts";
+import { commandLimits } from "./commands/limits.ts";
 import { commandList } from "./commands/list.ts";
 import { commandPs } from "./commands/ps.ts";
 import { commandResume } from "./commands/resume.ts";
@@ -26,6 +27,7 @@ import {
 } from "./parsing/internal.ts";
 import { parseInterruptOptions } from "./parsing/interrupt.ts";
 import { parseLaunchOptions } from "./parsing/launch.ts";
+import { parseLimitsOptions } from "./parsing/limits.ts";
 import { parseListOptions } from "./parsing/list.ts";
 import { normalizeLeadingCommonOptions } from "./parsing/leading-common-options.ts";
 import { parsePsOptions } from "./parsing/ps.ts";
@@ -61,6 +63,9 @@ export async function main(argv: readonly string[] = process.argv.slice(2)): Pro
         return 0;
       case "list":
         await commandList(parseListOptions(rest));
+        return 0;
+      case "limits":
+        await commandLimits(parseLimitsOptions(rest));
         return 0;
       case "ps":
         await commandPs(parsePsOptions(rest));

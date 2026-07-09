@@ -125,6 +125,7 @@ Usage:
   orchestrator goal get <task-id|prefix> [--timeout-ms <ms>] [--json [--compact]]
   orchestrator goal set <task-id|prefix> [--objective <text>] [--status paused|blocked|usage-limited|budget-limited|complete] [--token-budget <tokens|none>] [--timeout-ms <ms>] [--json [--compact]]
   orchestrator goal clear <task-id|prefix> [--timeout-ms <ms>] [--json [--compact]]
+  orchestrator limits [--provider codex|copilot|claude] [--timeout-ms <ms>] [--json [--compact]]
   orchestrator list [--status <status>] [-A|--all-workspaces] [--json]
   orchestrator ps [--all] [-A|--all-workspaces] [--cwd <path>] [--watch] [--runtime <runtime>] [--status <status>] [--parent <run-id>] [--json [--compact [--active] [--brief]]]
   orchestrator read <task-id|prefix>... [--wait] [--timeout-ms <ms>] [--interval-ms <ms>] [--max-bytes <bytes>] [--json [--compact]]
@@ -146,49 +147,50 @@ Agent instructions:
   5. Use run --background when the parent agent should be a managed background task.
   6. Use run --trace-tools when you need to see parent tool calls live.
   7. Use run --stream-json when another program needs the full run event stream.
-  8. Treat launch as a background job by default. Capture taskId from stdout.
-  9. ${shellRuntimeInstruction}
-  10. ${modelRuntimeInstruction}
-  11. ${codexRuntimeInstruction}
-  12. Do not launch an AI runtime just to run a deterministic shell command.
-  13. Orchestrator uses one default machine store at ~/.orchestrator/tasks; workspace is a project scope/filter, and cwd is the agent process directory.
-  14. Task commands accept full task ids or unique prefixes shown by ps/list from the same store.
-  15. Common options like --workspace, --orchestrator-dir, --config, and --json may appear before or after the command.
-  16. Prefer launch --json --compact and ps --json --compact for normal agent control.
-  17. Use help --json --compact when software needs a smaller command contract.
-  18. When --json is present, command errors are JSON on stderr with reason/input/matches/hint and recovery.views.*.args when available.
-  19. Use ps for the current workspace operations view; use ps -A for all workspaces.
-  20. Use ps --watch to watch the selected scope update live.
-  21. Use ps --json --compact --active when an agent or script needs active task and stop targets.
-  22. Use ps --json --compact --active --brief to scan many running tasks with less JSON.
-  23. Use ps -A --json --compact --active --brief to scan active work across the machine.
-  24. Use ps --parent <run-id|prefix> --json --compact --brief to inspect one parent run and its children.
-  25. If active ps is empty after short work, run views.recent.args from compact ps to recover recent finished tasks and batch read commands.
-  26. Use launch -f <manifest.json|-> --json --compact --brief to start several tasks in one call.
-  27. Use launch --json --compact --brief when starting one task and only task id/status/stop is needed.
-  28. Use resume only for true provider resume from a finished task whose runtime reports resumeSupported and has stored provider metadata. Keep the default runtime output mode when you want reliable results, provider ids, token usage, or resume.
-  29. Use send <task-id|prefix> "message" for running tasks or sessions whose runtime reports runningMessagesSupported. Use --wait when you need the operation result.
-  30. Use goal start <task-id|prefix> for native provider goals on supported running sessions. Usually omit --token-budget; set it only when you intentionally want a hard cap. Use goal get/set/clear to inspect or edit provider goal state. Do not simulate provider goals by sending prompt text.
-  31. Use resume or launch a new task when the task is already finished.
-  32. When compact JSON returns stop.args, run those portable args to stop exactly the returned task, group, or selected active set.
-  33. Compact ps stop.args are scoped to the current view; parent/group stops may include children of that selected run.
-  34. When JSON output returns commands.*.args, pass those portable args to orchestrator for read/watch/logs/events follow-up.
-  35. Treat returned args as an argument vector. Do not join them into one shell string.
-  36. Use compact ps top-level commands.waitPreview.args to wait for every listed task with bounded output.
-  37. Use compact ps group commands.waitPreview.args to wait for one listed group with bounded output.
-  38. Use commands.readPreview, commands.waitPreview, or commands.logsPreview when another agent needs bounded output before deciding whether to fetch more.
-  39. Use watch to follow one task live. Use watch --agent-only --json for normalized agent event JSONL.
-  40. Use read for final agent answers. Use read <id> <id> --wait --json --compact to build your own multi-task wait call.
-  41. If compact read returns active: true, use commands.waitPreview.args to wait with bounded output or commands.readPreview.args to poll again.
-  42. If compact batch read times out, use its top-level commands.waitPreview.args to wait again or stop.args to stop still-active work safely.
-  43. If compact read returns failed status, use commands.logsPreview.args for bounded raw logs or commands.events.args for the task timeline.
-  44. Check outputTruncated/stdoutTruncated/stderrTruncated in JSON output; ByReadLimit means re-read with more bytes can help, ByCaptureLimit means the task was launched with too small a capture cap.
-  45. If compact read is truncated by read limit, use commands.read.args to fetch more output.
-  46. Use logs --json --compact for a one-line raw stdout/stderr snapshot and events --json --compact for a one-line task timeline. Use logs --follow --stream all when live stdout/stderr order matters.
-  47. Use interrupt to cancel running agents. Use interrupt <id> <id> --json --compact to stop a selected subset.
-  48. Use --children for parent runs with children.
-  49. Use interrupt --active only for deliberate workspace cleanup; use interrupt -A --active --yes only for deliberate all-workspace cleanup.
-  50. Model values are passed through to the provider CLI; aliases are not normalized yet.
+  8. Use limits --json --compact to read provider limit snapshots for supported providers.
+  9. Treat launch as a background job by default. Capture taskId from stdout.
+  10. ${shellRuntimeInstruction}
+  11. ${modelRuntimeInstruction}
+  12. ${codexRuntimeInstruction}
+  13. Do not launch an AI runtime just to run a deterministic shell command.
+  14. Orchestrator uses one default machine store at ~/.orchestrator/tasks; workspace is a project scope/filter, and cwd is the agent process directory.
+  15. Task commands accept full task ids or unique prefixes shown by ps/list from the same store.
+  16. Common options like --workspace, --orchestrator-dir, --config, and --json may appear before or after the command.
+  17. Prefer launch --json --compact and ps --json --compact for normal agent control.
+  18. Use help --json --compact when software needs a smaller command contract.
+  19. When --json is present, command errors are JSON on stderr with reason/input/matches/hint and recovery.views.*.args when available.
+  20. Use ps for the current workspace operations view; use ps -A for all workspaces.
+  21. Use ps --watch to watch the selected scope update live.
+  22. Use ps --json --compact --active when an agent or script needs active task and stop targets.
+  23. Use ps --json --compact --active --brief to scan many running tasks with less JSON.
+  24. Use ps -A --json --compact --active --brief to scan active work across the machine.
+  25. Use ps --parent <run-id|prefix> --json --compact --brief to inspect one parent run and its children.
+  26. If active ps is empty after short work, run views.recent.args from compact ps to recover recent finished tasks and batch read commands.
+  27. Use launch -f <manifest.json|-> --json --compact --brief to start several tasks in one call.
+  28. Use launch --json --compact --brief when starting one task and only task id/status/stop is needed.
+  29. Use resume only for true provider resume from a finished task whose runtime reports resumeSupported and has stored provider metadata. Keep the default runtime output mode when you want reliable results, provider ids, token usage, or resume.
+  30. Use send <task-id|prefix> "message" for running tasks or sessions whose runtime reports runningMessagesSupported. Use --wait when you need the operation result.
+  31. Use goal start <task-id|prefix> for native provider goals on supported running sessions. Usually omit --token-budget; set it only when you intentionally want a hard cap. Use goal get/set/clear to inspect or edit provider goal state. Do not simulate provider goals by sending prompt text.
+  32. Use resume or launch a new task when the task is already finished.
+  33. When compact JSON returns stop.args, run those portable args to stop exactly the returned task, group, or selected active set.
+  34. Compact ps stop.args are scoped to the current view; parent/group stops may include children of that selected run.
+  35. When JSON output returns commands.*.args, pass those portable args to orchestrator for read/watch/logs/events follow-up.
+  36. Treat returned args as an argument vector. Do not join them into one shell string.
+  37. Use compact ps top-level commands.waitPreview.args to wait for every listed task with bounded output.
+  38. Use compact ps group commands.waitPreview.args to wait for one listed group with bounded output.
+  39. Use commands.readPreview, commands.waitPreview, or commands.logsPreview when another agent needs bounded output before deciding whether to fetch more.
+  40. Use watch to follow one task live. Use watch --agent-only --json for normalized agent event JSONL.
+  41. Use read for final agent answers. Use read <id> <id> --wait --json --compact to build your own multi-task wait call.
+  42. If compact read returns active: true, use commands.waitPreview.args to wait with bounded output or commands.readPreview.args to poll again.
+  43. If compact batch read times out, use its top-level commands.waitPreview.args to wait again or stop.args to stop still-active work safely.
+  44. If compact read returns failed status, use commands.logsPreview.args for bounded raw logs or commands.events.args for the task timeline.
+  45. Check outputTruncated/stdoutTruncated/stderrTruncated in JSON output; ByReadLimit means re-read with more bytes can help, ByCaptureLimit means the task was launched with too small a capture cap.
+  46. If compact read is truncated by read limit, use commands.read.args to fetch more output.
+  47. Use logs --json --compact for a one-line raw stdout/stderr snapshot and events --json --compact for a one-line task timeline. Use logs --follow --stream all when live stdout/stderr order matters.
+  48. Use interrupt to cancel running agents. Use interrupt <id> <id> --json --compact to stop a selected subset.
+  49. Use --children for parent runs with children.
+  50. Use interrupt --active only for deliberate workspace cleanup; use interrupt -A --active --yes only for deliberate all-workspace cleanup.
+  51. Model values are passed through to the provider CLI; aliases are not normalized yet.
 
 Common options:
   --workspace <path>          Workspace scope. Defaults to the nearest git repo, then current directory.
@@ -266,6 +268,11 @@ Doctor options:
   --config <path>             Extra runtime config file to inspect.
   --compact                   With --json, print a small runtime/readiness report.
 
+Limits options:
+  --provider codex|copilot|claude  Limit check provider. Defaults to all known providers.
+  --timeout-ms <ms>                Per-provider read timeout.
+  --compact                        With --json, print a small provider-limit report.
+
 Runtime ids:
 ${renderedRuntimeLines}
 
@@ -304,6 +311,7 @@ function buildCliHelpDocument(
       "Use run --trace-tools when you need to see parent tool calls live.",
       "Use run --stream-json when a plugin, script, TUI, or other program needs the full live run stream.",
       "Use launch to start a registered runtime.",
+      "Use limits --json --compact to read provider limit snapshots for supported providers.",
       shellRuntimeInstruction,
       modelRuntimeInstruction,
       codexRuntimeInstruction,
@@ -487,6 +495,22 @@ function buildCliHelpDocument(
         ],
       },
       {
+        name: "limits",
+        usage:
+          "orchestrator limits [--provider codex|copilot|claude] [--timeout-ms <ms>] [--json [--compact]]",
+        semantics:
+          "Reports provider limit snapshots when native readers are available; unavailable snapshots are explicit.",
+        options: [
+          "--workspace <path>",
+          "--orchestrator-dir <path>",
+          "--config <path>",
+          "--json",
+          "--compact",
+          "--provider codex|copilot|claude",
+          "--timeout-ms <ms>",
+        ],
+      },
+      {
         name: "list",
         usage: "orchestrator list [--status <status>] [-A|--all-workspaces] [--json]",
         semantics: "Lists task records in the current workspace scope, or all workspaces with -A.",
@@ -626,6 +650,7 @@ function buildCliHelpDocument(
           "Run help --json when software needs full command options, workflows, and examples.",
           "Use fullHelp.args from compact help to fetch the full contract.",
           "Use runtimeIds from compact help to choose a configured runtime quickly.",
+          "Run limits --json --compact when software needs provider limit snapshots.",
         ],
       },
       {
@@ -640,6 +665,7 @@ function buildCliHelpDocument(
           codexRuntimeInstruction,
           "Do not launch an AI runtime just to run a deterministic shell command.",
           "Use ps or ps --watch to see all child tasks created by the parent agent.",
+          "Use limits --json --compact to read provider limit snapshots for supported providers.",
           "Use ps --json --compact --active when software needs active child tasks and stop targets.",
           "Use ps --json --compact --active --brief when software needs to scan many running child tasks without follow-up command bundles.",
           "Use ps --parent <run-id|prefix> --json --compact --brief when software needs only one parent run and its children.",
@@ -671,6 +697,7 @@ function buildCliHelpDocument(
           "Keep the default runtime output mode when you want reliable results, provider ids, token usage, or resume. Provider text modes are mainly diagnostic or provider-specific.",
           "Extract taskId from launch output, or use the short id shown by ps/list when it is unique.",
           "Run list to see named tasks.",
+          "Run limits --json --compact to inspect provider limit snapshots.",
           "Run ps to see grouped agent work.",
           "Run ps --watch to watch the whole workspace update.",
           "Run ps --json --compact --active when another program needs active task and stop targets.",
@@ -815,6 +842,7 @@ function compactCliHelpDocument(
 ): CliCompactHelpDocument {
   const preferredExamples = new Set([
     "orchestrator doctor",
+    "orchestrator limits --json --compact",
     "orchestrator ps --json --compact --active --brief",
     "orchestrator ps -A --json --compact --active --brief",
     "orchestrator ps --parent <run-id|prefix> --json --compact --brief",
@@ -837,6 +865,7 @@ function compactCliHelpDocument(
     fullHelp: { args: ["help", "--json", ...helpArgsSuffix(options)] },
     agentQuickStart: [
       "Run doctor --json --compact when runtime availability is uncertain.",
+      "Run limits --json --compact to read provider limit snapshots for supported providers.",
       "If compact doctor returns parent.canRun: true, append the request to parent.run.argsPrefix or parent.run.backgroundArgsPrefix.",
       compactRuntimeInstruction,
       "Do not launch an AI runtime just to run a deterministic shell command.",
@@ -905,6 +934,9 @@ function buildCliExamples(registry: RuntimeRegistry): string[] {
 
   examples.push("orchestrator doctor");
   examples.push("orchestrator doctor --json --compact");
+  examples.push("orchestrator limits");
+  examples.push("orchestrator limits --json --compact");
+  examples.push("orchestrator limits --provider codex --json --compact");
   examples.push('orchestrator run "figure out what needs to change in this repo"');
   examples.push(
     'orchestrator run --background --name "repo plan" --json --compact "figure out what needs to change in this repo"',

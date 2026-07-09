@@ -91,6 +91,7 @@ The CLI shape is intentionally close to tools like `kubectl`.
 
 ```sh
 orchestrator doctor
+orchestrator limits --json --compact
 orchestrator run --trace-tools "Launch a Codex child and wait for it."
 orchestrator run --stream-json "Launch a Codex child and wait for it."
 orchestrator ps
@@ -115,6 +116,9 @@ orchestrator events <task-id|prefix> --json --compact
 orchestrator interrupt <task-id|prefix> <task-id|prefix> --json --compact
 orchestrator interrupt <task-id|prefix>
 ```
+
+`limits` reports provider limit snapshots for supported providers. It does not
+choose providers, route work, or block launches.
 
 Use `codex` for short, one-shot Codex tasks. Use `codex-app-server --session`
 for meaningful or long-running Codex work that may need follow-up messages,

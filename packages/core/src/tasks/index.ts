@@ -19,6 +19,7 @@ export {
   buildAgentTaskPsView,
   compactAgentTaskPsView,
   groupControlCommands,
+  latestSuccessfulCodexAppServerOperationMessage,
   matchesTaskWorkspace,
   taskBatchControlCommands,
   taskControlCommands,

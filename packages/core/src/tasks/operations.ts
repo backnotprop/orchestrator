@@ -436,12 +436,19 @@ async function buildAgentTaskRow(
   const stderrFailureDetail =
     task.error || eventSummary.error ? undefined : await failedTaskStderrDetail(task);
   const error = task.error ?? eventSummary.error ?? stderrFailureDetail;
+  const operationDisplayMessage = latestSuccessfulCodexAppServerOperationMessage(task);
   const succeededOutputDetail =
-    error || eventSummary.lastMessage ? undefined : await succeededTaskOutputDetail(task);
+    error || operationDisplayMessage || eventSummary.lastMessage
+      ? undefined
+      : await succeededTaskOutputDetail(task);
   const lastEvent =
     eventSummary.error && task.status === "failed" ? "runtime.error" : eventSummary.lastEvent;
   const lastMessage =
-    error ?? eventSummary.lastMessage ?? succeededOutputDetail ?? input.observation.reason;
+    error ??
+    operationDisplayMessage ??
+    eventSummary.lastMessage ??
+    succeededOutputDetail ??
+    input.observation.reason;
   const taskDurationMs = durationMs(task, input.now);
   const model = taskModel(task) ?? eventSummary.model;
   const workspaceRoot = taskWorkspaceRoot(task, input.workspaceRoot);
@@ -732,6 +739,28 @@ function optionalLast(
 ): Pick<AgentTaskControlTask, "last"> | Record<string, never> {
   const last = row.error ?? row.lastMessage ?? row.lastEvent;
   return last ? { last: truncateCompactText(last, COMPACT_LAST_MAX_LENGTH) } : {};
+}
+
+export function latestSuccessfulCodexAppServerOperationMessage(
+  task: Pick<AgentTaskRecord, "runtime" | "currentOperation" | "lastOperation">,
+): string | undefined {
+  if (task.runtime !== "codex-app-server" || task.currentOperation) {
+    return undefined;
+  }
+  const operation = task.lastOperation;
+  const result = operation?.result?.trim();
+  if (!operation || !result || !operation.finishedAt) {
+    return undefined;
+  }
+  if (
+    operation.status === "starting" ||
+    operation.status === "running" ||
+    operation.status === "failed" ||
+    operation.status === "interrupted"
+  ) {
+    return undefined;
+  }
+  return result;
 }
 
 function truncateCompactText(value: string, maxLength: number): string {

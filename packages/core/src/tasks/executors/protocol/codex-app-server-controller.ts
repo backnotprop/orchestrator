@@ -352,10 +352,6 @@ async function startManagedCodexAppServerBackend(
     closeSync(stderrFd);
   }
 
-  if (!child.pid) {
-    throw backendStartError(paths, executable, new Error("Spawned process did not expose a pid."));
-  }
-
   let startupFailure: Error | undefined;
   const failStartup = (error: Error): void => {
     startupFailure = error;
@@ -367,6 +363,12 @@ async function startManagedCodexAppServerBackend(
   };
   child.once("error", failStartup);
   child.once("exit", failExit);
+
+  if (!child.pid) {
+    child.off("exit", failExit);
+    throw backendStartError(paths, executable, new Error("Spawned process did not expose a pid."));
+  }
+
   child.unref();
 
   try {

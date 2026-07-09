@@ -129,6 +129,11 @@ test("CLI help teaches agents the job-control contract", async () => {
     assert.match(result.stdout.toString(), /orchestrator ps/);
     assert.match(
       result.stdout.toString(),
+      /orchestrator limits \[--provider codex\|copilot\|claude\]/,
+    );
+    assert.match(result.stdout.toString(), /limits --json --compact/);
+    assert.match(
+      result.stdout.toString(),
       /orchestrator run "figure out what needs to change in this repo"/,
     );
     assert.match(result.stdout.toString(), /orchestrator run --background --name "repo plan"/);
@@ -232,6 +237,13 @@ test("CLI JSON help exposes a machine-readable agent contract", async () => {
       ),
     );
     assert.ok(help.agentInstructions.some((instruction) => instruction.includes("Use run")));
+    assert.ok(
+      help.agentInstructions.some(
+        (instruction) =>
+          instruction.includes("limits --json --compact") &&
+          instruction.includes("provider limit snapshots"),
+      ),
+    );
     assert.ok(
       help.agentInstructions.some(
         (instruction) =>
@@ -484,6 +496,14 @@ test("CLI JSON help exposes a machine-readable agent contract", async () => {
           command.semantics.includes("hard cap"),
       ),
     );
+    assert.ok(
+      help.commands.some(
+        (command) =>
+          command.name === "limits" &&
+          command.usage.includes("--provider codex|copilot|claude") &&
+          command.options.includes("--timeout-ms <ms>"),
+      ),
+    );
     assert.ok(help.runtimes.some((runtime) => runtime.id === "claude-code" && runtime.modelFlag));
     assert.ok(help.runtimes.some((runtime) => runtime.id === "codex" && runtime.modelFlag));
     assert.ok(help.commands.some((command) => command.name === "watch"));
@@ -498,6 +518,7 @@ test("CLI JSON help exposes a machine-readable agent contract", async () => {
     );
     assert.ok(help.examples.some((example) => example === "orchestrator doctor"));
     assert.ok(help.examples.some((example) => example === "orchestrator doctor --json --compact"));
+    assert.ok(help.examples.some((example) => example === "orchestrator limits --json --compact"));
     assert.ok(help.examples.some((example) => example === "orchestrator help --json --compact"));
     assert.ok(
       help.examples.some(
@@ -561,6 +582,13 @@ test("CLI JSON help exposes a machine-readable agent contract", async () => {
         (workflow) =>
           workflow.name === "discover-contract" &&
           workflow.steps.some((step) => step.includes("help --json --compact")),
+      ),
+    );
+    assert.ok(
+      help.workflows.some(
+        (workflow) =>
+          workflow.name === "discover-contract" &&
+          workflow.steps.some((step) => step.includes("limits --json --compact")),
       ),
     );
     assert.ok(help.workflows.some((workflow) => workflow.name === "parent-agent"));
@@ -647,6 +675,7 @@ test("CLI compact JSON help exposes a small agent command contract", async () =>
     assert.ok(help.runtimeIds.includes("copilot"));
     assert.ok(help.runtimeIds.includes("scratch-agent"));
     assert.ok(help.commands.some((command) => command.name === "launch"));
+    assert.ok(help.commands.some((command) => command.name === "limits"));
     assert.ok(help.commands.some((command) => command.name === "help"));
     assert.ok(
       help.commands.some(
@@ -658,6 +687,7 @@ test("CLI compact JSON help exposes a small agent command contract", async () =>
     );
     assert.ok(help.commands.every((command) => command.options === undefined));
     assert.ok(help.agentQuickStart.some((step) => step.includes("launch -f <manifest.json|->")));
+    assert.ok(help.agentQuickStart.some((step) => step.includes("limits --json --compact")));
     assert.ok(
       help.agentQuickStart.some(
         (step) =>
@@ -702,6 +732,7 @@ test("CLI compact JSON help exposes a small agent command contract", async () =>
       ),
     );
     assert.ok(help.examples.some((example) => example === "orchestrator doctor"));
+    assert.ok(help.examples.some((example) => example === "orchestrator limits --json --compact"));
     assert.ok(
       help.examples.some(
         (example) => example === "orchestrator ps --json --compact --active --brief",

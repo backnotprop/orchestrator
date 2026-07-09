@@ -426,6 +426,85 @@ test("shared codex-app-server send timeout includes backend auth diagnostic", as
   );
 });
 
+test("shared codex-app-server successful operation display wins over stale backend auth diagnostic", async () => {
+  await withFakeSharedCodexAppServer(
+    async ({ socketPath }) => {
+      await withTempWorkspace(async (workspaceRoot) => {
+        const task = await launchSharedCodexAppServerSessionTask({
+          workspaceRoot,
+          plan: sessionPlan(workspaceRoot, socketPath),
+          name: "stale auth display session",
+        });
+        const backendStderrLogPath = join(task.paths.taskDir, "backend.stderr.log");
+        await patchTaskJson(task.taskId, task.paths.taskJson, {
+          supervision: {
+            ...task.supervision,
+            backendStderrLogPath,
+          },
+        });
+
+        const pendingSend = sendTaskMessage({
+          workspaceRoot,
+          taskId: task.taskId,
+          text: "Start a delayed turn.",
+          wait: true,
+          timeoutMs: 10_000,
+        });
+
+        await waitForTask(
+          workspaceRoot,
+          task.taskId,
+          (record) => record.session?.state === "turn_running",
+        );
+        await writeFile(
+          backendStderrLogPath,
+          "ERROR rmcp::transport::worker: worker quit with fatal: Transport channel closed, when Auth(AuthorizationRequired)\n",
+        );
+        await waitForAgentEvent(
+          workspaceRoot,
+          task.taskId,
+          (event) => event.data.kind === "protocol.backend.auth_required",
+        );
+
+        const completed = await pendingSend;
+        assert.equal(completed.status, "completed");
+        assert.equal(completed.operation?.result, "Hello from shared Codex.");
+
+        const ps = await buildAgentTaskPsView({
+          workspaceRoot,
+          now: new Date("2026-07-07T20:27:01.000Z"),
+        });
+        const row = ps.rows.find((candidate) => candidate.taskId === task.taskId);
+        assert.equal(row?.lastMessage, "Hello from shared Codex.");
+
+        const compactRead = await runCli(
+          workspaceRoot,
+          ["read", task.taskId, "--json", "--compact"],
+          10_000,
+        );
+        const parsedRead = JSON.parse(compactRead.stdout) as {
+          lastMessage?: string;
+        };
+        assert.equal(parsedRead.lastMessage, "Hello from shared Codex.");
+
+        const events = await readTaskEvents({
+          workspaceRoot,
+          taskId: task.taskId,
+          agentOnly: true,
+        });
+        assert.ok(events.some((event) => event.data.kind === "protocol.backend.auth_required"));
+
+        await interruptTask({
+          workspaceRoot,
+          taskId: task.taskId,
+          reason: "stale auth display test cleanup",
+        });
+      });
+    },
+    { turnDelayMs: 5_000 },
+  );
+});
+
 test("shared codex-app-server send ignores stale backend auth diagnostics", async () => {
   await withFakeSharedCodexAppServer(
     async ({ socketPath }) => {

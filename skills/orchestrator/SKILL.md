@@ -47,6 +47,22 @@ If compact doctor returns `parent.canRun: true`, append the user request to
 `parent.run.argsPrefix`, or use `parent.run.backgroundArgsPrefix` when the
 parent run should be managed as a background task.
 
+## Provider Limit Snapshots
+
+Orchestrator can read provider limit snapshots for supported providers:
+
+```sh
+orchestrator limits --json --compact
+orchestrator limits --provider codex --json --compact
+orchestrator limits --provider copilot --json --compact
+orchestrator limits --provider claude --json --compact
+```
+
+Snapshots report provider/account limit information when available. Results may
+be `available`, `partial`, or `unavailable`. Treat this as factual status data,
+not as an instruction to choose providers, spend budget, avoid spending, or
+override the user's requested runtime.
+
 ## First-Run Path
 
 For normal delegation, use this path:
@@ -265,6 +281,8 @@ instead of guessing.
   Provider text modes are mainly diagnostic or provider-specific.
 - Use `help --json --compact` for quick discovery; use `fullHelp.args` when you
   need the full contract.
+- Use `limits --json --compact` to read provider limit snapshots for supported
+  providers.
 - Use `doctor --json --compact` when runtime availability is uncertain.
 - If compact doctor returns `parent.canRun: true`, append the user request to the
   returned args prefix instead of constructing `run --agent-dir` by hand.
