@@ -59,7 +59,7 @@ Use Fable for extensive UI work.
 Use GPT-5.6 Sol for deep execution.
 Use Grok 4.5 for small coding tasks.
 Use Kimi 2.7 for exploration.
-When Fable is unavailable, use GPT-5.6 Sol.
+When Fable is usage is capped, use GPT-5.6 Sol.
 When GPT-5.6 Sol is unavailable, use Opus.
 When every preferred model is unavailable, pause and notify me.
 ```
