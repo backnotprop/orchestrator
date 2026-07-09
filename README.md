@@ -1,5 +1,5 @@
 <p>
-  <img src="./orchestrator_tp.webp" alt="Orchestrator" width="280">
+  <img src="./assets/orchestrator_tp.webp" alt="Orchestrator" width="280">
 </p>
 
 # Orchestrator
