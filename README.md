@@ -88,3 +88,9 @@ judgment, delegation, and synthesis.
 Read the [Operator Guide](doc/operator-guide.md) for the full control contract,
 or see [custom agents](doc/custom-agents.md), [architecture decisions](adr/README.md),
 and [provider artwork](assets/providers/README.md).
+
+## License
+
+[Business Source License 1.1](LICENSE) today, with production use allowed except
+for commercial hosted or managed agent-orchestration services. Converts to
+Apache License 2.0 on July 9, 2029.

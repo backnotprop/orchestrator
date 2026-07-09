@@ -1,6 +1,7 @@
 {
   "name": "@backnotprop/orchestrator-cli",
   "version": "0.0.0",
+  "license": "BUSL-1.1",
   "bin": {
     "orchestrator": "./src/cli.ts"
   },
