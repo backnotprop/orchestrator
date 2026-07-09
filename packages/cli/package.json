@@ -1,15 +1,37 @@
 {
   "name": "@backnotprop/orchestrator-cli",
-  "version": "0.0.0",
+  "version": "0.1.0",
+  "description": "Local CLI for agents orchestrating models and other agents across providers.",
+  "keywords": [
+    "agents",
+    "ai",
+    "cli",
+    "orchestration"
+  ],
+  "homepage": "https://github.com/backnotprop/orchestrator#readme",
+  "bugs": {
+    "url": "https://github.com/backnotprop/orchestrator/issues"
+  },
   "license": "BUSL-1.1",
+  "author": "Michael Ramos",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/backnotprop/orchestrator.git",
+    "directory": "packages/cli"
+  },
   "bin": {
-    "orchestrator": "./src/cli.ts"
+    "orchestrator": "./dist/cli.js"
   },
   "files": [
-    "src"
+    "dist"
   ],
   "type": "module",
+  "publishConfig": {
+    "access": "public"
+  },
   "scripts": {
+    "build": "rm -rf dist && tsc -p tsconfig.build.json",
+    "prepack": "pnpm run build",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {

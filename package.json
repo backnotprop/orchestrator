@@ -1,10 +1,21 @@
 {
   "name": "@backnotprop/orchestrator-workspace",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "private": true,
+  "description": "Agents orchestrating models and other agents across providers.",
+  "homepage": "https://github.com/backnotprop/orchestrator#readme",
+  "bugs": {
+    "url": "https://github.com/backnotprop/orchestrator/issues"
+  },
   "license": "BUSL-1.1",
+  "author": "Michael Ramos",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/backnotprop/orchestrator.git"
+  },
   "type": "module",
   "scripts": {
+    "build": "pnpm --filter @backnotprop/orchestrator-core run build && pnpm --filter @backnotprop/orchestrator-agent run build && pnpm --filter @backnotprop/orchestrator-cli run build",
     "lint": "oxlint .",
     "lint:fix": "oxlint . --fix",
     "format": "oxfmt --write .",
@@ -12,7 +23,8 @@
     "orchestrator": "orchestrator",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "node --experimental-strip-types --test \"test/**/*.test.ts\"",
-    "check": "pnpm run lint && pnpm run format:check && pnpm run typecheck && pnpm test"
+    "check": "pnpm run lint && pnpm run format:check && pnpm run build && pnpm run typecheck && pnpm test",
+    "prepare": "pnpm run build"
   },
   "devDependencies": {
     "@backnotprop/orchestrator-agent": "workspace:*",

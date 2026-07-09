@@ -1,19 +1,56 @@
 {
   "name": "@backnotprop/orchestrator-core",
-  "version": "0.0.0",
+  "version": "0.1.0",
+  "description": "Runtime adapters, task supervision, and process control for Orchestrator.",
+  "keywords": [
+    "agents",
+    "ai",
+    "cli",
+    "orchestration"
+  ],
+  "homepage": "https://github.com/backnotprop/orchestrator#readme",
+  "bugs": {
+    "url": "https://github.com/backnotprop/orchestrator/issues"
+  },
   "license": "BUSL-1.1",
+  "author": "Michael Ramos",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/backnotprop/orchestrator.git",
+    "directory": "packages/core"
+  },
   "files": [
-    "src"
+    "dist"
   ],
   "type": "module",
   "exports": {
-    ".": "./src/index.ts",
-    "./model-discovery": "./src/model-discovery/index.ts",
-    "./provider-limits": "./src/provider-limits/index.ts",
-    "./runtime": "./src/runtime/index.ts",
-    "./tasks": "./src/tasks/index.ts"
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./model-discovery": {
+      "types": "./dist/model-discovery/index.d.ts",
+      "import": "./dist/model-discovery/index.js"
+    },
+    "./provider-limits": {
+      "types": "./dist/provider-limits/index.d.ts",
+      "import": "./dist/provider-limits/index.js"
+    },
+    "./runtime": {
+      "types": "./dist/runtime/index.d.ts",
+      "import": "./dist/runtime/index.js"
+    },
+    "./tasks": {
+      "types": "./dist/tasks/index.d.ts",
+      "import": "./dist/tasks/index.js"
+    }
+  },
+  "publishConfig": {
+    "access": "public"
   },
   "scripts": {
+    "build": "rm -rf dist && tsc -p tsconfig.build.json",
+    "prepack": "pnpm run build",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {

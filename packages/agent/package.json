@@ -1,20 +1,60 @@
 {
   "name": "@backnotprop/orchestrator-agent",
-  "version": "0.0.0",
+  "version": "0.1.0",
+  "description": "Agent-facing tools and parent-agent runtime for Orchestrator.",
+  "keywords": [
+    "agents",
+    "ai",
+    "cli",
+    "orchestration"
+  ],
+  "homepage": "https://github.com/backnotprop/orchestrator#readme",
+  "bugs": {
+    "url": "https://github.com/backnotprop/orchestrator/issues"
+  },
   "license": "BUSL-1.1",
+  "author": "Michael Ramos",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/backnotprop/orchestrator.git",
+    "directory": "packages/agent"
+  },
   "files": [
-    "src"
+    "dist"
   ],
   "type": "module",
   "exports": {
-    ".": "./src/index.ts",
-    "./doctor": "./src/doctor.ts",
-    "./instructions": "./src/instructions.ts",
-    "./run-events": "./src/run-events.ts",
-    "./session": "./src/session.ts",
-    "./tools": "./src/tools.ts"
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./doctor": {
+      "types": "./dist/doctor.d.ts",
+      "import": "./dist/doctor.js"
+    },
+    "./instructions": {
+      "types": "./dist/instructions.d.ts",
+      "import": "./dist/instructions.js"
+    },
+    "./run-events": {
+      "types": "./dist/run-events.d.ts",
+      "import": "./dist/run-events.js"
+    },
+    "./session": {
+      "types": "./dist/session.d.ts",
+      "import": "./dist/session.js"
+    },
+    "./tools": {
+      "types": "./dist/tools.d.ts",
+      "import": "./dist/tools.js"
+    }
+  },
+  "publishConfig": {
+    "access": "public"
   },
   "scripts": {
+    "build": "rm -rf dist && tsc -p tsconfig.build.json",
+    "prepack": "pnpm run build",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {

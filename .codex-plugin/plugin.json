@@ -8,7 +8,7 @@
   },
   "homepage": "https://github.com/backnotprop/orchestrator",
   "repository": "https://github.com/backnotprop/orchestrator",
-  "license": "MIT",
+  "license": "BUSL-1.1",
   "keywords": ["agents", "orchestration", "cli", "skills"],
   "skills": "./skills/",
   "interface": {

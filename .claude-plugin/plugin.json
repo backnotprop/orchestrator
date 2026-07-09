@@ -1,4 +1,12 @@
 {
   "name": "orchestrator",
+  "version": "0.1.0",
+  "description": "Let agents orchestrate models and other agents through a portable skill and local CLI.",
+  "author": {
+    "name": "backnotprop"
+  },
+  "homepage": "https://github.com/backnotprop/orchestrator",
+  "repository": "https://github.com/backnotprop/orchestrator",
+  "license": "BUSL-1.1",
   "skills": ["./skills/orchestrator"]
 }

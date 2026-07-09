@@ -14,7 +14,7 @@
       "description": "Let agents orchestrate other agents through a portable skill and local CLI.",
       "homepage": "https://github.com/backnotprop/orchestrator",
       "repository": "https://github.com/backnotprop/orchestrator",
-      "license": "MIT",
+      "license": "BUSL-1.1",
       "keywords": ["agents", "orchestration", "cli", "skills"],
       "category": "productivity"
     }
