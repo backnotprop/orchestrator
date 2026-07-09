@@ -167,3 +167,5 @@ repeated messages, steering, or native goals.
 
 Run `orchestrator help --json --compact` for the live agent-facing contract.
 Architecture decisions live in [`adr/`](adr/README.md).
+Official provider artwork and source notes live in
+[`assets/providers/`](assets/providers/README.md).
