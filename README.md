@@ -49,7 +49,9 @@ npm install -g @backnotprop/orchestrator-cli
 The CLI install is optional up front. The skill can install it on first use.
 
 ```sh
-/orchestrator launch a gpt5.6 sol agent to do the backend, a fable agent to design the frontend wireframes, and then a grok4.5 agent to build the frontend after
+/orchestrator launch a gpt5.6 sol agent to build the backend, 
+              a fable agent to design the frontend wireframes, 
+              and after that a grok4.5 agent to build the frontend
 ```
 
 ## Preferences
