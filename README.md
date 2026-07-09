@@ -11,7 +11,7 @@
   &nbsp;&nbsp;
   <a href="https://claude.com/product/claude-code"><img src="./assets/providers/claude-icon.png" alt="Claude Code" width="32" height="32"></a>
   &nbsp;&nbsp;
-  <a href="https://github.com/features/copilot/cli"><picture><source media="(prefers-color-scheme: dark)" srcset="./assets/providers/github-copilot-lockup-white.svg"><img src="./assets/providers/github-copilot-lockup-black.svg" alt="GitHub Copilot CLI" height="28"></picture></a>
+  <a href="https://github.com/features/copilot/cli"><picture><source media="(prefers-color-scheme: dark)" srcset="./assets/providers/copilot-icon-dark.svg"><img src="./assets/providers/copilot-icon-light.svg" alt="GitHub Copilot CLI" height="32"></picture></a>
   &nbsp;&nbsp;
   <a href="https://grok.com/"><picture><source media="(prefers-color-scheme: dark)" srcset="./assets/providers/grok-logo-white.svg"><img src="./assets/providers/grok-logo-black.svg" alt="Grok" height="28"></picture></a>
   &nbsp;&nbsp;
