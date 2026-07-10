@@ -21,8 +21,7 @@
 <sub>Codex &middot; Claude Code &middot; Copilot CLI &middot; Grok Build &middot; Pi</sub>
 
 Orchestrator is a simple skill built on a powerful local CLI. Work with
-one agent; it orchestrates many models across providers and brings their
-results back into one place.
+one agent; it orchestrates other harnesses (Claude Code, Codex, etc) in the background.
 
 You speak in models and outcomes:
 
