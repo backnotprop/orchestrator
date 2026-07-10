@@ -23,6 +23,8 @@
 Orchestrator is a simple skill built on a powerful local CLI. Work with
 one agent; it orchestrates other harnesses (Claude Code, Codex, etc) in the background.
 
+Orchestrator is not a harness. You use it in your preferred harness and it orchestrates others in the background.
+
 You speak in models and outcomes:
 
 > Use Fable for the UI, GPT-5.6 Sol for the implementation, and Grok 4.5 for
