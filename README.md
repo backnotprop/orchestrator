@@ -33,9 +33,6 @@ You speak in models and outcomes:
 > Explore the repository with Kimi 2.7. Give the plan to GPT-5.6 Sol, then use
 > Fable only where the interface needs real design work.
 
-Orchestrator discovers current model names and IDs from installed runtimes
-instead of relying on stale model slugs.
-
 ## Install
 
 ```sh
@@ -69,6 +66,9 @@ When Fable is usage is capped, use GPT-5.6 Sol.
 When GPT-5.6 Sol is unavailable, use Opus.
 When every preferred model is unavailable, pause and notify me.
 ```
+
+Orchestrator discovers current model names and IDs from installed runtimes
+instead of relying on stale model slugs.
 
 Human model names are fine. The skill resolves them against live runtime
 catalogs, checks available provider limits when supported, and follows the
