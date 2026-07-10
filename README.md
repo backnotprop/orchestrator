@@ -21,7 +21,7 @@
 <sub>Codex &middot; Claude Code &middot; Copilot CLI &middot; Grok Build &middot; Pi</sub>
 
 Orchestrator is a simple skill built on a powerful local CLI. Work with
-one agent; it orchestrates other harnesses (Claude Code, Codex, etc) in the background.
+one of your agents; it orchestrates others (Claude Code, Codex, etc) in the background.
 
 Orchestrator is not a harness. You use it in your preferred harness and it orchestrates others in the background.
 
