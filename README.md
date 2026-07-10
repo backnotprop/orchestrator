@@ -4,7 +4,7 @@
 
 # Orchestrator
 
-**One harness. Orchestrating many others.**
+**Use your harness. To orchestrate many others.**
 
 <p>
   <a href="https://openai.com/codex/"><picture><source media="(prefers-color-scheme: dark)" srcset="./assets/providers/codex-icon-dark.png"><img src="./assets/providers/codex-icon-light.png" alt="Codex" width="32" height="32" align="middle"></picture></a>
